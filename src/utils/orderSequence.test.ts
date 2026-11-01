@@ -53,8 +53,8 @@ function makeCompletedMark(operationType: CompletedWaypointMark['operationType']
   };
 }
 
-test('mantém a coleta como primeira etapa do pedido normal', () => {
-  const [visiblePlace] = filterPlacesBySequence([makePlace()]);
+test('mantém somente a coleta quando coleta e entrega estão disponíveis', () => {
+  const [visiblePlace] = filterPlacesBySequence(makeNormalOrder());
 
   assert.equal(visiblePlace.operationType, 'coleta');
 });
@@ -88,6 +88,26 @@ test('segue coleta, troca e retorno ao endereço de coleta', () => {
   assert.deepEqual(afterPickup[0].coordinates, exchangeCoordinates);
   assert.equal(afterExchange[0].orderStage, 'retorno');
   assert.deepEqual(afterExchange[0].coordinates, pickupCoordinates);
+});
+
+test('mantém somente a coleta quando coleta e troca estão disponíveis', () => {
+  const exchangeOrder = [
+    makePlace({ isExchangeOrder: true }),
+    makePlace({
+      id: 'pedido-42-troca',
+      name: 'Troca do pedido 42',
+      address: 'Endereço de troca',
+      coordinates: exchangeCoordinates,
+      operationType: 'troca',
+      orderStage: 'troca',
+      isExchangeOrder: true,
+      exchangeAddress: 'Endereço de troca',
+      exchangeCoordinates
+    })
+  ];
+  const [visiblePlace] = filterPlacesBySequence(exchangeOrder);
+
+  assert.equal(visiblePlace.operationType, 'coleta');
 });
 
 test('remove o pedido do mapa após a entrega final bem-sucedida', () => {

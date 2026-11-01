@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { X, MapPin, User, Phone, ChevronRight, AlertTriangle, Zap, Check } from 'lucide-react';
+import { X, MapPin, User, Phone, ChevronRight, AlertTriangle, Zap, Check, LocateFixed } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
 import { reverseGeocode } from '../../services/geocodingService';
 import { MapLayerType, Place, OperationType, Driver, CompletedWaypointMark } from '../../types/map';
@@ -1165,6 +1165,7 @@ export const FullscreenMap: React.FC = () => {
     placeName: string;
     places: Place[];
   } | null>(null);
+  const [showDriverFocusHint, setShowDriverFocusHint] = useState(false);
 
   // Smooth GPS continuous walking references
   const markerCurrentPosRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -1218,9 +1219,8 @@ export const FullscreenMap: React.FC = () => {
   currentRoleRef.current = currentRole;
   const isDriverOnlineRef = useRef(isDriverOnline);
   isDriverOnlineRef.current = isDriverOnline;
-  const autoRecenterTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isUserManuallyPanningRef = useRef<boolean>(false);
-  const manualPanTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const driverFocusHintTimerRef = useRef<NodeJS.Timeout | null>(null);
   const setSelectedPlaceRef = useRef(setSelectedPlace);
   setSelectedPlaceRef.current = setSelectedPlace;
   const operationsFilterRef = useRef(operationsFilter);
@@ -1303,31 +1303,27 @@ export const FullscreenMap: React.FC = () => {
     activeTileLayerRef.current = tileLayer;
     setMapInstance(map);
 
-    // Se o usuário arrastar o mapa manualmente, permite mexer normalmente
+    // O motorista mantém o enquadramento manual até solicitar foco novamente.
     map.on('dragstart', () => {
+      if (currentRoleRef.current !== 'motorista' || !isDriverOnlineRef.current) return;
+
       isUserManuallyPanningRef.current = true;
-      if (manualPanTimerRef.current) {
-        clearTimeout(manualPanTimerRef.current);
-      }
-      if (autoRecenterTimeoutRef.current) {
-        clearTimeout(autoRecenterTimeoutRef.current);
+      setShowDriverFocusHint(false);
+      if (driverFocusHintTimerRef.current) {
+        clearTimeout(driverFocusHintTimerRef.current);
+        driverFocusHintTimerRef.current = null;
       }
     });
 
-    // Quando soltar o mapa, se estiver parado mantém a visualização por 3.5s e volta a acompanhar o motorista
+    // Indica que o motorista pode voltar ao próprio local após 10 segundos sem arrastar.
     map.on('dragend', () => {
-      if (currentRoleRef.current === 'motorista' && isDriverOnlineRef.current) {
-        if (manualPanTimerRef.current) {
-          clearTimeout(manualPanTimerRef.current);
-        }
-        manualPanTimerRef.current = setTimeout(() => {
-          isUserManuallyPanningRef.current = false;
-          const loc = userLocationRef.current;
-          if (loc) {
-            map.flyTo([loc.lat, loc.lng], 17, { duration: 1.0 });
-          }
-        }, 3500);
-      }
+      if (currentRoleRef.current !== 'motorista' || !isDriverOnlineRef.current || !isUserManuallyPanningRef.current) return;
+
+      if (driverFocusHintTimerRef.current) clearTimeout(driverFocusHintTimerRef.current);
+      driverFocusHintTimerRef.current = setTimeout(() => {
+        setShowDriverFocusHint(true);
+        driverFocusHintTimerRef.current = null;
+      }, 10000);
     });
 
     // Automatically save last location and zoom when user moves/zooms the map
@@ -1634,11 +1630,26 @@ export const FullscreenMap: React.FC = () => {
     resizeObserver.observe(mapContainerRef.current);
 
     return () => {
+      if (driverFocusHintTimerRef.current) {
+        clearTimeout(driverFocusHintTimerRef.current);
+        driverFocusHintTimerRef.current = null;
+      }
       resizeObserver.disconnect();
       map.remove();
       setMapInstance(null);
     };
   }, []);
+
+  useEffect(() => {
+    if (currentRole === 'motorista' && isDriverOnline) return;
+
+    isUserManuallyPanningRef.current = false;
+    setShowDriverFocusHint(false);
+    if (driverFocusHintTimerRef.current) {
+      clearTimeout(driverFocusHintTimerRef.current);
+      driverFocusHintTimerRef.current = null;
+    }
+  }, [currentRole, isDriverOnline]);
 
   // Sync active layer
   const { mapInstance } = useMapStore();
@@ -1691,7 +1702,11 @@ export const FullscreenMap: React.FC = () => {
     // 2. E a troca também. Só pode mostrar a troca depois que fizer a coleta.
     // 3. Aí nesse caso, só pode mostrar a entrega depois que fizer a troca. Tem uma sequência.
     // Também respeita filtros explícitos de operações para visualização e marcas concluídas
-    const sequencedPlacesList = filterPlacesBySequence(companyFilteredPlaces, completedWaypointMarks, operationsFilter);
+    const sequencedPlacesList = filterPlacesBySequence(
+      companyFilteredPlaces,
+      completedWaypointMarks,
+      isDriverRole ? undefined : operationsFilter
+    );
     const allPlacesMap = new Map<string, Place>();
     sequencedPlacesList.forEach(p => allPlacesMap.set(p.id, p));
 
@@ -2360,17 +2375,10 @@ export const FullscreenMap: React.FC = () => {
         userMarkerRef.current.setLatLng([interpLat, interpLng]);
       }
 
-      // Sincronização fluida da câmera em 60 FPS:
-      // Se estiver rastreando ou se o motorista estiver online:
-      // Se ele estiver se movimentando com deslocamento real (distMeters >= 1.5m), centraliza no motorista
+      // Mantém a câmera acompanhando o GPS apenas até o motorista mover o mapa manualmente.
       const isDriverTracking = isTrackingUser || isMotoristaOnline;
-      if (isDriverTracking && mapInstance) {
-        if (distMeters >= 1.5) {
-          isUserManuallyPanningRef.current = false;
-        }
-        if (!isUserManuallyPanningRef.current) {
-          mapInstance.panTo([interpLat, interpLng], { animate: false });
-        }
+      if (isDriverTracking && mapInstance && !isUserManuallyPanningRef.current) {
+        mapInstance.panTo([interpLat, interpLng], { animate: false });
       }
 
       if (progress < 1.0) {
@@ -2406,6 +2414,34 @@ export const FullscreenMap: React.FC = () => {
         className="w-full h-full z-0 bg-[#EBF2F7]"
         style={{ cursor: 'grab' }}
       />
+
+      {currentRole === 'motorista' && isDriverOnline && (
+        <button
+          type="button"
+          onClick={() => {
+            isUserManuallyPanningRef.current = false;
+            setShowDriverFocusHint(false);
+            if (driverFocusHintTimerRef.current) {
+              clearTimeout(driverFocusHintTimerRef.current);
+              driverFocusHintTimerRef.current = null;
+            }
+            const location = userLocationRef.current || currentCoords;
+            mapInstance?.flyTo([location.lat, location.lng], 17, { duration: 1 });
+          }}
+          aria-label="Focar no motorista"
+          title="Focar na minha localização"
+          className={`group absolute bottom-20 right-3.5 sm:right-6 z-30 flex h-12 w-12 items-center justify-center rounded-xl border bg-white text-[#0B5187] shadow-xl transition-all hover:bg-[#F0F6FB] active:scale-95 ${
+            showDriverFocusHint
+              ? 'animate-pulse border-[#FF5E00] ring-4 ring-[#FF5E00]/30'
+              : 'border-[#0B5187]/25'
+          }`}
+        >
+          <LocateFixed className="h-5 w-5 stroke-[2.4] transition-transform group-hover:scale-110" />
+          {showDriverFocusHint && (
+            <span className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-white bg-[#FF5E00]" />
+          )}
+        </button>
+      )}
 
       {/* JANELINHA / DIÁLOGO DE SELEÇÃO DE ENCOMENDA NO LOCAL (ONMAKER) */}
       {markerSelectionModal && (

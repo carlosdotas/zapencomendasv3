@@ -252,6 +252,8 @@ export function filterPlacesBySequence(
     }
 
     const numId = extractNumericId(groupKey);
+    const hasPickupMarker = group.some(p => p.operationType === 'coleta');
+    const hasLaterStageMarker = group.some(p => p.operationType === 'troca' || p.operationType === 'entrega');
 
     // Identifica se é encomenda com Troca
     const isExchangeOrder = Boolean(
@@ -268,9 +270,11 @@ export function filterPlacesBySequence(
     // Verifica se a Coleta já foi concluída
     const isColetaDone = Boolean(
       (numId && completedKeys.has(`pedido_${numId}_coleta`)) ||
+      (numId && (completedKeys.has(`pedido_${numId}_troca`) || completedKeys.has(`pedido_${numId}_entrega`))) ||
       group.some(p => completedKeys.has(`${p.id}_coleta`) || (p.orderCode && completedKeys.has(`${p.orderCode}_coleta`))) ||
-      group.some(p => ['coletado', 'troca', 'trocando', 'trocado', 'retorno', 'retornando', 'entrega', 'entregando'].includes(p.orderStage || '')) ||
-      group.some(p => COLLECTED_LEGACY_STAGES.has(getLegacyStage(p)))
+      group.some(p => ['coletado', 'trocando', 'trocado', 'retorno', 'retornando', 'entregando'].includes(p.orderStage || '')) ||
+      group.some(p => COLLECTED_LEGACY_STAGES.has(getLegacyStage(p))) ||
+      (!hasPickupMarker && hasLaterStageMarker)
     );
 
     // Verifica se a Troca já foi concluída (no cliente)
