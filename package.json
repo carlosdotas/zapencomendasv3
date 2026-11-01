@@ -9,6 +9,7 @@
     "preview": "vite preview --port 3000 --host 0.0.0.0",
     "start": "node server.ts --prod",
     "clean": "rm -rf dist server.js",
+    "test": "tsx --test src/utils/orderSequence.test.ts src/services/apiAdapters.test.ts src/services/imageUploadService.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

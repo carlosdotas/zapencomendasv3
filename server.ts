@@ -1607,8 +1607,11 @@ app.all(['/users/upload_foto', '/api/users/upload_foto'], async (req: Request, r
     photoPath = base64Data;
   }
   if (!photoPath) {
-    const filename = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
-    photoPath = `/uploads/users/${filename}`;
+    res.status(base64Data ? 500 : 400).json({
+      success: false,
+      message: base64Data ? 'Não foi possível gravar a foto no servidor.' : 'Nenhuma foto foi enviada.'
+    });
+    return;
   }
 
   const rawId = body.user_id !== undefined && body.user_id !== null ? String(body.user_id) : (body.id ? String(body.id) : '');
@@ -2106,15 +2109,17 @@ app.all(['/pedidos/upload_foto', '/api/pedidos/upload_foto'], (req: Request, res
   const body = parseRawJsonBody(req);
   const tipo = body.tipo || 'coleta';
   const base64Data = body.base64 || body.image || body.foto;
-  let photoPath = '';
-  if (base64Data && typeof base64Data === 'string' && base64Data.startsWith('data:image/')) {
-    const saved = saveBase64Image(base64Data, `pedidos/${tipo}`);
-    if (saved) photoPath = saved;
+  if (!base64Data || typeof base64Data !== 'string' || !base64Data.startsWith('data:image/')) {
+    res.status(400).json({ success: false, message: 'Nenhuma imagem válida foi enviada.' });
+    return;
   }
+
+  const photoPath = saveBase64Image(base64Data, `pedidos/${tipo}`);
   if (!photoPath) {
-    const filename = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
-    photoPath = `/uploads/pedidos/${tipo}/${filename}`;
+    res.status(500).json({ success: false, message: 'Não foi possível gravar a foto do pedido.' });
+    return;
   }
+
   res.json({
     success: true,
     data: { path: photoPath }

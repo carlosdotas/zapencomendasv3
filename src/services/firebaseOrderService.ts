@@ -20,7 +20,8 @@ import { BackendPedido, ApiResponse } from './apiTypes';
 import { getFirebaseFirestore, FirebaseConfig } from './firebaseClient';
 import { sanitizeForFirestore } from './firestoreUtils';
 import { getImageServerUrl, getImageServerPassword } from './api';
-import seedOrdersJson from '../data/importedPedidos.json';
+import { loadImportedOrderSeed } from '../data/importedOrderSeed';
+import { uploadImage } from './imageUploadService';
 
 const STORAGE_ORDERS_CACHE = 'encomendaszap_firebase_orders_cache';
 
@@ -39,9 +40,10 @@ class FirebaseOrderService {
   public async init() {
     if (this.initialized) return;
 
-    // 0. Semente inicial instantânea com pedidos importados (garante markers no mapa ao iniciar)
-    if (this.orders.size === 0 && Array.isArray(seedOrdersJson)) {
-      for (const o of seedOrdersJson as BackendPedido[]) {
+    // 0. Carrega os pedidos importados como fallback inicial.
+    if (this.orders.size === 0) {
+      const seedOrders = await loadImportedOrderSeed().catch(() => []);
+      for (const o of seedOrders) {
         if (o && o.id !== undefined && o.id !== null) {
           this.orders.set(String(o.id), { ...o });
         }
@@ -638,61 +640,20 @@ class FirebaseOrderService {
     base64: string, 
     tipo: 'mercadoria' | 'coleta' | 'entrega' | 'comprovante' | 'declaracao' = 'coleta'
   ): Promise<ApiResponse<{ path: string }>> {
-    const filename = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.jpg`;
-    const photoPath = `/uploads/pedidos/${tipo}/${filename}`;
-
-    // 1. Tenta enviar para o Servidor de Imagens PHP dedicado se configurado
-    const imgServer = getImageServerUrl();
-    if (imgServer) {
-      try {
-        const pass = getImageServerPassword();
-        const separator = imgServer.includes('?') ? '&' : '?';
-        const uploadEndpoint = `${imgServer}${separator}action=upload&password=${encodeURIComponent(pass)}`;
-
-        const res = await fetch(uploadEndpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Access-Password': pass
-          },
-          body: JSON.stringify({
-            image: base64,
-            tipo,
-            password: pass
-          })
-        });
-
-        if (res.ok) {
-          const resData = await res.json();
-          if (resData && resData.success && (resData.url || resData.path)) {
-            const finalUrl = resData.url || resData.path;
-            try {
-              if (typeof window !== 'undefined' && window.localStorage) {
-                localStorage.setItem(`foto_${finalUrl}`, base64);
-              }
-            } catch {}
-            return {
-              success: true,
-              data: { path: finalUrl }
-            };
-          }
-        }
-      } catch (err: any) {
-        console.warn('[Image Server PHP] Falha no upload para o servidor de imagens, aplicando fallback local:', err);
-      }
-    }
-
-    // 2. Fallback local / Express proxy
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        localStorage.setItem(`foto_${photoPath}`, base64);
-      }
-    } catch {}
-
-    return {
-      success: true,
-      data: { path: photoPath }
-    };
+      const path = await uploadImage(base64, {
+        type: tipo,
+        imageServerUrl: getImageServerUrl(),
+        imageServerPassword: getImageServerPassword(),
+        fallbackEndpoint: '/pedidos/upload_foto'
+      });
+      return { success: true, data: { path } };
+    } catch (error) {
+      return {
+        success: false,
+        message: error instanceof Error ? error.message : 'Não foi possível salvar a foto do pedido.'
+      };
+    }
   }
 
   /**

@@ -194,13 +194,11 @@ export const DriverScreenOverlay: React.FC = () => {
           <button
             type="button"
             onClick={() => setShowEndSessionModal(true)}
-            className="flex items-center gap-2.5 px-4 py-3 bg-gradient-to-r from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white font-black text-xs sm:text-sm rounded-2xl shadow-xl hover:shadow-2xl border-2 border-white/80 active:scale-95 transition-all cursor-pointer group"
-            title="Finalizar sessão de vistoria / rotas"
+            aria-label="Finalizar sessão"
+            className="flex h-12 w-12 items-center justify-center rounded-2xl border-2 border-white/80 bg-gradient-to-r from-rose-600 to-rose-700 text-white shadow-xl transition-all hover:from-rose-500 hover:to-rose-600 hover:shadow-2xl active:scale-95"
+            title="Finalizar Sessão"
           >
-            <div className="w-7 h-7 rounded-xl bg-white/20 flex items-center justify-center group-hover:rotate-12 transition-transform">
-              <Power className="w-4 h-4 stroke-[2.5]" />
-            </div>
-            <span>Finalizar Sessão</span>
+            <Power className="h-5 w-5 stroke-[2.5]" />
           </button>
         </div>
       )}

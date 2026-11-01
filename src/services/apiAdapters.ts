@@ -175,6 +175,14 @@ export function normalizePhotoPath(item: any, size: PhotoVariantSize = 'md'): st
   const phpEndpoint = cleanServerEndpoint.endsWith('.php') 
     ? cleanServerEndpoint 
     : `${cleanServerEndpoint}/images.php`;
+  let resolvedPhpEndpoint = phpEndpoint;
+
+  try {
+    const sourceUrl = new URL(trimmed);
+    if (/^https?:$/.test(sourceUrl.protocol) && sourceUrl.pathname.toLowerCase().endsWith('.php')) {
+      resolvedPhpEndpoint = `${sourceUrl.origin}${sourceUrl.pathname}`;
+    }
+  } catch {}
 
   // 2. DETECTA SE A FOTO PERTENCE AO SERVIDOR PHP DE IMAGENS
   const isPhpImageServer = 
@@ -212,8 +220,7 @@ export function normalizePhotoPath(item: any, size: PhotoVariantSize = 'md'): st
                       : size === 'md' ? '&w=480'
                       : '&w=1200';
 
-      // BUSCA RIGOROSAMENTE A PARTIR DO LINK CADASTRADO NAS CONFIGURAÇÕES DO SISTEMA!
-      return `${phpEndpoint}?f=${encodeURIComponent(filename)}${sizeParam}`;
+      return `${resolvedPhpEndpoint}?f=${encodeURIComponent(filename)}${sizeParam}`;
     }
   }
 

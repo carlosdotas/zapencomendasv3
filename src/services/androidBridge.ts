@@ -12,6 +12,8 @@ export interface AndroidAppBridge {
   vibrate?: (ms: number) => void;
   getLatitude?: () => number;
   getLongitude?: () => number;
+  getLastSharedMap?: () => string | null;
+  clearLastSharedMap?: () => void;
   openWhatsApp?: (phone: string, message: string) => void;
 }
 

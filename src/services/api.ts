@@ -17,6 +17,7 @@ import {
 import { firebaseUserService } from './firebaseUserService';
 import { firebaseOrderService } from './firebaseOrderService';
 import { firebasePlaceService } from './firebasePlaceService';
+import { uploadImage } from './imageUploadService';
 
 const STORAGE_API_URL_KEY = 'encomendaszap_api_base_url';
 const STORAGE_TOKEN_KEY = 'encomendaszap_auth_token';
@@ -158,77 +159,20 @@ export function setImageServerPassword(pass: string): void {
  */
 export async function uploadProfilePhoto(
   base64: string,
-  userId?: string | number
+  userId?: string | number,
+  phone?: string
 ): Promise<string> {
   if (!base64 || typeof base64 !== 'string' || !base64.startsWith('data:image/')) {
     return base64;
   }
 
-  // 1. Tenta enviar para o Servidor PHP de Fotos dedicado
-  const imgServer = getImageServerUrl();
-  const pass = getImageServerPassword();
-
-  if (imgServer) {
-    try {
-      const separator = imgServer.includes('?') ? '&' : '?';
-      const uploadUrl = `${imgServer}${separator}action=upload&password=${encodeURIComponent(pass)}`;
-
-      const res = await fetch(uploadUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Access-Password': pass
-        },
-        body: JSON.stringify({
-          image: base64,
-          tipo: 'perfil',
-          password: pass
-        })
-      });
-
-      if (res.ok) {
-        const resData = await res.json();
-        if (resData && resData.success) {
-          const filename = resData.filename || (resData.url ? resData.url.match(/[?&]f=([^&#]+)/)?.[1] : '') || '';
-          const cleanEndpoint = imgServer.split('?')[0].replace(/\/+$/, '');
-          const finalUrl = filename 
-            ? `${cleanEndpoint}?f=${encodeURIComponent(filename)}` 
-            : (resData.url || resData.path);
-
-          console.log('[Image Server PHP] Foto de perfil salva com sucesso no servidor PHP configurado:', finalUrl);
-          try {
-            if (typeof window !== 'undefined' && window.localStorage) {
-              localStorage.setItem(`foto_${finalUrl}`, base64);
-              if (filename) {
-                localStorage.setItem(`foto_${filename}`, base64);
-              }
-            }
-          } catch {}
-          return finalUrl;
-        }
-      }
-    } catch (err: any) {
-      console.warn('[Image Server PHP] Erro ao enviar foto de perfil para o PHP:', err.message);
-    }
-  }
-
-  // 2. Fallback via backend Express local (/users/upload_foto)
-  try {
-    const res = await request('/users/upload_foto', 'POST', { 
-      foto: base64, 
-      userId,
-      imageServerUrl: imgServer,
-      imageServerPassword: pass
-    });
-    const fallbackUrl = (res as any)?.url || (res as any)?.foto || (res as any)?.avatarUrl || (res?.data as any)?.url || (res?.data as any)?.path;
-    if (fallbackUrl) {
-      return fallbackUrl;
-    }
-  } catch (err) {
-    console.warn('[Profile Photo Upload] Falha no fallback local:', err);
-  }
-
-  return base64;
+  return uploadImage(base64, {
+    type: 'perfil',
+    imageServerUrl: getImageServerUrl(),
+    imageServerPassword: getImageServerPassword(),
+    fallbackEndpoint: '/users/upload_foto',
+    fallbackData: { user_id: userId, id: userId, phone }
+  });
 }
 
 export async function testImageServerConnection(url?: string, password?: string): Promise<{
@@ -641,12 +585,13 @@ export const api = {
     // Se a foto for enviada em base64, sobe para o servidor de fotos PHP primeiro
     if (savedFotoUrl && typeof savedFotoUrl === 'string' && savedFotoUrl.startsWith('data:image/')) {
       try {
-        const phpUrl = await uploadProfilePhoto(savedFotoUrl, user.id);
+        const phpUrl = await uploadProfilePhoto(savedFotoUrl, user.id, user.phone);
         if (phpUrl && !phpUrl.startsWith('data:image/')) {
           savedFotoUrl = phpUrl;
         }
       } catch (e) {
         console.warn('Erro ao subir foto de perfil para o PHP no saveUser:', e);
+        return { success: false, message: 'Não foi possível enviar a foto do perfil.' } as any;
       }
     }
 
@@ -704,9 +649,14 @@ export const api = {
   }): Promise<ApiResponse<{ path: string; foto: string; avatarUrl: string }>> {
     let finalUrl = params.foto;
     if (finalUrl && typeof finalUrl === 'string' && finalUrl.startsWith('data:image/')) {
-      finalUrl = await uploadProfilePhoto(finalUrl, params.userId);
+      finalUrl = await uploadProfilePhoto(finalUrl, params.userId, params.phone);
     }
-    return request('/users/upload_foto', 'POST', { ...params, foto: finalUrl, avatarUrl: finalUrl });
+    return request('/users/upload_foto', 'POST', {
+      ...params,
+      user_id: params.userId,
+      foto: finalUrl,
+      avatarUrl: finalUrl
+    });
   },
 
   async registerUser(user: {

@@ -53,7 +53,7 @@ import { filterPlacesBySequence } from '../utils/orderSequence';
 import { BackendPedido } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
-import seedOrdersJson from '../data/importedPedidos.json';
+import { loadImportedOrderSeed } from '../data/importedOrderSeed';
 
 export interface CustomerLocationModalData {
   placeId?: string;
@@ -507,23 +507,33 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // ignore
     }
 
-    // Semente inicial imediata com os pedidos reais: garante marcadores ativos do dia ao abrir o app
-    try {
-      const initialActivePlaces: Place[] = [];
-      const activeList = (seedOrdersJson as BackendPedido[]).filter(p => {
-        const et = (p.etapa || '').toLowerCase().trim();
-        return et !== 'entregue' && et !== 'finalizado' && et !== 'concluido' && et !== 'cancelado';
-      });
-      activeList.forEach(p => {
-        initialActivePlaces.push(...backendPedidoToPlaces(p));
-      });
-      if (initialActivePlaces.length > 0) return initialActivePlaces;
-    } catch (e) {
-      // ignore
-    }
-
     return [];
   });
+
+  // Carrega o seed em um chunk separado sem substituir cache ou dados remotos.
+  useEffect(() => {
+    if (allPlaces.length > 0) return;
+
+    let isActive = true;
+    loadImportedOrderSeed().then(seedOrders => {
+      if (!isActive) return;
+
+      const activeSeedPlaces = seedOrders
+        .filter(order => {
+          const stage = (order.etapa || '').toLowerCase().trim();
+          return !['entregue', 'finalizado', 'concluido', 'cancelado'].includes(stage);
+        })
+        .flatMap(backendPedidoToPlaces);
+
+      if (activeSeedPlaces.length > 0) {
+        setAllPlaces(current => current.length > 0 ? current : activeSeedPlaces);
+      }
+    }).catch(() => {});
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
 
   // Pedidos finalizados/entregues: não aparecem no mapa, mas exibidos na Central de Pedidos
   const [completedOrders, setCompletedOrders] = useState<Place[]>([]);

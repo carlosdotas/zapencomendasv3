@@ -151,17 +151,22 @@ export const UserProfilePage: React.FC = () => {
       const numericUserId = user.id && !String(user.id).includes('usr-') ? String(user.id).replace(/\D/g, '') : '';
       try {
         // 1. Envia a foto em base64 diretamente para o Servidor de Fotos PHP (images.php com tipo perfil)
-        const uploadedUrl = await uploadProfilePhoto(dataUrl, numericUserId || undefined);
-        const resolvedPhoto = formatPhotoUrl(uploadedUrl) || uploadedUrl;
+        const uploadedUrl = await uploadProfilePhoto(dataUrl, numericUserId || undefined, cleanPhone || user.phone);
 
         // 2. Salva o usuário no backend e no Firebase usando a URL do servidor PHP
-        await api.saveUser({
+        const saveResult = await api.saveUser({
           id: numericUserId || undefined,
           phone: cleanPhone || user.phone,
           name: user.name,
           foto: uploadedUrl,
           avatarUrl: uploadedUrl
         });
+        if (!saveResult.success) {
+          throw new Error(saveResult.message || 'Não foi possível salvar a foto do perfil.');
+        }
+
+        const savedPhoto = saveResult.data?.foto || saveResult.data?.avatarUrl || uploadedUrl;
+        const resolvedPhoto = formatPhotoUrl(savedPhoto) || savedPhoto;
 
         // Atualiza estado do usuário e armazena URL compacta permanente no localStorage
         updateUser({ avatarUrl: resolvedPhoto });

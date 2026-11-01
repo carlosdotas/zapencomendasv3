@@ -1,5 +1,15 @@
 import { Place, CompletedWaypointMark, OperationsFilterState } from '../types/map';
 
+type PlaceWithLegacyStage = Place & { etapa?: string };
+
+const FINALIZED_LEGACY_STAGES = new Set(['entregue', 'finalizado', 'concluido', 'cancelado']);
+const COLLECTED_LEGACY_STAGES = new Set(['coletado', 'trocando', 'trocado', 'retornando', 'entregando']);
+const EXCHANGED_LEGACY_STAGES = new Set(['trocado', 'retornando', 'segunda_entrega', 'retorno']);
+
+function getLegacyStage(place: Place): string {
+  return (place as PlaceWithLegacyStage).etapa?.toLowerCase().trim() || '';
+}
+
 /**
  * Regra Estrita de Sequência EncomendasZap:
  * 
@@ -179,8 +189,7 @@ export function filterPlacesBySequence(
 
   // 2. Mapeia também se algum lugar da lista já veio como 'concluido' ou 'entregue'
   for (const p of places) {
-    const et = ((p as any).etapa || '').toLowerCase().trim();
-    if (p.orderStage === 'concluido' || (p.operationType as any) === 'concluido' || et === 'entregue' || et === 'finalizado' || et === 'concluido' || et === 'cancelado') {
+    if (p.orderStage === 'concluido' || (p.operationType as any) === 'concluido' || FINALIZED_LEGACY_STAGES.has(getLegacyStage(p))) {
       const numId = extractNumericId(p.id) || extractNumericId(p.orderCode);
       if (numId) {
         finalizedOrders.add(`pedido_${numId}`);
@@ -261,7 +270,7 @@ export function filterPlacesBySequence(
       (numId && completedKeys.has(`pedido_${numId}_coleta`)) ||
       group.some(p => completedKeys.has(`${p.id}_coleta`) || (p.orderCode && completedKeys.has(`${p.orderCode}_coleta`))) ||
       group.some(p => ['coletado', 'troca', 'trocando', 'trocado', 'retorno', 'retornando', 'entrega', 'entregando'].includes(p.orderStage || '')) ||
-      group.some(p => ['coletado', 'trocando', 'trocado', 'retornando', 'entregando'].includes(((p as any).etapa || '').toLowerCase().trim()))
+      group.some(p => COLLECTED_LEGACY_STAGES.has(getLegacyStage(p)))
     );
 
     // Verifica se a Troca já foi concluída (no cliente)
@@ -269,7 +278,7 @@ export function filterPlacesBySequence(
       (numId && completedKeys.has(`pedido_${numId}_troca`)) ||
       group.some(p => completedKeys.has(`${p.id}_troca`) || (p.orderCode && completedKeys.has(`${p.orderCode}_troca`))) ||
       group.some(p => ['trocado', 'retorno', 'retornando', 'segunda_entrega'].includes(p.orderStage || '')) ||
-      group.some(p => ['trocado', 'retornando', 'segunda_entrega', 'retorno'].includes(((p as any).etapa || '').toLowerCase().trim()))
+      group.some(p => EXCHANGED_LEGACY_STAGES.has(getLegacyStage(p)))
     );
 
     // ========================================================
