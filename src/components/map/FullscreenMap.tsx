@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { X, MapPin, User, Phone, ChevronRight, AlertTriangle, Zap, Check, LocateFixed } from 'lucide-react';
+import { X, MapPin, User, Phone, ChevronRight, AlertTriangle, Zap, Check, LocateFixed, Package, Navigation, RefreshCw, Loader2 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
 import { reverseGeocode } from '../../services/geocodingService';
 import { MapLayerType, Place, OperationType, Driver, CompletedWaypointMark } from '../../types/map';
@@ -2635,75 +2635,136 @@ export const FullscreenMap: React.FC = () => {
       {/* MODAL DE CONFIRMAÇÃO PARA MOTORISTA ASSUMIR PEDIDO PÚBLICO */}
       {publicOrderToClaim && (
         <div 
-          className="fixed inset-0 z-[140] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          className="fixed inset-0 z-[140] bg-slate-950/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-5 animate-in fade-in duration-200"
           onClick={() => !isClaiming && setPublicOrderToClaim(null)}
         >
           <div 
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="public-order-title"
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-sm bg-white rounded-3xl p-5 shadow-2xl border border-amber-200 space-y-4 animate-in zoom-in-95 duration-150 text-slate-800"
+            className="w-full max-w-lg overflow-hidden rounded-t-[28px] sm:rounded-[28px] bg-white shadow-2xl animate-in slide-in-from-bottom-4 sm:zoom-in-95 duration-200 text-slate-900"
           >
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-400 via-orange-500 to-amber-600 text-white flex items-center justify-center mx-auto shadow-lg shadow-orange-500/25 ring-4 ring-amber-100">
-              <Zap className="w-7 h-7 fill-current animate-bounce" />
-            </div>
+            <div className="h-1.5 bg-gradient-to-r from-[#FFB01F] via-[#FF7A1A] to-[#FF5E00]" />
 
-            <div className="text-center space-y-1">
-              <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black uppercase tracking-wider">
-                ⚡ Pedido Público Disponível
-              </span>
-              <h3 className="text-base font-black text-slate-900 pt-1">
-                Deseja assumir esta corrida?
-              </h3>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Ao confirmar, você se torna o <strong className="text-slate-700">responsável oficial</strong> por esta encomenda. Ela sumirá para outros motoristas e entrará no seu itinerário.
-              </p>
-            </div>
-
-            <div className="bg-slate-50 rounded-2xl p-3 border border-slate-200/80 text-xs space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold text-[11px]">Operação:</span>
-                <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase ${
-                  publicOrderToClaim.operationType === 'coleta' 
-                    ? 'bg-blue-100 text-blue-800' 
-                    : publicOrderToClaim.operationType === 'troca'
-                    ? 'bg-purple-100 text-purple-800'
-                    : 'bg-orange-100 text-orange-800'
-                }`}>
-                  {publicOrderToClaim.operationType || 'Entrega'}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 font-semibold text-[11px]">Cliente:</span>
-                <span className="font-bold text-slate-800 truncate max-w-[190px]">{publicOrderToClaim.customerName || 'Cliente'}</span>
-              </div>
-              <div className="flex justify-between items-start">
-                <span className="text-slate-400 font-semibold text-[11px]">Local:</span>
-                <span className="font-bold text-slate-800 truncate max-w-[190px] text-right">{publicOrderToClaim.name}</span>
-              </div>
-              {publicOrderToClaim.address && (
-                <div className="flex justify-between items-start pt-1 border-t border-slate-200/60">
-                  <span className="text-slate-400 font-semibold text-[11px]">Endereço:</span>
-                  <span className="text-[11px] text-slate-600 truncate max-w-[190px] text-right">{publicOrderToClaim.address}</span>
+            <div className="p-5 sm:p-7">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-center gap-3.5">
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-amber-100 text-amber-700 ring-1 ring-amber-200">
+                    {publicOrderToClaim.operationType === 'coleta' ? (
+                      <Package className="h-7 w-7 stroke-[2.2]" />
+                    ) : publicOrderToClaim.operationType === 'troca' ? (
+                      <RefreshCw className="h-7 w-7 stroke-[2.2]" />
+                    ) : (
+                      <Navigation className="h-7 w-7 stroke-[2.2]" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-amber-800 ring-1 ring-amber-200">
+                      <Zap className="h-3 w-3 fill-current" />
+                      Disponível para aceitar
+                    </span>
+                    <h2 id="public-order-title" className="mt-1.5 text-lg font-black leading-tight text-slate-950 sm:text-xl">
+                      Novo pedido
+                    </h2>
+                  </div>
                 </div>
-              )}
+
+                <button
+                  type="button"
+                  disabled={isClaiming}
+                  onClick={() => setPublicOrderToClaim(null)}
+                  aria-label="Fechar pedido"
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-800 disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-6 border-y border-slate-200 py-5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded-lg px-2.5 py-1 text-[11px] font-black uppercase tracking-wide ${
+                    publicOrderToClaim.operationType === 'coleta'
+                      ? 'bg-blue-100 text-blue-800'
+                      : publicOrderToClaim.operationType === 'troca'
+                      ? 'bg-violet-100 text-violet-800'
+                      : 'bg-orange-100 text-orange-800'
+                  }`}>
+                    {publicOrderToClaim.operationType === 'coleta'
+                      ? 'Coleta'
+                      : publicOrderToClaim.operationType === 'troca'
+                      ? 'Troca'
+                      : 'Entrega'}
+                  </span>
+                  {publicOrderToClaim.orderCode && (
+                    <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+                      {publicOrderToClaim.orderCode}
+                    </span>
+                  )}
+                </div>
+
+                <h3 className="mt-3 break-words text-xl font-black leading-snug text-slate-950 sm:text-2xl">
+                  {publicOrderToClaim.name || 'Local do pedido'}
+                </h3>
+                {publicOrderToClaim.address && (
+                  <p className="mt-1.5 break-words text-sm leading-relaxed text-slate-600">
+                    {publicOrderToClaim.address}
+                  </p>
+                )}
+
+                <div className="mt-4 flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3 ring-1 ring-slate-200">
+                  <User className="h-4 w-4 shrink-0 text-slate-500" />
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Cliente</p>
+                    <p className="break-words text-sm font-bold text-slate-900">
+                      {publicOrderToClaim.customerName || 'Não informado'}
+                    </p>
+                  </div>
+                  {publicOrderToClaim.customerPhone && (
+                    <a
+                      href={`tel:${publicOrderToClaim.customerPhone.replace(/[^\d+]/g, '')}`}
+                      onClick={(event) => event.stopPropagation()}
+                      className="ml-auto flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-bold text-[#0B5187] ring-1 ring-slate-200 hover:bg-blue-50"
+                    >
+                      <Phone className="h-3.5 w-3.5" />
+                      Ligar
+                    </a>
+                  )}
+                </div>
             </div>
 
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                type="button"
-                disabled={isClaiming}
-                onClick={() => setPublicOrderToClaim(null)}
-                className="flex-1 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs cursor-pointer transition-all active:scale-95"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={isClaiming}
-                onClick={handleConfirmClaimPublicOrder}
-                className="flex-1 py-3 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-800 text-white font-black text-xs cursor-pointer shadow-lg shadow-emerald-600/30 transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-1.5"
-              >
-                {isClaiming ? 'Confirmando...' : '✅ Confirmar e Pegar'}
-              </button>
+              <p className="mt-4 text-xs leading-relaxed text-slate-500">
+                Ao aceitar, o pedido ficará vinculado a você e deixará de aparecer para os outros motoristas.
+              </p>
+
+              <div className="mt-5 grid grid-cols-1 gap-2.5 sm:grid-cols-[0.8fr_1.2fr]">
+                <button
+                  type="button"
+                  disabled={isClaiming}
+                  onClick={() => setPublicOrderToClaim(null)}
+                  className="order-2 min-h-12 rounded-xl bg-slate-100 px-4 text-sm font-bold text-slate-700 transition-colors hover:bg-slate-200 disabled:opacity-50 sm:order-1"
+                >
+                  Agora não
+                </button>
+                <button
+                  type="button"
+                  disabled={isClaiming}
+                  onClick={handleConfirmClaimPublicOrder}
+                  className="order-1 flex min-h-14 items-center justify-center gap-2 rounded-xl bg-[#0B7A58] px-4 text-base font-black text-white shadow-lg shadow-emerald-900/15 transition-colors hover:bg-[#096548] active:scale-[0.99] disabled:cursor-wait disabled:opacity-60 sm:order-2"
+                >
+                  {isClaiming ? (
+                    <>
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      Reservando pedido...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="h-5 w-5 stroke-[3]" />
+                      Aceitar pedido
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
