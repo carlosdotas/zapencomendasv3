@@ -1,0 +1,36 @@
+{
+  "appId": "com.zapencomendas.app",
+  "appName": "Zap Encomendas",
+  "webDir": "www",
+  "server": {
+    "url": "https://zapencomendas.ai.studio/",
+    "cleartext": true,
+    "allowNavigation": [
+      "zapencomendas.ai.studio",
+      "*.ai.studio",
+      "*.google.com",
+      "*.googleapis.com",
+      "*.gstatic.com",
+      "*.whatsapp.com",
+      "wa.me"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_launcher",
+      "iconColor": "#002B49"
+    },
+    "PushNotifications": {
+      "presentationOptions": [
+        "badge",
+        "sound",
+        "alert"
+      ]
+    }
+  }
+}

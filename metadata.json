@@ -1,0 +1,1 @@
+{"name":"ZapEncomendas","description":"Aplicativo de mapa em tela cheia com busca flutuante, menu lateral e perfil de usuário.","requestFramePermissions":["geolocation"],"majorCapabilities":["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]}

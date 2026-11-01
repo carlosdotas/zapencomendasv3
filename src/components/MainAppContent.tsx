@@ -1,0 +1,356 @@
+import React, { useEffect, useState, useCallback } from 'react';
+import { useMapStore } from '../context/MapContext';
+import { FullscreenMap } from './map/FullscreenMap';
+import { TopControls } from './navigation/TopControls';
+import { BottomSearchBar } from './navigation/BottomSearchBar';
+import { LocationButton } from './navigation/LocationButton';
+import { SideMenuDrawer } from './sidebar/SideMenuDrawer';
+import { UserProfilePage } from './profile/UserProfilePage';
+import { PlaceDetailCard } from './place/PlaceDetailCard';
+import { DriverDetailCard } from './driver/DriverDetailCard';
+import { LoginModal } from './auth/LoginModal';
+import { RegisterModal } from './auth/RegisterModal';
+import { AdminSettingsPage } from './admin/AdminSettingsPage';
+import { AdminUsersPage } from './admin/AdminUsersPage';
+import { DriverScreenOverlay } from './driver/DriverScreenOverlay';
+import { NewOrderModal } from './order/NewOrderModal';
+import { SetCustomerLocationModal } from './customer/SetCustomerLocationModal';
+import { CustomerSelectorDrawer } from './customer/CustomerSelectorDrawer';
+import { CustomerFormFullScreen } from './customer/CustomerFormFullScreen';
+import { OrdersListModal } from './order/OrdersListModal';
+import { CalendarFilterModal } from './navigation/CalendarFilterModal';
+import { Customer, AgendaContact } from '../types/customer';
+import { Place } from '../types/map';
+import { FullScreenPhotoViewer } from './place/FullScreenPhotoViewer';
+import { OfflineIndicator } from './pwa/OfflineIndicator';
+import { UpdateNotification } from './pwa/UpdateNotification';
+import { GpsStatusBanner } from './map/GpsStatusBanner';
+import { useBackButton } from '../hooks/useBackButton';
+
+export const MainAppContent: React.FC = () => {
+  const { 
+    isAuthenticated,
+    isLoginModalOpen, 
+    setIsLoginModalOpen,
+    isRegisterModalOpen,
+    setIsRegisterModalOpen,
+    loginWithAccount,
+    currentRole,
+    viewingPhotoUrl,
+    closePhotoViewer,
+    isAdminUsersOpen,
+    setIsAdminUsersOpen,
+    isAdminSettingsOpen,
+    setIsAdminSettingsOpen,
+    isProfileOpen,
+    setIsProfileOpen,
+    isSidebarOpen,
+    setIsSidebarOpen,
+    selectedDriver,
+    setSelectedDriver,
+    selectedPlace,
+    setSelectedPlace,
+    activeRoute,
+    clearActiveRoute,
+    isCustomerListOpen,
+    setIsCustomerListOpen,
+    closeCustomerList,
+    openCustomerLocationModal,
+    mapInstance,
+    savedPlaces,
+    allPlaces,
+    isCalendarModalOpen,
+    closeCalendarModal,
+    isOrdersModalOpen,
+    closeOrdersModal
+  } = useMapStore();
+
+  const [isCustomerRegOpen, setIsCustomerRegOpen] = useState(false);
+  const [customerRegInitialData, setCustomerRegInitialData] = useState<Partial<Customer> | AgendaContact | null>(null);
+
+  const handleSelectCustomerFromList = useCallback((customer: Customer) => {
+    closeCustomerList();
+    if (
+      customer.coordinates &&
+      typeof customer.coordinates.lat === 'number' &&
+      typeof customer.coordinates.lng === 'number' &&
+      (customer.coordinates.lat !== 0 || customer.coordinates.lng !== 0)
+    ) {
+      if (mapInstance) {
+        mapInstance.flyTo([customer.coordinates.lat, customer.coordinates.lng], 17, { animate: true, duration: 1.2 });
+      }
+
+      const existingPlace = [...savedPlaces, ...allPlaces].find(p => 
+        (p.customerId && p.customerId === customer.id) ||
+        (customer.phone && p.customerPhone && p.customerPhone.replace(/\D/g, '') === customer.phone.replace(/\D/g, ''))
+      );
+
+      if (existingPlace) {
+        setSelectedPlace(existingPlace);
+      } else {
+        const rawName = customer.fullName || 'Cliente';
+        const placeName = rawName.toLowerCase().startsWith('local de ') ? rawName : `Local de ${rawName}`;
+        const newPlace: Place = {
+          id: `cliente-${customer.id}`,
+          name: placeName,
+          address: customer.address || 'Goiânia - GO',
+          category: 'Cliente',
+          coordinates: customer.coordinates,
+          customerName: customer.fullName,
+          customerPhone: customer.phone,
+          customerId: customer.id,
+          customerAddress: customer.address,
+          customerCoordinates: customer.coordinates
+        };
+        setSelectedPlace(newPlace);
+      }
+    } else {
+      openCustomerLocationModal({
+        customerId: customer.id,
+        customerName: customer.fullName,
+        customerPhone: customer.phone
+      });
+    }
+  }, [closeCustomerList, mapInstance, savedPlaces, allPlaces, setSelectedPlace, openCustomerLocationModal]);
+
+  const handleOpenRegistrationFromList = useCallback((initialData?: Partial<Customer> | AgendaContact) => {
+    closeCustomerList();
+    setCustomerRegInitialData(initialData || null);
+    setIsCustomerRegOpen(true);
+  }, [closeCustomerList]);
+
+  const handleSaveCustomerFromList = useCallback((newCust: Customer) => {
+    setIsCustomerRegOpen(false);
+    if (
+      newCust.coordinates &&
+      typeof newCust.coordinates.lat === 'number' &&
+      typeof newCust.coordinates.lng === 'number' &&
+      (newCust.coordinates.lat !== 0 || newCust.coordinates.lng !== 0)
+    ) {
+      if (mapInstance) {
+        mapInstance.flyTo([newCust.coordinates.lat, newCust.coordinates.lng], 17, { animate: true, duration: 1.2 });
+      }
+      const rawName = newCust.fullName || 'Cliente';
+      const placeName = rawName.toLowerCase().startsWith('local de ') ? rawName : `Local de ${rawName}`;
+      const newPlace: Place = {
+        id: `cliente-${newCust.id}`,
+        name: placeName,
+        address: newCust.address || 'Goiânia - GO',
+        category: 'Cliente',
+        coordinates: newCust.coordinates,
+        customerName: newCust.fullName,
+        customerPhone: newCust.phone,
+        customerId: newCust.id,
+        customerAddress: newCust.address,
+        customerCoordinates: newCust.coordinates
+      };
+      setSelectedPlace(newPlace);
+    } else {
+      setIsCustomerListOpen(true);
+    }
+  }, [mapInstance, setSelectedPlace, setIsCustomerListOpen]);
+
+  // Garante que, caso o usuário não esteja autenticado, a tela de login ou cadastro esteja sempre ativa
+  useEffect(() => {
+    if (!isAuthenticated && !isLoginModalOpen && !isRegisterModalOpen) {
+      setIsLoginModalOpen(true);
+    }
+  }, [isAuthenticated, isLoginModalOpen, isRegisterModalOpen, setIsLoginModalOpen]);
+
+  // ========================================================
+  // INTERCEPTADORES DO BOTÃO VOLTAR DO ANDROID (HARDWARE / GESTO / ESC)
+  // Hierarquia inteligente: fecha da janela mais profunda para a tela principal
+  // ========================================================
+  
+  // 1. Visualizador de Foto em Tela Cheia (Prioridade máxima: 90)
+  useBackButton('full-screen-photo-viewer', !!viewingPhotoUrl, () => {
+    closePhotoViewer();
+  }, 90);
+
+  // 1.5. Cadastro de Cliente a partir da Lista (Prioridade: 85)
+  useBackButton('customer-reg-form-main', isCustomerRegOpen, () => {
+    setIsCustomerRegOpen(false);
+    setIsCustomerListOpen(true);
+  }, 85);
+
+  // 1.6. Gaveta da Lista de Clientes (Prioridade: 80)
+  useBackButton('customer-list-drawer-main', isCustomerListOpen, () => {
+    closeCustomerList();
+  }, 80);
+
+  // 1.7. Janela de Pedidos & Filtros (Prioridade: 78)
+  useBackButton('orders-list-modal-main', isOrdersModalOpen, () => {
+    closeOrdersModal();
+  }, 78);
+
+  // 2. Páginas Administrativas e Perfil do Usuário (Prioridade: 70)
+  useBackButton('admin-users-page', isAdminUsersOpen, () => {
+    setIsAdminUsersOpen(false);
+  }, 70);
+
+  useBackButton('admin-settings-page', isAdminSettingsOpen, () => {
+    setIsAdminSettingsOpen(false);
+  }, 70);
+
+  useBackButton('user-profile-page', isProfileOpen, () => {
+    setIsProfileOpen(false);
+  }, 70);
+
+  // 3. Menu Lateral Retrátil (Prioridade: 60)
+  useBackButton('side-menu-drawer', isSidebarOpen, () => {
+    setIsSidebarOpen(false);
+  }, 60);
+
+  // 4. Modal de Registro de Motorista (Prioridade: 55)
+  useBackButton('register-modal', isRegisterModalOpen, () => {
+    setIsRegisterModalOpen(false);
+    if (!isAuthenticated) setIsLoginModalOpen(true);
+  }, 55);
+
+  // 5. Card de Detalhes do Motorista no Mapa (Prioridade: 50)
+  useBackButton('driver-detail-card', !!selectedDriver, () => {
+    setSelectedDriver(null);
+  }, 50);
+
+  // 6. Card de Detalhes da Encomenda/Marcador no Mapa (Prioridade: 45)
+  useBackButton('place-detail-card', !!selectedPlace, () => {
+    setSelectedPlace(null);
+  }, 45);
+
+  // 7. Rota Ativa no Mapa (Prioridade: 30) - Cancela traçado e retorna ao mapa limpo
+  useBackButton('active-route', !!activeRoute, () => {
+    clearActiveRoute();
+  }, 30);
+
+  return (
+    <main className="relative w-screen h-screen overflow-hidden bg-slate-100 font-sans select-none antialiased">
+      {/* 1. Mapa em Tela Cheia: visível atrás, mas sem qualquer funcionalidade caso não esteja logado */}
+      <div className={`w-full h-full transition-all duration-300 ${!isAuthenticated ? 'pointer-events-none select-none blur-[1.5px] opacity-70 filter' : ''}`}>
+        <FullscreenMap />
+      </div>
+
+      {/* Camada protetora semitransparente caso não autenticado */}
+      {!isAuthenticated && (
+        <div className="absolute inset-0 z-40 bg-slate-900/40 pointer-events-auto backdrop-blur-[1px]" />
+      )}
+
+      {/* 2. Controles do Sistema (TopControls, Busca, Banners, Gaveta) - Acessíveis APENAS com autenticação ativa */}
+      <div className={`transition-opacity duration-200 ${!isAuthenticated ? 'pointer-events-none opacity-0 invisible' : 'opacity-100'}`}>
+        {/* Indicador de Status Offline / Reconexão */}
+        <OfflineIndicator />
+
+        {/* Alerta inteligente de status/permissão de GPS */}
+        <GpsStatusBanner />
+
+        {/* Topo: Controles superiores (Menu, Notificações, Perfil) */}
+        <TopControls />
+
+        {/* Botão Flutuante Inferior Direito para Filtros e Centralizar Localização */}
+        <LocationButton />
+
+        {/* Busca Flutuante embaixo */}
+        <BottomSearchBar />
+
+        {/* Diálogo de Detalhes da Entrega / Marcador */}
+        <PlaceDetailCard />
+
+        {/* Card de Detalhes do Motorista */}
+        <DriverDetailCard />
+
+        {/* Overlay e Tela de Bloqueio do Motorista (Chavinha estilo Uber para rodar) */}
+        <DriverScreenOverlay />
+
+        {/* Menu Lateral Retrátil */}
+        <SideMenuDrawer />
+
+        {/* Página Inteira de Perfil do Usuário */}
+        <UserProfilePage />
+
+        {/* Página Inteira de Configurações do Sistema */}
+        <AdminSettingsPage />
+
+        {/* Página Inteira de Gestão de Usuários */}
+        <AdminUsersPage />
+
+        {/* Formulário Completo de Nova Encomenda */}
+        <NewOrderModal />
+
+        {/* Modal de Filtro por Calendário / Datas */}
+        <CalendarFilterModal
+          isOpen={isCalendarModalOpen}
+          onClose={closeCalendarModal}
+        />
+
+        {/* Janela Completa de Pedidos e Filtros */}
+        {isOrdersModalOpen && (
+          <OrdersListModal
+            isOpen={isOrdersModalOpen}
+            onClose={closeOrdersModal}
+          />
+        )}
+
+        {/* Modal de Busca e Definição de Localização do Cliente */}
+        <SetCustomerLocationModal />
+
+        {/* Gaveta da Lista de Clientes (Banco de Dados + Agenda Telefônica) */}
+        {isCustomerListOpen && (
+          <CustomerSelectorDrawer
+            isOpen={isCustomerListOpen}
+            onClose={closeCustomerList}
+            targetField="customer"
+            onSelectCustomer={handleSelectCustomerFromList}
+            onOpenRegistration={handleOpenRegistrationFromList}
+          />
+        )}
+
+        {/* Formulário Completo de Cadastro de Cliente aberto a partir da Lista */}
+        {isCustomerRegOpen && (
+          <CustomerFormFullScreen
+            isOpen={isCustomerRegOpen}
+            onClose={() => {
+              setIsCustomerRegOpen(false);
+              setIsCustomerListOpen(true);
+            }}
+            onSaveCustomer={handleSaveCustomerFromList}
+            initialData={customerRegInitialData}
+            targetFieldTitle="Cliente"
+          />
+        )}
+
+        {/* Visualizador de Foto da Encomenda Grande em Tela Cheia */}
+        <FullScreenPhotoViewer />
+      </div>
+
+      {/* 3. Modal de Login Obrigatório: Exibido sempre que não autenticado e não estiver na tela de cadastro */}
+      <LoginModal
+        isOpen={(!isAuthenticated && !isRegisterModalOpen) || isLoginModalOpen}
+        onLoginSuccess={loginWithAccount}
+      />
+
+      {/* 4. Tela Completa de Cadastro de Motorista */}
+      <RegisterModal
+        isOpen={isRegisterModalOpen}
+        onClose={() => {
+          if (!isAuthenticated) {
+            setIsRegisterModalOpen(false);
+            setIsLoginModalOpen(true);
+          } else {
+            setIsRegisterModalOpen(false);
+          }
+        }}
+        onSuccess={(acc) => {
+          setIsRegisterModalOpen(false);
+          loginWithAccount(acc);
+        }}
+        onSwitchToLogin={() => {
+          setIsRegisterModalOpen(false);
+          setIsLoginModalOpen(true);
+        }}
+        canDismiss={isAuthenticated}
+      />
+
+      {/* 5. Notificação Inteligente de Nova Versão Pronta para Atualização */}
+      <UpdateNotification />
+    </main>
+  );
+};

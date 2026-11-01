@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>EncomendasZap - Mapas & Logística</title>
+    <meta name="description" content="Mapa em tela cheia com rastreamento de entregas, rotas em tempo real e busca inteligente da EncomendasZap." />
+    <meta property="og:title" content="EncomendasZap - Mapas & Logística" />
+    <meta property="og:description" content="Mapa em tela cheia com rastreamento de entregas, rotas em tempo real e busca inteligente da EncomendasZap." />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#001424" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="EncomendasZap" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/logo.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <script>
+      // Suprime avisos/erros de WebSocket do Vite HMR desativado no ambiente de preview
+      window.addEventListener('error', function(event) {
+        if (event.message && (
+          event.message.includes('WebSocket') || 
+          event.message.includes('ws://') || 
+          event.message.includes('wss://') || 
+          event.message.includes('[vite]')
+        )) {
+          event.stopImmediatePropagation();
+          event.preventDefault();
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function(event) {
+        if (event.reason && (
+          String(event.reason).includes('WebSocket') || 
+          String(event.reason).includes('vite')
+        )) {
+          event.preventDefault();
+        }
+      });
+      (function() {
+        var origConsoleError = console.error;
+        console.error = function() {
+          var firstArg = arguments[0];
+          if (typeof firstArg === 'string' && (firstArg.includes('[vite]') || firstArg.includes('WebSocket'))) {
+            return;
+          }
+          if (firstArg instanceof Error && (firstArg.message.includes('WebSocket') || firstArg.message.includes('[vite]'))) {
+            return;
+          }
+          origConsoleError.apply(console, arguments);
+        };
+      })();
+    </script>
+  </head>
+  <body class="overflow-hidden m-0 p-0 select-none bg-[#001424]" style="background-color: #001424; color-scheme: dark;">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

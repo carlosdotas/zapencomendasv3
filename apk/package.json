@@ -1,0 +1,22 @@
+{
+  "name": "zap-encomendas",
+  "version": "1.0.0",
+  "description": "Zap Encomendas Fullscreen App",
+  "main": "index.js",
+  "scripts": {
+    "sync": "cap sync",
+    "build:apk": "cap sync && cd android && .\\gradlew.bat assembleDebug && copy /y app\\build\\outputs\\apk\\debug\\app-debug.apk ..\\zap-encomendas.apk",
+    "open:android": "cap open android"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/cli": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/geolocation": "^8.2.4",
+    "@capacitor/local-notifications": "^8.3.1",
+    "@capacitor/push-notifications": "^8.1.3"
+  }
+}

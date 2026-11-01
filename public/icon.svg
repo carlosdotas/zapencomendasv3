@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <!-- Background transparent or white -->
+  <defs>
+    <!-- Arrowhead markers -->
+    <marker id="arrowNavy" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#002B49"/>
+    </marker>
+    <marker id="arrowOrange" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#FF5E00"/>
+    </marker>
+    <!-- Gradients -->
+    <linearGradient id="boxTopGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A3660"/>
+      <stop offset="100%" stop-color="#00223B"/>
+    </linearGradient>
+    <linearGradient id="boxLeftGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#002B49"/>
+      <stop offset="100%" stop-color="#001B30"/>
+    </linearGradient>
+    <linearGradient id="boxRightGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00223D"/>
+      <stop offset="100%" stop-color="#001424"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Dark Navy Circular Border Ring -->
+  <circle cx="250" cy="250" r="236" fill="#FFFFFF" stroke="#002B49" stroke-width="15"/>
+
+  <!-- Top Dark Navy Circular Arc Arrow (Clockwise, top-left to top-right) -->
+  <path d="M 85,250 A 165,165 0 0,1 405,200" fill="none" stroke="#002B49" stroke-width="32" stroke-linecap="round"/>
+  <!-- Navy Arrowhead pointing downwards-right -->
+  <polygon points="405,115 410,215 320,175" fill="#002B49"/>
+  <!-- Navy starting dot -->
+  <circle cx="85" cy="255" r="18" fill="#002B49"/>
+
+  <!-- Bottom Vibrant Orange Circular Arc Arrow (Clockwise, bottom-right to bottom-left) -->
+  <path d="M 415,250 A 165,165 0 0,1 95,300" fill="none" stroke="#FF5E00" stroke-width="32" stroke-linecap="round"/>
+  <!-- Orange Arrowhead pointing upwards-left -->
+  <polygon points="95,385 90,285 180,325" fill="#FF5E00"/>
+  <!-- Orange starting dot -->
+  <circle cx="415" cy="245" r="18" fill="#FF5E00"/>
+
+  <!-- Center Isometric Delivery Box -->
+  <!-- Left Side Face -->
+  <polygon points="170,210 250,255 250,335 170,285" fill="#00223B"/>
+  <!-- Right Side Face -->
+  <polygon points="250,255 330,210 330,285 250,335" fill="#00182B"/>
+  <!-- Top Face -->
+  <polygon points="250,165 330,210 250,255 170,210" fill="#002E4E"/>
+
+  <!-- Orange Packaging Tape on Top Face -->
+  <polygon points="280,182 300,193 220,238 200,227" fill="#FF5E00"/>
+
+  <!-- Orange Packaging Tape on Front Left Overlap -->
+  <polygon points="200,227 220,238 220,260 200,249" fill="#FF5E00"/>
+  <polygon points="200,249 210,255 220,249 220,260 200,260" fill="#FF5E00"/>
+
+  <!-- Orange Center Vertical Seam Tape / Highlights -->
+  <line x1="250" y1="255" x2="250" y2="335" stroke="#FF5E00" stroke-width="6"/>
+  <line x1="250" y1="255" x2="330" y2="210" stroke="#FF5E00" stroke-width="4"/>
+  <line x1="170" y1="210" x2="250" y2="255" stroke="#003D66" stroke-width="3"/>
+</svg>
