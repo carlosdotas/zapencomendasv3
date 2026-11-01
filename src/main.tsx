@@ -7,17 +7,34 @@ import { initPWAUpdateService } from './services/pwaUpdateService';
 
 // Suprime alertas de conexão WebSocket do HMR e recupera automaticamente de falhas de carregamento de CSS/chunks
 if (typeof window !== 'undefined') {
-  window.addEventListener('error', (e) => {
-    if (e?.message && typeof e.message === 'string' && e.message.includes('WebSocket')) {
-      e.stopImmediatePropagation();
-    }
-  });
-  window.addEventListener('unhandledrejection', (e) => {
-    const reasonStr = String(e?.reason?.message || e?.reason || '');
-    if (reasonStr.includes('WebSocket')) {
-      e.stopImmediatePropagation();
-    }
-  });
+  const isViteHmrError = (str: string) => {
+    const s = (str || '').toLowerCase();
+    return s.includes('websocket') || s.includes('[vite]') || s.includes('vite-hmr');
+  };
+
+  window.addEventListener(
+    'error',
+    (e) => {
+      const msg = (e?.message || '') + ' ' + (e?.error?.message || String(e?.error || '')) + ' ' + (e?.filename || '');
+      if (isViteHmrError(msg)) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    },
+    true
+  );
+
+  window.addEventListener(
+    'unhandledrejection',
+    (e) => {
+      const reasonStr = String(e?.reason?.message || e?.reason || '');
+      if (isViteHmrError(reasonStr)) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+      }
+    },
+    true
+  );
 
   // Se o navegador ou WebView falhar ao carregar um chunk ou folha de estilos desatualizada, recarrega para sincronizar
   window.addEventListener('vite:preloadError', () => {
