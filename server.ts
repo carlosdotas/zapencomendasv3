@@ -5,11 +5,12 @@ import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { initializeApp as initFirebaseServerApp, getApps as getServerApps, getApp as getServerApp } from 'firebase/app';
-import { getFirestore as getServerFirestore, doc as serverDoc, setDoc as serverSetDoc } from 'firebase/firestore';
+import { getFirestore as getServerFirestore, doc as serverDoc, getDoc as serverGetDoc, setDoc as serverSetDoc, deleteDoc as serverDeleteDoc } from 'firebase/firestore';
 import { sanitizeForFirestore } from './src/services/firestoreUtils';
 
 const serverFirebaseConfig = {
@@ -627,6 +628,14 @@ const googlePlacesCache = new Map<string, GoogleCacheItem<any>>();
 const googleReverseCache = new Map<string, GoogleCacheItem<any>>();
 const googleLinkCache = new Map<string, GoogleCacheItem<any>>();
 const googleDirectionsCache = new Map<string, GoogleCacheItem<any>>();
+const googleCacheMaps = {
+  places: googlePlacesCache,
+  reverse: googleReverseCache,
+  links: googleLinkCache,
+  directions: googleDirectionsCache
+};
+type GoogleCacheType = keyof typeof googleCacheMaps;
+const googleCacheKeysInFirestore = new Set<string>();
 
 // Carrega cache existente do disco se houver
 try {
@@ -669,6 +678,86 @@ function persistGoogleCache() {
       console.warn('[Google API Cache] Erro ao gravar google-api-cache.json:', err);
     }
   }, 2000);
+}
+
+function getGoogleCacheDocumentId(type: GoogleCacheType, key: string): string {
+  const hash = createHash('sha256').update(key).digest('hex');
+  return `${type}_${hash}`;
+}
+
+function isFreshGoogleCacheItem(item?: GoogleCacheItem<any>): item is GoogleCacheItem<any> {
+  return Boolean(item && Number.isFinite(item.timestamp) && Date.now() - item.timestamp < CACHE_TTL_MS);
+}
+
+function createGoogleCacheDocument(type: GoogleCacheType, key: string, item: GoogleCacheItem<any>) {
+  return sanitizeForFirestore({
+    type,
+    cacheKey: key,
+    timestamp: item.timestamp,
+    expiresAt: item.timestamp + CACHE_TTL_MS,
+    data: item.data
+  });
+}
+
+async function getGoogleCacheItem(type: GoogleCacheType, key: string): Promise<GoogleCacheItem<any> | undefined> {
+  const cache = googleCacheMaps[type];
+  const documentId = getGoogleCacheDocumentId(type, key);
+  const localItem = cache.get(key);
+
+  if (googleCacheKeysInFirestore.has(documentId)) {
+    return isFreshGoogleCacheItem(localItem) ? localItem : undefined;
+  }
+
+  const cacheRef = serverDoc(serverFirestore, 'google_api_cache', documentId);
+  try {
+    const snapshot = await serverGetDoc(cacheRef);
+    if (snapshot.exists()) {
+      const stored = snapshot.data();
+      const firebaseItem: GoogleCacheItem<any> = {
+        timestamp: Number(stored.timestamp),
+        data: stored.data
+      };
+
+      if (stored.type === type && stored.cacheKey === key && isFreshGoogleCacheItem(firebaseItem)) {
+        cache.set(key, firebaseItem);
+        googleCacheKeysInFirestore.add(documentId);
+        return firebaseItem;
+      }
+
+      await serverDeleteDoc(cacheRef).catch(() => {});
+    }
+
+    if (isFreshGoogleCacheItem(localItem)) {
+      await serverSetDoc(cacheRef, createGoogleCacheDocument(type, key, localItem), { merge: true });
+      googleCacheKeysInFirestore.add(documentId);
+      return localItem;
+    }
+
+    googleCacheKeysInFirestore.add(documentId);
+  } catch (error: any) {
+    if (isFreshGoogleCacheItem(localItem)) return localItem;
+    console.warn(`[Google API Cache] Falha ao consultar Firestore (${type}):`, error.message);
+  }
+
+  return undefined;
+}
+
+function storeGoogleCacheItem(type: GoogleCacheType, key: string, item: GoogleCacheItem<any>): void {
+  const cache = googleCacheMaps[type];
+  const documentId = getGoogleCacheDocumentId(type, key);
+  cache.set(key, item);
+
+  serverSetDoc(
+    serverDoc(serverFirestore, 'google_api_cache', documentId),
+    createGoogleCacheDocument(type, key, item),
+    { merge: true }
+  ).then(() => {
+    googleCacheKeysInFirestore.add(documentId);
+  }).catch((error: any) => {
+    googleCacheKeysInFirestore.delete(documentId);
+    console.warn(`[Google API Cache] Falha ao salvar no Firestore (${type}):`, error.message);
+    persistGoogleCache();
+  });
 }
 
 function normalizeCacheKey(key: string): string {
@@ -714,15 +803,79 @@ function saveLocalLocais() {
 }
 
 async function syncLocalToFirebase(local: any) {
-  if (!local || !local.id) return;
+  if (!local || !local.id) return false;
   try {
     const docId = String(local.id);
     const clean = sanitizeForFirestore(local);
     await serverSetDoc(serverDoc(serverFirestore, 'places', docId), clean, { merge: true });
     console.log(`[Firestore Server] Local #${docId} (${clean.name || ''}) sincronizado no Firestore (default).`);
+    return true;
   } catch (err: any) {
     console.warn(`[Firestore Server] Erro ao sincronizar local #${local.id}:`, err.message);
+    return false;
   }
+}
+
+const googlePlacesSyncedToFirestore = new Set<string>();
+
+async function persistGooglePlacesToFirebase(items: any[]): Promise<void> {
+  if (!Array.isArray(items) || items.length === 0) return;
+
+  let localCacheChanged = false;
+  const placesToSync = new Map<string, any>();
+
+  for (const item of items) {
+    if (!item || !item.name || String(item.id || '').startsWith('fb-')) continue;
+    const lat = Number(item.coordinates?.lat);
+    const lng = Number(item.coordinates?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) continue;
+
+    const rawId = String(item.id || '');
+    const matchedId = rawId.match(/^g(?:place|code)-(.+)$/i)?.[1];
+    const placeId = String(item.place_id || matchedId || '').trim();
+    const nameKey = normalizeCacheKey(String(item.name));
+    const latKey = Math.round(lat * 100000);
+    const lngKey = Math.round(lng * 100000);
+    const nameSlug = nameKey.replace(/\s+/g, '-').slice(0, 32) || 'local';
+    const stableId = /^g(?:place|code)-[\w-]+$/i.test(rawId)
+      ? rawId
+      : `google-${placeId ? placeId.replace(/[^\w-]/g, '_') : `${latKey}_${lngKey}_${nameSlug}`}`;
+
+    let local = localLocaisCache.find((candidate: any) =>
+      String(candidate.id) === stableId ||
+      (placeId && String(candidate.place_id || '') === placeId) ||
+      (normalizeCacheKey(String(candidate.name || '')) === nameKey &&
+        Math.abs(Number(candidate.lat) - lat) < 0.00015 &&
+        Math.abs(Number(candidate.lng) - lng) < 0.00015)
+    );
+
+    if (!local) {
+      local = {
+        id: stableId,
+        name: String(item.name),
+        endereco: String(item.address || item.description || ''),
+        cidade: String(item.destinationCity || 'Goiânia'),
+        lat,
+        lng,
+        place_id: placeId || undefined,
+        created_at: new Date().toISOString()
+      };
+      localLocaisCache.push(local);
+      localCacheChanged = true;
+    } else if (placeId && !local.place_id) {
+      local.place_id = placeId;
+      localCacheChanged = true;
+    }
+
+    const localId = String(local.id);
+    if (!googlePlacesSyncedToFirestore.has(localId)) placesToSync.set(localId, local);
+  }
+
+  await Promise.all(Array.from(placesToSync, async ([localId, local]) => {
+    if (await syncLocalToFirebase(local)) googlePlacesSyncedToFirestore.add(localId);
+  }));
+
+  if (localCacheChanged) saveLocalLocais();
 }
 
 function searchLocaisInMemory(queryStr: string, limit: number = 8): any[] {
@@ -793,8 +946,9 @@ app.get('/api/google/places', async (req: Request, res: Response) => {
 
   // 0. Verifica se o resultado já está em cache de requisição
   const cacheKey = normalizeCacheKey(query);
-  const cached = googlePlacesCache.get(cacheKey);
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+  const cached = await getGoogleCacheItem('places', cacheKey);
+  if (cached) {
+    await persistGooglePlacesToFirebase(cached.data);
     console.log(`[Google API Cache HIT] Places: "${query}" (economizou chamada de API do Google)`);
     res.setHeader('X-Cache', 'HIT');
     res.json({ success: true, results: cached.data, fromCache: true });
@@ -805,8 +959,7 @@ app.get('/api/google/places', async (req: Request, res: Response) => {
   const inMemoryMatches = searchLocaisInMemory(query, 8);
   if (inMemoryMatches.length > 0) {
     console.log(`[Firebase Places HIT] Places: "${query}" (${inMemoryMatches.length} itens encontrados no Firebase datastore)`);
-    googlePlacesCache.set(cacheKey, { timestamp: Date.now(), data: inMemoryMatches });
-    persistGoogleCache();
+    storeGoogleCacheItem('places', cacheKey, { timestamp: Date.now(), data: inMemoryMatches });
     res.setHeader('X-Cache', 'HIT');
     res.json({ success: true, results: inMemoryMatches, fromFirebase: true });
     return;
@@ -871,28 +1024,9 @@ app.get('/api/google/places', async (req: Request, res: Response) => {
 
     // Salva em cache para economizar requisições futuras
     if (items.length > 0) {
-      googlePlacesCache.set(cacheKey, { timestamp: Date.now(), data: items });
-      persistGoogleCache();
+      storeGoogleCacheItem('places', cacheKey, { timestamp: Date.now(), data: items });
       console.log(`[Google API Cache STORED] Places: "${query}" (${items.length} itens salvos no cache)`);
-
-      // SALVA NO DATASTORE DO FIREBASE PARA ECONOMIZAR TODAS AS PRÓXIMAS BUSCAS
-      for (const item of items) {
-        const alreadyInLocal = localLocaisCache.some(p => p.name.toLowerCase() === item.name.toLowerCase());
-        if (!alreadyInLocal) {
-          const newLocal = {
-            id: `gloc-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-            name: item.name,
-            endereco: item.address,
-            cidade: 'Goiânia',
-            lat: item.coordinates.lat,
-            lng: item.coordinates.lng,
-            created_at: new Date().toISOString()
-          };
-          localLocaisCache.push(newLocal);
-          syncLocalToFirebase(newLocal);
-        }
-      }
-      saveLocalLocais();
+      await persistGooglePlacesToFirebase(items);
     }
 
     res.setHeader('X-Cache', 'MISS');
@@ -913,8 +1047,8 @@ app.get('/api/google/reverse', async (req: Request, res: Response) => {
 
   // Verifica cache de reverse geocoding
   const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
-  const cached = googleReverseCache.get(cacheKey);
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+  const cached = await getGoogleCacheItem('reverse', cacheKey);
+  if (cached) {
     console.log(`[Google API Cache HIT] Reverse: ${cacheKey} (economizou chamada de API do Google)`);
     res.setHeader('X-Cache', 'HIT');
     res.json({ success: true, data: cached.data, fromCache: true });
@@ -956,8 +1090,7 @@ app.get('/api/google/reverse', async (req: Request, res: Response) => {
       imageUrl: closestLocal.icon,
       fromFirebase: true
     };
-    googleReverseCache.set(cacheKey, { timestamp: Date.now(), data: responseData });
-    persistGoogleCache();
+    storeGoogleCacheItem('reverse', cacheKey, { timestamp: Date.now(), data: responseData });
     res.setHeader('X-Cache', 'HIT');
     res.json({ success: true, data: responseData, fromFirebase: true });
     return;
@@ -1035,8 +1168,7 @@ app.get('/api/google/reverse', async (req: Request, res: Response) => {
         imageUrl: poiData?.imageUrl
       };
 
-      googleReverseCache.set(cacheKey, { timestamp: Date.now(), data: responseData });
-      persistGoogleCache();
+      storeGoogleCacheItem('reverse', cacheKey, { timestamp: Date.now(), data: responseData });
 
       res.setHeader('X-Cache', 'MISS');
       res.json({
@@ -1058,8 +1190,7 @@ app.get('/api/google/reverse', async (req: Request, res: Response) => {
         openNow: poiData.openNow,
         imageUrl: poiData.imageUrl
       };
-      googleReverseCache.set(cacheKey, { timestamp: Date.now(), data: responseData });
-      persistGoogleCache();
+      storeGoogleCacheItem('reverse', cacheKey, { timestamp: Date.now(), data: responseData });
       res.json({ success: true, data: responseData });
       return;
     }
@@ -1084,8 +1215,8 @@ app.get('/api/google/directions', async (req: Request, res: Response) => {
   }
 
   const cacheKey = `${origin}->${destination}-${mode}`;
-  const cached = googleDirectionsCache.get(cacheKey);
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+  const cached = await getGoogleCacheItem('directions', cacheKey);
+  if (cached) {
     console.log(`[Google API Cache HIT] Directions: ${cacheKey} (economizou chamada de API do Google)`);
     res.setHeader('X-Cache', 'HIT');
     res.json({ success: true, data: cached.data });
@@ -1112,8 +1243,7 @@ app.get('/api/google/directions', async (req: Request, res: Response) => {
         summary: route.summary || ''
       };
 
-      googleDirectionsCache.set(cacheKey, { timestamp: Date.now(), data: responsePayload });
-      persistGoogleCache();
+      storeGoogleCacheItem('directions', cacheKey, { timestamp: Date.now(), data: responsePayload });
       console.log(`[Google API Cache STORED] Directions: ${cacheKey} (${responsePayload.distanceKm} km, ${responsePayload.durationMin} min)`);
 
       res.setHeader('X-Cache', 'MISS');
@@ -1151,8 +1281,9 @@ app.all('/api/google/resolve-link', async (req: Request, res: Response) => {
 
   // Verifica cache de links resolvidos
   const cacheKey = `${rawInput.trim()}_${customerName || 'nocust'}`;
-  const cached = googleLinkCache.get(cacheKey) || googleLinkCache.get(rawInput.trim());
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+  const cached = (await getGoogleCacheItem('links', cacheKey)) ||
+    (await getGoogleCacheItem('links', rawInput.trim()));
+  if (cached) {
     console.log(`[Google API Cache HIT] Link: "${rawInput.trim()}" (economizou chamada de API do Google)`);
     res.setHeader('X-Cache', 'HIT');
     const dataToReturn = { ...cached.data };
@@ -1353,11 +1484,10 @@ app.all('/api/google/resolve-link', async (req: Request, res: Response) => {
       resolvedUrl
     };
 
-    googleLinkCache.set(cacheKey, { timestamp: Date.now(), data: resultPayload });
+    storeGoogleCacheItem('links', cacheKey, { timestamp: Date.now(), data: resultPayload });
     if (resolvedUrl && resolvedUrl !== cacheKey) {
-      googleLinkCache.set(resolvedUrl.trim(), { timestamp: Date.now(), data: resultPayload });
+      storeGoogleCacheItem('links', resolvedUrl.trim(), { timestamp: Date.now(), data: resultPayload });
     }
-    persistGoogleCache();
     console.log(`[Google API Cache STORED] Link: "${rawInput}" -> ${resultPayload.name} (${lat}, ${lng})`);
 
     res.setHeader('X-Cache', 'MISS');
