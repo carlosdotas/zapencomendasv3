@@ -7,12 +7,7 @@ import {
   MapPin, 
   Briefcase, 
   ShieldCheck, 
-  Award, 
-  Package, 
-  Star, 
-  Clock, 
   Settings, 
-  Bookmark, 
   Save, 
   CheckCircle2, 
   Truck, 
@@ -37,65 +32,7 @@ import { api, uploadProfilePhoto } from '../../services/api';
 import { formatPhotoUrl } from '../../services/apiAdapters';
 import { useBackButton } from '../../hooks/useBackButton';
 
-type TabType = 'overview' | 'saved' | 'deliveries' | 'settings';
-
-interface DeliveryHistoryItem {
-  id: string;
-  code: string;
-  destination: string;
-  recipient: string;
-  date: string;
-  status: 'entregue' | 'em_rota' | 'coletado';
-  value: string;
-}
-
-const MOCK_DELIVERIES: DeliveryHistoryItem[] = [
-  {
-    id: 'del-1',
-    code: 'EZ-8942-BR',
-    destination: 'Av. Dep. Jamel Cecílio, 3300 - Jd. Goiás, Goiânia',
-    recipient: 'Mariana Lima',
-    date: 'Hoje, 11:35',
-    status: 'entregue',
-    value: 'R$ 28,50'
-  },
-  {
-    id: 'del-2',
-    code: 'EZ-8941-BR',
-    destination: 'Av. T-10, 1300 - Setor Bueno, Goiânia',
-    recipient: 'Carlos Mendes',
-    date: 'Hoje, 10:10',
-    status: 'entregue',
-    value: 'R$ 34,00'
-  },
-  {
-    id: 'del-3',
-    code: 'EZ-8940-BR',
-    destination: 'Av. Rio Verde, Qd 102 - Vila Brasília, Aparecida de Goiânia',
-    recipient: 'Tech Distribuidora Goiás Ltda',
-    date: 'Hoje, 09:15',
-    status: 'entregue',
-    value: 'R$ 42,00'
-  },
-  {
-    id: 'del-4',
-    code: 'EZ-8939-BR',
-    destination: 'Av. Dom Emanuel - Centro, Senador Canedo',
-    recipient: 'Juliana Rocha',
-    date: 'Ontem, 16:40',
-    status: 'entregue',
-    value: 'R$ 35,00'
-  },
-  {
-    id: 'del-5',
-    code: 'EZ-8938-BR',
-    destination: 'Alameda Ricardo Paranhos - Setor Marista, Goiânia',
-    recipient: 'Lucas Silveira',
-    date: 'Ontem, 14:20',
-    status: 'entregue',
-    value: 'R$ 31,50'
-  }
-];
+type TabType = 'overview' | 'settings';
 
 export const UserProfilePage: React.FC = () => {
   const { 
@@ -103,10 +40,6 @@ export const UserProfilePage: React.FC = () => {
     updateUser, 
     isProfileOpen, 
     setIsProfileOpen, 
-    savedPlaces, 
-    flyToLocation, 
-    setSelectedPlace,
-    toggleSavePlace,
     setIsLoginModalOpen,
     logout,
     currentRole,
@@ -254,12 +187,6 @@ export const UserProfilePage: React.FC = () => {
     setIsEditing(false);
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 3000);
-  };
-
-  const handleGoToMapPlace = (place: any) => {
-    setSelectedPlace(place);
-    flyToLocation(place.coordinates, 16);
-    setIsProfileOpen(false);
   };
 
   return (
@@ -440,40 +367,6 @@ export const UserProfilePage: React.FC = () => {
             </div>
           </div>
 
-          {/* Cards de Métricas e Desempenho */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4 mt-8">
-            <div className="bg-white/10 backdrop-blur-md border border-white/15 rounded-2xl p-3.5 sm:p-4 text-center">
-              <div className="w-8 h-8 mx-auto mb-1.5 rounded-full bg-[#FF5E00]/20 text-[#FF5E00] flex items-center justify-center">
-                <Truck className="w-4 h-4 text-orange-400" />
-              </div>
-              <p className="text-xl sm:text-2xl font-black text-white">{user.totalDeliveries || 154}</p>
-              <p className="text-[11px] font-semibold text-white/70 uppercase tracking-wider">Entregas Concluídas</p>
-            </div>
-
-            <div className="bg-white/10 backdrop-blur-md border border-white/15 rounded-2xl p-3.5 sm:p-4 text-center">
-              <div className="w-8 h-8 mx-auto mb-1.5 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
-                <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
-              </div>
-              <p className="text-xl sm:text-2xl font-black text-white">{user.rating || 4.9} <span className="text-xs font-normal text-white/60">/ 5.0</span></p>
-              <p className="text-[11px] font-semibold text-white/70 uppercase tracking-wider">Avaliação Média</p>
-            </div>
-
-            <div className="bg-white/10 backdrop-blur-md border border-white/15 rounded-2xl p-3.5 sm:p-4 text-center">
-              <div className="w-8 h-8 mx-auto mb-1.5 rounded-full bg-blue-500/20 text-blue-300 flex items-center justify-center">
-                <Bookmark className="w-4 h-4 text-blue-400" />
-              </div>
-              <p className="text-xl sm:text-2xl font-black text-white">{savedPlaces.length}</p>
-              <p className="text-[11px] font-semibold text-white/70 uppercase tracking-wider">Locais Favoritos</p>
-            </div>
-
-            <div className="bg-white/10 backdrop-blur-md border border-white/15 rounded-2xl p-3.5 sm:p-4 text-center">
-              <div className="w-8 h-8 mx-auto mb-1.5 rounded-full bg-purple-500/20 text-purple-300 flex items-center justify-center">
-                <Award className="w-4 h-4 text-purple-400" />
-              </div>
-              <p className="text-xl sm:text-2xl font-black text-white">99.4%</p>
-              <p className="text-[11px] font-semibold text-white/70 uppercase tracking-wider">Taxa de Sucesso</p>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -491,30 +384,6 @@ export const UserProfilePage: React.FC = () => {
             >
               <User className="w-4 h-4" />
               <span>Dados Cadastrais</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('saved')}
-              className={`py-3 px-3 sm:px-4 text-xs sm:text-sm font-bold border-b-3 transition-colors shrink-0 flex items-center gap-2 ${
-                activeTab === 'saved'
-                  ? 'border-[#0B5187] text-[#0B5187]'
-                  : 'border-transparent text-slate-500 hover:text-[#0B5187]'
-              }`}
-            >
-              <Bookmark className="w-4 h-4" />
-              <span>Locais Salvos ({savedPlaces.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('deliveries')}
-              className={`py-3 px-3 sm:px-4 text-xs sm:text-sm font-bold border-b-3 transition-colors shrink-0 flex items-center gap-2 ${
-                activeTab === 'deliveries'
-                  ? 'border-[#0B5187] text-[#0B5187]'
-                  : 'border-transparent text-slate-500 hover:text-[#0B5187]'
-              }`}
-            >
-              <Package className="w-4 h-4" />
-              <span>Histórico de Entregas</span>
             </button>
 
             <button
@@ -972,131 +841,7 @@ export const UserProfilePage: React.FC = () => {
           </div>
         )}
 
-        {/* ABA 2: LOCAIS SALVOS */}
-        {activeTab === 'saved' && (
-          <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200">
-            <div className="flex items-center justify-between pb-4 mb-6 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-extrabold text-[#0B5187]">Seus Lugares Salvos ({savedPlaces.length})</h3>
-                <p className="text-xs text-slate-500">Acesse com rapidez pontos frequentes de coleta, entrega ou favoritos.</p>
-              </div>
-            </div>
-
-            {savedPlaces.length === 0 ? (
-              <div className="text-center py-12 text-slate-400">
-                <Bookmark className="w-12 h-12 mx-auto mb-3 text-slate-300" />
-                <p className="text-sm font-bold text-slate-600">Nenhum local salvo ainda</p>
-                <p className="text-xs mt-1">Toque no mapa ou pesquise um endereço para adicioná-lo aos favoritos.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {savedPlaces.map((place) => (
-                  <div
-                    key={place.id}
-                    className="p-4 rounded-2xl border border-slate-200/80 hover:border-[#0B5187]/40 bg-slate-50/50 hover:bg-white transition-all flex flex-col justify-between shadow-2xs group"
-                  >
-                    <div>
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-xl bg-[#0B5187] text-white flex items-center justify-center shrink-0">
-                            <MapPin className="w-4 h-4 text-orange-400" />
-                          </div>
-                          <div>
-                            <h4 className="text-sm font-bold text-[#0B5187] group-hover:text-[#FF5E00] transition-colors">
-                              {place.name}
-                            </h4>
-                            <span className="text-[10px] uppercase font-bold text-slate-400">
-                              {place.category || 'Ponto de Interesse'}
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          onClick={() => toggleSavePlace(place)}
-                          className="text-xs text-slate-400 hover:text-rose-600 p-1"
-                          title="Remover dos favoritos"
-                        >
-                          <Bookmark className="w-4 h-4 fill-orange-500 text-orange-500" />
-                        </button>
-                      </div>
-                      <p className="text-xs text-slate-600 line-clamp-2 mt-1">
-                        {place.address}
-                      </p>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                      <span className="text-[10px] text-slate-400">
-                        {place.coordinates.lat.toFixed(4)}, {place.coordinates.lng.toFixed(4)}
-                      </span>
-                      <button
-                        onClick={() => handleGoToMapPlace(place)}
-                        className="px-3 py-1.5 rounded-lg bg-[#0B5187] hover:bg-[#083D66] text-white text-xs font-bold flex items-center gap-1.5 transition-colors"
-                      >
-                        <span>Ver no Mapa</span>
-                        <ChevronRight className="w-3.5 h-3.5 text-orange-400" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ABA 3: HISTÓRICO DE ENTREGAS */}
-        {activeTab === 'deliveries' && (
-          <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200">
-            <div className="flex items-center justify-between pb-4 mb-6 border-b border-slate-100">
-              <div>
-                <h3 className="text-base font-extrabold text-[#0B5187]">Histórico Recente de Entregas & Coletas</h3>
-                <p className="text-xs text-slate-500">Últimos pacotes e entregas finalizadas na rede EncomendasZap.</p>
-              </div>
-              <span className="text-xs font-bold text-[#0B5187] bg-[#EAF2F8] px-3 py-1 rounded-full">
-                5 Registros
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-                    <th className="pb-3 px-2">Código</th>
-                    <th className="pb-3 px-2">Destinatário & Destino</th>
-                    <th className="pb-3 px-2">Horário</th>
-                    <th className="pb-3 px-2">Status</th>
-                    <th className="pb-3 px-2 text-right">Valor</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {MOCK_DELIVERIES.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-3.5 px-2 font-mono font-bold text-[#0B5187]">
-                        {item.code}
-                      </td>
-                      <td className="py-3.5 px-2">
-                        <p className="font-bold text-slate-900">{item.recipient}</p>
-                        <p className="text-[11px] text-slate-500 truncate max-w-xs">{item.destination}</p>
-                      </td>
-                      <td className="py-3.5 px-2 text-slate-500 font-medium">
-                        {item.date}
-                      </td>
-                      <td className="py-3.5 px-2">
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">
-                          <CheckCircle2 className="w-3 h-3" />
-                          Entregue
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-2 text-right font-extrabold text-[#0B5187]">
-                        {item.value}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* ABA 4: PREFERÊNCIAS & SEGURANÇA */}
+        {/* ABA 2: PREFERÊNCIAS & SEGURANÇA */}
         {activeTab === 'settings' && (
           <div className="bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 space-y-6">
             <div className="border-b border-slate-100 pb-4">
