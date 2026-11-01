@@ -20,37 +20,128 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
     <script>
-      // Suprime avisos/erros de WebSocket do Vite HMR desativado no ambiente de preview
-      window.addEventListener('error', function(event) {
-        if (event.message && (
-          event.message.includes('WebSocket') || 
-          event.message.includes('ws://') || 
-          event.message.includes('wss://') || 
-          event.message.includes('[vite]')
-        )) {
-          event.stopImmediatePropagation();
-          event.preventDefault();
-        }
-      }, true);
-      window.addEventListener('unhandledrejection', function(event) {
-        if (event.reason && (
-          String(event.reason).includes('WebSocket') || 
-          String(event.reason).includes('vite')
-        )) {
-          event.preventDefault();
-        }
-      });
       (function() {
-        var origConsoleError = console.error;
-        console.error = function() {
-          var firstArg = arguments[0];
-          if (typeof firstArg === 'string' && (firstArg.includes('[vite]') || firstArg.includes('WebSocket'))) {
-            return;
+        // Intercepta WebSocket para conexões internas de HMR do Vite em ambiente de preview
+        var NativeWebSocket = window.WebSocket;
+        if (NativeWebSocket) {
+          function SafeWebSocket(url, protocols) {
+            var isViteHmr = false;
+            if (protocols === 'vite-hmr') isViteHmr = true;
+            if (Array.isArray(protocols) && protocols.indexOf('vite-hmr') !== -1) isViteHmr = true;
+            if (typeof url === 'string' && (url.indexOf('vite-hmr') !== -1 || url.indexOf('/@vite/') !== -1)) isViteHmr = true;
+
+            if (!isViteHmr) {
+              return new NativeWebSocket(url, protocols);
+            }
+
+            var listeners = {};
+            var self = {
+              url: String(url),
+              protocol: 'vite-hmr',
+              readyState: 0,
+              bufferedAmount: 0,
+              extensions: '',
+              binaryType: 'blob',
+              onopen: null,
+              onmessage: null,
+              onerror: null,
+              onclose: null,
+              addEventListener: function(type, listener) {
+                if (!listeners[type]) listeners[type] = [];
+                listeners[type].push(listener);
+              },
+              removeEventListener: function(type, listener) {
+                if (!listeners[type]) return;
+                var idx = listeners[type].indexOf(listener);
+                if (idx !== -1) listeners[type].splice(idx, 1);
+              },
+              dispatchEvent: function(event) {
+                var list = listeners[event.type];
+                if (list) {
+                  for (var i = 0; i < list.length; i++) {
+                    try { list[i].call(self, event); } catch (e) {}
+                  }
+                }
+                return true;
+              },
+              send: function() {},
+              close: function(code, reason) {
+                self.readyState = 3;
+                var ev = { type: 'close', wasClean: true, code: code || 1000, reason: reason || '' };
+                if (typeof self.onclose === 'function') self.onclose(ev);
+                self.dispatchEvent(ev);
+              }
+            };
+
+            setTimeout(function() {
+              self.readyState = 1;
+              var openEv = { type: 'open' };
+              if (typeof self.onopen === 'function') self.onopen(openEv);
+              self.dispatchEvent(openEv);
+
+              setTimeout(function() {
+                var msgEv = {
+                  type: 'message',
+                  data: JSON.stringify({ type: 'connected' })
+                };
+                if (typeof self.onmessage === 'function') self.onmessage(msgEv);
+                self.dispatchEvent(msgEv);
+              }, 40);
+            }, 30);
+
+            return self;
           }
-          if (firstArg instanceof Error && (firstArg.message.includes('WebSocket') || firstArg.message.includes('[vite]'))) {
-            return;
+
+          SafeWebSocket.prototype = NativeWebSocket.prototype;
+          SafeWebSocket.CONNECTING = 0;
+          SafeWebSocket.OPEN = 1;
+          SafeWebSocket.CLOSING = 2;
+          SafeWebSocket.CLOSED = 3;
+          window.WebSocket = SafeWebSocket;
+        }
+
+        function isViteHmrError(str) {
+          if (!str) return false;
+          var s = String(str).toLowerCase();
+          return s.indexOf('websocket') !== -1 || s.indexOf('[vite]') !== -1 || s.indexOf('vite-hmr') !== -1;
+        }
+
+        // Suprime erros e rejeições não tratadas de WebSocket do Vite HMR
+        window.addEventListener('error', function(event) {
+          var text = (event.message || '') + ' ' + (event.error ? (event.error.message || String(event.error)) : '') + ' ' + (event.filename || '');
+          if (isViteHmrError(text)) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return true;
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var text = event.reason ? (event.reason.message || String(event.reason)) : '';
+          if (isViteHmrError(text)) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return true;
+          }
+        }, true);
+
+        var origConsoleError = console.error;
+        var origConsoleWarn = console.warn;
+        console.error = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            var arg = arguments[i];
+            var str = arg instanceof Error ? (arg.message || String(arg)) : String(arg || '');
+            if (isViteHmrError(str)) return;
           }
           origConsoleError.apply(console, arguments);
+        };
+        console.warn = function() {
+          for (var i = 0; i < arguments.length; i++) {
+            var arg = arguments[i];
+            var str = arg instanceof Error ? (arg.message || String(arg)) : String(arg || '');
+            if (isViteHmrError(str)) return;
+          }
+          origConsoleWarn.apply(console, arguments);
         };
       })();
     </script>

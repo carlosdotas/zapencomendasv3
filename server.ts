@@ -2515,6 +2515,7 @@ app.all('/api/*', handleProxy);
 
 async function startServer() {
   if (!isProd) {
+    process.env.DISABLE_HMR = 'true';
     // Modo Desenvolvimento: monta os middlewares do Vite com HMR desabilitado (conforme ambiente de proxy)
     const { createServer } = await import('vite');
     const vite = await createServer({
