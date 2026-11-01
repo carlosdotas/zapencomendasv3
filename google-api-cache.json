@@ -8341,23 +8341,6 @@
         "openNow": true,
         "imageUrl": "https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=AV-0GLdNQA0RAJxkueH0lS2TV1GN6rNbcg3GDXr82ZBCoY5hksgbq_b6n8T1zdpEymGjy938iKZhBk5dDxuH4Ix_ihagfIifHZBrPyfBrryF0PqaLtlb_LJ0wdZMq7tAKHEJvZZNrzcZL4bZ4XuqsJ3fQBgLfMUYl6Y0gn_cUeMKEnq6nmHFJ9ijUCpHGp2DAY0uSmK6-ZkJqvZj_RxCQeS74wO7LompSYvIu_MVWZsZc_3c8VRbMmbNbB13RwI3jhksY8myYA--xhDEIfpG4axmwmDx8juToPLYlsDpPo_q4dT6MUlX6sUPB9pQN4SH2lhMROYTc1hzeswzqYPtgYrhRm1_vrXSuB6df188VcnZLu1VukMPwg6OwcMfXQxCtVHdAuUwb1EzGu4yR9eFjpJ_1Ovf2kAkTzetwOhnSeKzuGtGaNzXbx1nOb7Zl1OC9CBtCPFa0PSeWhGC1iDrlB7uoNNOA2ltJAjUVkA0-QwxntPiYvtHkEwIL13iRL2kRxcv0jrocZPMCLfHeVgeuGVVRt3k6c9W7PCy30sl4_Ms5BBKEO_4imiRMvoOppJoHjNIMpe7zdjTOTF10yF-YBLTD1T9EuF-bFFeH1oMj0Vb5ADmk_UxHuX0lQ&key=AIzaSyATwFNGYw-Y0TGH3SrjwQelQD4EorVjlg4"
       }
-    },
-    "-16.6403,-49.2618": {
-      "timestamp": 1793568722180,
-      "data": {
-        "formatted_address": "Avenida Doutor José Neto Carneiro, 1123 - QD 37 LT 99 CASA 1/2 - Crimeia Leste, Goiânia",
-        "name": "Central de Negócios B2B",
-        "city": "Goiânia - Goiás",
-        "neighborhood": "Crimeia Leste",
-        "postal_code": "74660-205",
-        "coordinates": {
-          "lat": -16.64034965263812,
-          "lng": -49.261815547943115
-        },
-        "category": "Ponto Comercial",
-        "openNow": false,
-        "imageUrl": "https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=AV-0GLeqCxJ97_yCrJOOWkojhiy2DbDuA3JacKNcR6BTp-K15tQAO29K7wXkXfv_434l4Apw-vR8ZcpGYUDElD097iTW4r4WK8SB4QqgmvAC6LSecb20ebl5DhVuxRU1c2MX3Wv12hFgpH4uBqWBULTQ-jnoO2aOJbBoO47dbiR5nwDT1E3NbG-W88QME0Y34DgJJ0MgBtsp97pq9J_h1YD6O1HqcFq-9YIJQH_7B84zNoWstMVEK9elYLpr4zP6pF3SGOmo2K0xurhYsfY8YAXgEi7Ym2KyhLxAmu3k-ke8n_mda0c5MiPIg9h0CZqnXMEiwidW0aFvN16m10PcolBkqxnNerm9Afade35BeTXMcBtiJXyrsex86usBjTvkvJoNu_-h-glkSEHcAWuNivdJKK-j_hAQaDiqPP5YOgd9395O0ieQwkBa_NRltiYQroPbG8-Lbt4doXb9GiArMEx2XtL4deJVKCx_tfLDRAjQd5SIuZmsWvOmvmQMLHxAHBgD8sjDJEoVa22jGYFegT9RDqm3_3PYV9tu8QkVtWCI5yYyOmWQ9I4-3YTU_-K84_gNOyse-5U6P3mkqZpfStP5EV9bQTJWljcMqIMMkBoq-tavwnReo6DjsA&key=AIzaSyATwFNGYw-Y0TGH3SrjwQelQD4EorVjlg4"
-      }
     }
   },
   "links": {

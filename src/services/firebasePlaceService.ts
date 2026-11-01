@@ -478,33 +478,12 @@ class FirebasePlaceService {
     if (!place || !place.name || !place.coordinates) return;
     await this.init();
 
-    const rawId = String(place.id || '').replace(/^fb-/, '');
-    const stableProviderId = rawId.match(/^g(?:place|code)-[\w-]+$/i)?.[0];
-    const providerPlaceId = String((place as any).place_id || '').trim();
-    const nameSlug = place.name
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 40) || 'local';
-    const coordinateKey = `${Math.round(place.coordinates.lat * 100000)}-${Math.round(place.coordinates.lng * 100000)}`;
-    const targetId = rawId.startsWith('loc-')
-      ? rawId
-      : stableProviderId || (providerPlaceId
-        ? `gplace-${providerPlaceId.replace(/[^\w-]/g, '_')}`
-        : `google-${coordinateKey}-${nameSlug}`);
-
-    const existing = this.places.get(targetId) || Array.from(this.places.values()).find(candidate =>
-      (providerPlaceId && String((candidate as any).place_id || '') === providerPlaceId) ||
-      (candidate.name.toLowerCase() === place.name.toLowerCase() &&
-        Math.abs(Number(candidate.lat) - place.coordinates.lat) < 0.00015 &&
-        Math.abs(Number(candidate.lng) - place.coordinates.lng) < 0.00015)
-    );
+    const targetId = String(place.id).replace(/^fb-/, '');
+    const existing = this.places.get(targetId);
     if (existing) return; // Já está indexado
 
     const newLocal: BackendLocal = {
-      id: targetId,
+      id: targetId.startsWith('loc-') ? targetId : `loc-${Date.now()}`,
       name: place.name,
       endereco: place.address || place.description || '',
       cidade: place.destinationCity || 'Goiânia',
