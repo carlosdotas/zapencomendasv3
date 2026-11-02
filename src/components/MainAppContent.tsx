@@ -21,6 +21,7 @@ import { SetCustomerLocationModal } from './customer/SetCustomerLocationModal';
 import { CustomerSelectorDrawer } from './customer/CustomerSelectorDrawer';
 import { CustomerFormFullScreen } from './customer/CustomerFormFullScreen';
 import { OrdersListModal } from './order/OrdersListModal';
+import { FinancialModalFullScreen } from './financial/FinancialModalFullScreen';
 import { CalendarFilterModal } from './navigation/CalendarFilterModal';
 import { Customer, AgendaContact } from '../types/customer';
 import { Place } from '../types/map';
@@ -63,7 +64,10 @@ export const MainAppContent: React.FC = () => {
     isCalendarModalOpen,
     closeCalendarModal,
     isOrdersModalOpen,
-    closeOrdersModal
+    closeOrdersModal,
+    isFinancialModalOpen,
+    closeFinancialModal,
+    financialInitialTab
   } = useMapStore();
 
   const [isCustomerRegOpen, setIsCustomerRegOpen] = useState(false);
@@ -255,6 +259,15 @@ export const MainAppContent: React.FC = () => {
           <OrdersListModal
             isOpen={isOrdersModalOpen}
             onClose={closeOrdersModal}
+          />
+        )}
+
+        {/* Janela Completa da Área Financeira (Contas a Pagar e Contas a Receber em Tela Cheia) */}
+        {isFinancialModalOpen && (
+          <FinancialModalFullScreen
+            isOpen={isFinancialModalOpen}
+            onClose={closeFinancialModal}
+            initialTab={financialInitialTab}
           />
         )}
 

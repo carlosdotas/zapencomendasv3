@@ -7,6 +7,7 @@ import {
   ShieldCheck, 
   Users,
   Package,
+  DollarSign,
   LogOut,
   User,
   Sparkles,
@@ -25,6 +26,7 @@ export const SideMenuDrawer: React.FC = () => {
     setIsAdminUsersOpen,
     openCustomerList,
     openOrdersModal,
+    openFinancialModal,
     currentRole,
     user,
     logout
@@ -161,6 +163,22 @@ export const SideMenuDrawer: React.FC = () => {
                   </div>
                   <span className="text-[10px] bg-blue-100 text-[#0B5187] font-extrabold px-1.5 py-0.5 rounded">
                     Pedidos
+                  </span>
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setIsSidebarOpen(false);
+                    openFinancialModal();
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 rounded-lg transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <DollarSign className="w-4 h-4 text-emerald-600" />
+                    <span>Área Financeira</span>
+                  </div>
+                  <span className="text-[10px] bg-emerald-100 text-emerald-800 font-extrabold px-1.5 py-0.5 rounded">
+                    Financeiro
                   </span>
                 </button>
 

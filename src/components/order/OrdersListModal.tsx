@@ -6,6 +6,7 @@ import {
   Package,
   Clock,
   CheckCircle2,
+  DollarSign,
   Navigation,
   MessageCircle,
   Calendar,
@@ -138,7 +139,8 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
     deletePlace,
     currentRole,
     user,
-    claimPublicOrder
+    claimPublicOrder,
+    openFinancialModal
   } = useMapStore();
 
   const [searchTerm, setSearchTerm] = useState('');

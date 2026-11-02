@@ -5,6 +5,7 @@ import {
   Loader2, 
   Users,
   Package,
+  DollarSign,
   Maximize2,
   Calendar,
   Route
@@ -24,6 +25,7 @@ export const LocationButton: React.FC = () => {
     currentRole,
     openCustomerList,
     openOrdersModal,
+    openFinancialModal,
     viewAllMarkers,
     selectedPlace,
     dateRangeFilter,
@@ -117,6 +119,22 @@ export const LocationButton: React.FC = () => {
           {/* Tooltip flutuante indicativo ao passar o mouse */}
           <span className="absolute right-full mr-2.5 px-2.5 py-1 bg-slate-900/90 text-white text-[11px] font-black rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
             Pedidos ({allPlaces.length})
+          </span>
+        </button>
+
+        {/* 0.08. BOTÃO FLUTUANTE DE FINANCEIRO (ABAIXO DO BOTÃO DE PEDIDOS) */}
+        <button
+          type="button"
+          onClick={() => openFinancialModal()}
+          aria-label="Financeiro"
+          title="Financeiro (Contas a pagar e receber)"
+          className="group relative w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white shadow-xl hover:shadow-2xl border border-emerald-400/40 transition-all duration-200 flex items-center justify-center cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 shrink-0"
+        >
+          <DollarSign className="w-5 h-5 sm:w-5.5 sm:h-5.5 stroke-[2.4] group-hover:scale-110 transition-transform duration-200" />
+
+          {/* Tooltip flutuante indicativo ao passar o mouse */}
+          <span className="absolute right-full mr-2.5 px-2.5 py-1 bg-slate-900/90 text-white text-[11px] font-black rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
+            Financeiro
           </span>
         </button>
 

@@ -106,6 +106,11 @@ interface MapContextType {
   setIsOrdersModalOpen: (open: boolean) => void;
   openOrdersModal: () => void;
   closeOrdersModal: () => void;
+  isFinancialModalOpen: boolean;
+  setIsFinancialModalOpen: (open: boolean) => void;
+  financialInitialTab: 'pagar' | 'receber';
+  openFinancialModal: (tab?: 'pagar' | 'receber') => void;
+  closeFinancialModal: () => void;
   dateRangeFilter: DateRangeFilter;
   setDateRangeFilter: (filter: DateRangeFilter) => void;
   clearDateRangeFilter: () => void;
@@ -395,6 +400,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
   const openOrdersModal = useCallback(() => setIsOrdersModalOpen(true), []);
   const closeOrdersModal = useCallback(() => setIsOrdersModalOpen(false), []);
+
+  const [isFinancialModalOpen, setIsFinancialModalOpen] = useState<boolean>(false);
+  const [financialInitialTab, setFinancialInitialTab] = useState<'pagar' | 'receber'>('pagar');
+  const openFinancialModal = useCallback((tab?: 'pagar' | 'receber') => {
+    if (tab) setFinancialInitialTab(tab);
+    setIsFinancialModalOpen(true);
+  }, []);
+  const closeFinancialModal = useCallback(() => setIsFinancialModalOpen(false), []);
 
   const [dateRangeFilter, setDateRangeFilterState] = useState<DateRangeFilter>({
     startDate: null,
@@ -3098,6 +3111,11 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsOrdersModalOpen,
         openOrdersModal,
         closeOrdersModal,
+        isFinancialModalOpen,
+        setIsFinancialModalOpen,
+        financialInitialTab,
+        openFinancialModal,
+        closeFinancialModal,
         dateRangeFilter,
         setDateRangeFilter,
         clearDateRangeFilter,
