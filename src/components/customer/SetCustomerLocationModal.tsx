@@ -109,9 +109,24 @@ export const SetCustomerLocationModal: React.FC = () => {
     }
   }, [showFeedback]);
 
+  // Valores lidos via ref para que atualizações em segundo plano não recriem o mapa nem apaguem o local escolhido
+  const customersRef = useRef(customers);
+  customersRef.current = customers;
+  const selectedPlaceRef = useRef(selectedPlace);
+  selectedPlaceRef.current = selectedPlace;
+  const createPinIconRef = useRef(createPinIcon);
+  createPinIconRef.current = createPinIcon;
+  const updateAddressFromCoordsRef = useRef(updateAddressFromCoords);
+  updateAddressFromCoordsRef.current = updateAddressFromCoords;
+
   // Inicializa mapa quando modal abre usando o MESMO mapa (CachedTileLayer + OpenStreetMap HOT)
   useEffect(() => {
     if (!isOpen || !customerLocationModalData) return;
+
+    const customers = customersRef.current;
+    const selectedPlace = selectedPlaceRef.current;
+    const createPinIcon = (...args: Parameters<typeof createPinIconRef.current>) => createPinIconRef.current(...args);
+    const updateAddressFromCoords = (...args: Parameters<typeof updateAddressFromCoordsRef.current>) => updateAddressFromCoordsRef.current(...args);
 
     // Identifica se há coordenadas iniciais vindas do place ou de cliente existente
     const targetPlace = customerLocationModalData.place || (customerLocationModalData.placeId && selectedPlace?.id === customerLocationModalData.placeId ? selectedPlace : null);
@@ -228,7 +243,7 @@ export const SetCustomerLocationModal: React.FC = () => {
         mapInstanceRef.current = null;
       }
     };
-  }, [isOpen, customerLocationModalData, customers, selectedPlace, createPinIcon, updateAddressFromCoords]);
+  }, [isOpen, customerLocationModalData]);
 
   // Ação de Ajuste de Local: centraliza no pin com zoom de precisão e destaca o marcador
   const handleToggleAdjustLocation = () => {

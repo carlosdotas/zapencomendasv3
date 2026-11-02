@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   X, 
   Calendar, 
@@ -77,8 +77,11 @@ export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({
   const [hoverDate, setHoverDate] = useState<string | null>(null);
   const [activePreset, setActivePreset] = useState<DateFilterPreset>(dateRangeFilter.preset || null);
 
-  // Sincroniza com o estado global ao abrir
+  // Sincroniza com o estado global somente ao abrir (não sobrescreve a seleção em andamento)
+  const dateRangeFilterRef = useRef(dateRangeFilter);
+  dateRangeFilterRef.current = dateRangeFilter;
   useEffect(() => {
+    const dateRangeFilter = dateRangeFilterRef.current;
     if (isOpen) {
       setRangeStart(dateRangeFilter.startDate);
       setRangeEnd(dateRangeFilter.endDate);
@@ -90,7 +93,7 @@ export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({
         setViewDate(new Date(today.getFullYear(), today.getMonth(), 1));
       }
     }
-  }, [isOpen, dateRangeFilter, today]);
+  }, [isOpen, today]);
 
   // Mapa de contagem de markers por dia para exibir no calendário
   const markersPerDay = useMemo(() => {

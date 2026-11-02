@@ -88,8 +88,13 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
     }
   }, [isOpen, initialData]);
 
+  // selectedPlace é lido por ref: atualizações em segundo plano não devem apagar o que o usuário digitou
+  const selectedPlaceRef = useRef(selectedPlace);
+  selectedPlaceRef.current = selectedPlace;
+
   // Preenche dados iniciais ao abrir
   useEffect(() => {
+    const selectedPlace = selectedPlaceRef.current;
     if (isOpen) {
       setErrors({});
       setAddressSuggestions([]);
@@ -157,7 +162,7 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
         }
       }
     }
-  }, [isOpen, initialData, selectedPlace]);
+  }, [isOpen, initialData]);
 
   // Escuta seleção de contato vinda da Agenda Nativa do Android
   useEffect(() => {

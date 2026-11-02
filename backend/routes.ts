@@ -2,7 +2,7 @@ import type { Express, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { prisma } from './db';
-import { resolveCaller, canCallerSeeOrder, isPrivileged } from './access';
+import { resolveCaller, canCallerSeeOrder, isPrivileged, assignmentStore } from './access';
 import { notifyNewOrder, notifyOrderProgress, etapaEvent } from './notifications';
 import {
   parseExtra,
@@ -721,7 +721,26 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       res.status(400).json({ success: false, message: 'ID do pedido obrigatório' });
       return;
     }
-    await prisma.orders.delete({ where: { id } }).catch(() => null);
+    // Exclusão incondicional (qualquer etapa): remove o pedido e tudo que depende dele
+    const orderNumber = String(id);
+    const keyOf = (key: string) => key.match(/\d+/)?.[0] === orderNumber;
+    try {
+      await prisma.$transaction([
+        prisma.order_logs.deleteMany({ where: { order_id: id } }),
+        prisma.notifications.deleteMany({ where: { order_id: id } }),
+        prisma.orders.deleteMany({ where: { id } })
+      ]);
+      for (const key of Array.from(assignmentStore.keys())) {
+        if (keyOf(key)) assignmentStore.delete(key);
+      }
+      const storedKeys = await prisma.assignments.findMany({ select: { order_key: true } });
+      const staleKeys = storedKeys.map(row => row.order_key).filter(keyOf);
+      if (staleKeys.length) await prisma.assignments.deleteMany({ where: { order_key: { in: staleKeys } } });
+    } catch (error) {
+      console.error('[pedidos/delete] falha ao excluir pedido', id, error);
+      res.status(500).json({ success: false, message: 'Não foi possível excluir o pedido.' });
+      return;
+    }
     res.json({ success: true });
   });
 

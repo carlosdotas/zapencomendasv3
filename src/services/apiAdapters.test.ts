@@ -222,13 +222,13 @@ test('preserves independent pickup and delivery settings on each active route po
   assert.equal(pickup.pickupSellerPhone, '62911111111');
   assert.equal(pickup.pickupNotes, 'Retirar na recepção');
   assert.equal(pickup.deliveryVisibility, 'publico');
-  assert.equal(pickup.deliveryAssignedDriverId, '55');
+  assert.equal(pickup.deliveryAssignedDriverId, undefined);
   assert.equal(pickup.deliverySellerName, 'Responsável da entrega');
   assert.equal(pickup.deliverySellerPhone, '62922222222');
   assert.equal(pickup.deliveryNotes, 'Entregar ao cliente');
   assert.equal(delivery.operationType, 'entrega');
   assert.equal(delivery.deliveryVisibility, 'publico');
-  assert.equal(delivery.deliveryAssignedDriverId, '55');
+  assert.equal(delivery.deliveryAssignedDriverId, undefined);
   assert.equal(delivery.sellerName, 'Responsável da entrega');
   assert.equal(delivery.sellerPhone, '62922222222');
   assert.equal(delivery.deliveryNotes, 'Entregar ao cliente');

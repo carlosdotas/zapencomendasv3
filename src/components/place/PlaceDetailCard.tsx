@@ -59,6 +59,7 @@ import type { BaixaProximity } from '../../services/apiTypes';
 // Acima dessa distância até o local, a baixa exibe aviso e fica registrada no pedido
 const LIMITE_BAIXA_DISTANTE_M = 1000;
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
+import { canClaimOrders } from '../../utils/canClaimOrders';
 import { setNavSession, usePresenceMap, useWaitSeconds, formatDuration } from '../../services/presenceService';
 
 import { GoogleMapsIcon, WazeIcon, openExternalNavigation } from '../map/NavAppIcons';
@@ -1976,6 +1977,23 @@ ${horarioText}
       customerId: undefined,
       customerAddress: undefined,
       customerCoordinates: undefined,
+      assignedDriverId: undefined,
+      assignedDriverName: undefined,
+      assignedDriverPhone: undefined,
+      acceptedByDriver: false,
+      orderVisibility: 'publico',
+      pickupVisibility: 'publico',
+      exchangeVisibility: 'publico',
+      deliveryVisibility: 'publico',
+      pickupAssignedDriverId: undefined,
+      pickupAssignedDriverName: undefined,
+      pickupAssignedDriverPhone: undefined,
+      exchangeAssignedDriverId: undefined,
+      exchangeAssignedDriverName: undefined,
+      exchangeAssignedDriverPhone: undefined,
+      deliveryAssignedDriverId: undefined,
+      deliveryAssignedDriverName: undefined,
+      deliveryAssignedDriverPhone: undefined,
       observations: '',
       driverNotes: `Novo pedido no local ${selectedPlace.name}.`,
       pickupAddress: initialOp === 'coleta' ? selectedPlace.address : undefined,
@@ -4540,7 +4558,7 @@ ${horarioText}
               </>
             )}
 
-            {isDriverRole && selectedPlace && realtimeAssignmentService.isPublicOrder(selectedPlace) ? (
+            {canClaimOrders(currentRole) && selectedPlace && realtimeAssignmentService.isPublicOrder(selectedPlace) ? (
               /* BARRA ESPECIAL DO MOTORISTA: PEDIDO PÚBLICO DISPONÍVEL - BOTÃO ACEITAR EM DESTAQUE */
               <div className="flex items-center gap-2 w-full">
                 <button

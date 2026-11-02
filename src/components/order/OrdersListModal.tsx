@@ -38,6 +38,7 @@ import { useBackButton } from '../../hooks/useBackButton';
 import { CalendarFilterModal } from '../navigation/CalendarFilterModal';
 import { DateRangeFilter } from '../../types/map';
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
+import { canClaimOrders } from '../../utils/canClaimOrders';
 import { api } from '../../services/api';
 
 interface OrdersListModalProps {
@@ -388,7 +389,8 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
     if (!orderToDelete) return;
     setIsDeleting(true);
     try {
-      await deletePlace(orderToDelete.id);
+      const deleted = await deletePlace(orderToDelete.id);
+      if (!deleted) throw new Error('delete-failed');
       setToastMsg('Pedido excluído com sucesso!');
       setTimeout(() => setToastMsg(null), 3000);
       setOrderToDelete(null);
@@ -405,10 +407,14 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
     setIsDeleting(true);
     try {
       const ids = Array.from(selectedIds);
+      let removed = 0;
       for (const id of ids) {
-        await deletePlace(id);
+        if (await deletePlace(id)) removed += 1;
       }
-      setToastMsg(`${ids.length} ${ids.length === 1 ? 'pedido excluído' : 'pedidos excluídos'} com sucesso!`);
+      const failed = ids.length - removed;
+      setToastMsg(failed
+        ? `${removed} excluídos, ${failed} não puderam ser excluídos.`
+        : `${removed} ${removed === 1 ? 'pedido excluído' : 'pedidos excluídos'} com sucesso!`);
       setSelectedIds(new Set());
       setShowBulkDelete(false);
     } catch (err) {
@@ -681,7 +687,7 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
                       <Link2 className="w-3.5 h-3.5" /> Copiar link de rastreio
                     </button>
                   )}
-                  {currentRole === 'motorista' && isPublicOrder && (
+                  {canClaimOrders(currentRole) && isPublicOrder && (
                     <button type="button" onClick={(e) => handleClaimFromList(e, order)} className="w-full px-3 py-2 flex items-center gap-2 hover:bg-slate-50 text-emerald-700 cursor-pointer">
                       <Zap className="w-3.5 h-3.5" /> Aceitar pedido
                     </button>

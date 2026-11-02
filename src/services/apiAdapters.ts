@@ -527,16 +527,19 @@ function getRoutePointMetadata(pedido: BackendPedido, point: RoutePointKey, incl
   const visibilityValue = pedido[`${point}Visibility`] ?? extra[`${point}Visibility`] ??
     pedido.orderVisibility ?? extra.orderVisibility;
   const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
+  const visibility = visibilityValue === 'privado' ? 'privado' as const : visibilityValue === 'publico' ? 'publico' as const : undefined;
   const legacyDriver = extractDriverAssignmentFromPedido(pedido, operation);
+  const sharedDriverId = point !== 'exchange' ? extra.assignedDriverId : undefined;
   const driverId = pedido[`${point}AssignedDriverId`] ?? extra[`${point}AssignedDriverId`] ??
-    (point === 'pickup' && extra.assignedDriverId) ??
-    (point === 'delivery' && extra.assignedDriverId) ??
+    sharedDriverId ??
     legacyDriver.driverId;
   const driverName = pedido[`${point}AssignedDriverName`] ?? extra[`${point}AssignedDriverName`] ??
     legacyDriver.driverName;
   const driverPhone = pedido[`${point}AssignedDriverPhone`] ?? extra[`${point}AssignedDriverPhone`] ??
-    (point !== 'exchange' && extra.assignedDriverPhone) ??
+    (point !== 'exchange' ? extra.assignedDriverPhone : undefined) ??
     legacyDriver.driverPhone;
+  // Ponto público fica disponível para qualquer motorista: não pode carregar motorista atribuído
+  const isPublic = visibility === 'publico';
 
   const sellerName = pedido[`${point}SellerName`] ?? extra[`${point}SellerName`] ??
     (includeLegacySeller ? extra.sellerName : undefined) ??
@@ -550,10 +553,10 @@ function getRoutePointMetadata(pedido: BackendPedido, point: RoutePointKey, incl
         : pedido.entrega_responsavel_phone || pedido.entrega_phone);
 
   return {
-    visibility: visibilityValue === 'privado' ? 'privado' as const : visibilityValue === 'publico' ? 'publico' as const : undefined,
-    driverId: driverId == null ? undefined : String(driverId),
-    driverName: driverName == null ? undefined : String(driverName),
-    driverPhone: driverPhone == null ? undefined : String(driverPhone),
+    visibility,
+    driverId: isPublic || driverId == null ? undefined : String(driverId),
+    driverName: isPublic || driverName == null ? undefined : String(driverName),
+    driverPhone: isPublic || driverPhone == null ? undefined : String(driverPhone),
     sellerName: sellerName == null ? undefined : String(sellerName),
     sellerPhone: sellerPhone == null ? undefined : String(sellerPhone)
   };
@@ -728,7 +731,7 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     sellerName: activePointMetadata.sellerName || activeResp,
     sellerPhone: activePointMetadata.sellerPhone || activeRespPhone,
     orderVisibility: activePointMetadata.visibility,
-    assignedDriverId: activePointMetadata.driverId || extractDriverAssignmentFromPedido(pedido, activeOperationType).driverId,
+    assignedDriverId: activePointMetadata.driverId,
     assignedDriverName: activePointMetadata.driverName || extractDriverAssignmentFromPedido(pedido, activeOperationType).driverName,
     assignedDriverPhone: activePointMetadata.driverPhone || extractDriverAssignmentFromPedido(pedido, activeOperationType).driverPhone,
     imageUrl: uniquePhotos[0] || undefined,
@@ -938,9 +941,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
           category: 'Troca de Mercadoria',
           operationType: 'troca',
           orderStage: 'troca',
-          assignedDriverId: exchangeMetadata.driverId || trocaDriver.driverId,
-          assignedDriverName: exchangeMetadata.driverName || trocaDriver.driverName,
-          assignedDriverPhone: exchangeMetadata.driverPhone || trocaDriver.driverPhone,
+          assignedDriverId: exchangeMetadata.driverId,
+          assignedDriverName: exchangeMetadata.driverName,
+          assignedDriverPhone: exchangeMetadata.driverPhone,
           orderVisibility: exchangeMetadata.visibility,
           sellerName: exchangeMetadata.sellerName,
           sellerPhone: exchangeMetadata.sellerPhone,
@@ -965,9 +968,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
           category: 'Entrega Expressa',
           operationType: 'entrega',
           orderStage: 'entrega',
-          assignedDriverId: deliveryMetadata.driverId || entregaDriver.driverId,
-          assignedDriverName: deliveryMetadata.driverName || entregaDriver.driverName,
-          assignedDriverPhone: deliveryMetadata.driverPhone || entregaDriver.driverPhone,
+          assignedDriverId: deliveryMetadata.driverId,
+          assignedDriverName: deliveryMetadata.driverName,
+          assignedDriverPhone: deliveryMetadata.driverPhone,
           orderVisibility: deliveryMetadata.visibility,
           sellerName: deliveryMetadata.sellerName,
           sellerPhone: deliveryMetadata.sellerPhone,
@@ -1000,9 +1003,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
       category: 'Coleta Expressa',
       operationType: 'coleta',
       orderStage: 'coleta',
-      assignedDriverId: pickupMetadata.driverId || coletaDriver.driverId,
-      assignedDriverName: pickupMetadata.driverName || coletaDriver.driverName,
-      assignedDriverPhone: pickupMetadata.driverPhone || coletaDriver.driverPhone,
+      assignedDriverId: pickupMetadata.driverId,
+      assignedDriverName: pickupMetadata.driverName,
+      assignedDriverPhone: pickupMetadata.driverPhone,
       orderVisibility: pickupMetadata.visibility,
       sellerName: pickupMetadata.sellerName,
       sellerPhone: pickupMetadata.sellerPhone,
@@ -1033,9 +1036,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
       category: isExchange ? 'Troca de Mercadoria' : 'Coleta Expressa',
       operationType: 'coleta',
       orderStage: 'coleta',
-      assignedDriverId: pickupMetadata.driverId || coletaDriver.driverId,
-      assignedDriverName: pickupMetadata.driverName || coletaDriver.driverName,
-      assignedDriverPhone: pickupMetadata.driverPhone || coletaDriver.driverPhone,
+      assignedDriverId: pickupMetadata.driverId,
+      assignedDriverName: pickupMetadata.driverName,
+      assignedDriverPhone: pickupMetadata.driverPhone,
       orderVisibility: pickupMetadata.visibility,
       sellerName: pickupMetadata.sellerName,
       sellerPhone: pickupMetadata.sellerPhone,
@@ -1061,9 +1064,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         category: 'Troca de Mercadoria',
         operationType: 'entrega',
         orderStage: 'retorno',
-        assignedDriverId: deliveryMetadata.driverId || entregaDriver.driverId || pickupMetadata.driverId,
-        assignedDriverName: deliveryMetadata.driverName || entregaDriver.driverName || pickupMetadata.driverName,
-        assignedDriverPhone: deliveryMetadata.driverPhone || entregaDriver.driverPhone || pickupMetadata.driverPhone,
+        assignedDriverId: deliveryMetadata.driverId,
+        assignedDriverName: deliveryMetadata.driverName,
+        assignedDriverPhone: deliveryMetadata.driverPhone,
         orderVisibility: deliveryMetadata.visibility || pickupMetadata.visibility,
         sellerName: deliveryMetadata.sellerName || pickupMetadata.sellerName,
         sellerPhone: deliveryMetadata.sellerPhone || pickupMetadata.sellerPhone,
@@ -1085,9 +1088,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         category: 'Troca de Mercadoria',
         operationType: 'troca',
         orderStage: 'troca',
-        assignedDriverId: exchangeMetadata.driverId || trocaDriver.driverId,
-        assignedDriverName: exchangeMetadata.driverName || trocaDriver.driverName,
-        assignedDriverPhone: exchangeMetadata.driverPhone || trocaDriver.driverPhone,
+        assignedDriverId: exchangeMetadata.driverId,
+        assignedDriverName: exchangeMetadata.driverName,
+        assignedDriverPhone: exchangeMetadata.driverPhone,
         orderVisibility: exchangeMetadata.visibility,
         sellerName: exchangeMetadata.sellerName,
         sellerPhone: exchangeMetadata.sellerPhone,
@@ -1113,9 +1116,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         category: 'Entrega Expressa',
         operationType: 'entrega',
         orderStage: 'entrega',
-        assignedDriverId: deliveryMetadata.driverId || entregaDriver.driverId,
-        assignedDriverName: deliveryMetadata.driverName || entregaDriver.driverName,
-        assignedDriverPhone: deliveryMetadata.driverPhone || entregaDriver.driverPhone,
+        assignedDriverId: deliveryMetadata.driverId,
+        assignedDriverName: deliveryMetadata.driverName,
+        assignedDriverPhone: deliveryMetadata.driverPhone,
         orderVisibility: deliveryMetadata.visibility,
         sellerName: deliveryMetadata.sellerName,
         sellerPhone: deliveryMetadata.sellerPhone,
@@ -1280,9 +1283,9 @@ export function backendOrderMarkerToPlace(
     openNow: true,
     imageUrl: photoUrl,
     photos: markerPhotos.length > 0 ? markerPhotos : undefined,
-    assignedDriverId: pointMetadata.driverId || legacyDriver.driverId,
-    assignedDriverName: pointMetadata.driverName || legacyDriver.driverName,
-    assignedDriverPhone: pointMetadata.driverPhone || legacyDriver.driverPhone,
+    assignedDriverId: pointMetadata.driverId,
+    assignedDriverName: pointMetadata.driverName,
+    assignedDriverPhone: pointMetadata.driverPhone,
     orderVisibility: pointMetadata.visibility,
     sellerName: pointMetadata.sellerName || activeResponsible || undefined,
     sellerPhone: pointMetadata.sellerPhone || (activeResponsiblePhone ? String(activeResponsiblePhone) : undefined),

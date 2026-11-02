@@ -701,6 +701,10 @@ export const NewOrderModal: React.FC = () => {
     }
   }, 85);
 
+  // Lista de clientes mais recente sem reiniciar o formulário a cada sincronização em segundo plano
+  const customersRef = useRef(customers);
+  customersRef.current = customers;
+
   // Inicializa a encomenda ao abrir o modal
   useEffect(() => {
     if (isNewOrderModalOpen) {
@@ -788,7 +792,7 @@ export const NewOrderModal: React.FC = () => {
         setExchangeNotes(newOrderInitialPlace.exchangeNotes || '');
 
         if (newOrderInitialPlace.customerName) {
-          const found = customers.find(c => c.fullName.toLowerCase() === newOrderInitialPlace.customerName?.toLowerCase());
+          const found = customersRef.current.find(c => c.fullName.toLowerCase() === newOrderInitialPlace.customerName?.toLowerCase());
           if (found) {
             setSelectedCustomer(found);
           }
@@ -814,7 +818,7 @@ export const NewOrderModal: React.FC = () => {
         setExchangeNotes('');
       }
     }
-  }, [isNewOrderModalOpen, newOrderInitialPlace, customers]);
+  }, [isNewOrderModalOpen, newOrderInitialPlace]);
 
   // Normalização de texto sem acentos para busca flexível
   const normalize = (val: string) => 
@@ -880,8 +884,6 @@ export const NewOrderModal: React.FC = () => {
   const databaseSentinelRef = useRef<HTMLDivElement>(null);
   const databaseLoadingRef = useRef(false);
   const databaseSearchSequenceRef = useRef(0);
-  const customersRef = useRef(customers);
-  customersRef.current = customers;
 
   useEffect(() => {
     const term = clientSearchTerm.trim();

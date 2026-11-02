@@ -18,6 +18,7 @@ import { formatPhotoUrl } from '../../services/apiAdapters';
 import { UserRole } from '../../types/auth';
 import { filterPlacesBySequence } from '../../utils/orderSequence';
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
+import { canClaimOrders } from '../../utils/canClaimOrders';
 import { fetchMultiStopRoute } from '../../services/routingService';
 import { getPlaceCalendarDate, isDateInInterval } from '../../utils/dateFilterUtils';
 import { companyService } from '../../services/companyService';
@@ -1978,7 +1979,7 @@ export const FullscreenMap: React.FC = () => {
       }
 
       const isSelected = placesAtLocation.some(p => p.id === selectedPlace?.id);
-          const isPublicForDriver = isDriverRole && placesAtLocation.some(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
+          const isPublicForDriver = canClaimOrders(currentRole) && placesAtLocation.some(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
       const distanceLabel = isPublicForDriver ? formatClaimDistance(userLocationRef.current, place.coordinates) : '';
       const driverStatus = isDriverRole ? null : getDriverStatusInfo(placesAtLocation, driversRef.current);
       const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customers, isPublicForDriver, distanceLabel, driverStatus, isDriverRole);
@@ -2038,7 +2039,7 @@ export const FullscreenMap: React.FC = () => {
           }
 
           // Em locais compartilhados, o motorista escolhe qual pedido público deseja aceitar.
-          if (isDriverRole) {
+          if (canClaimOrders(currentRole)) {
             const availablePublicPlaces = currentGroup.filter(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
             if (availablePublicPlaces.length > 0) {
               if (currentGroup.length > 1) {

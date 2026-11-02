@@ -52,6 +52,7 @@ import {
 } from '../services/apiAdapters';
 import { filterPlacesBySequence } from '../utils/orderSequence';
 import { isTemporaryOrderId } from '../utils/orderIds';
+import { sanitizeNewOrderAssignments } from '../utils/newOrderAssignment';
 import { BackendPedido, BackendUser, BaixaProximity } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
@@ -897,7 +898,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           // Garante que o orderStage está marcado como concluido
           doneList.push({ ...place, orderStage: 'concluido' });
         });
-        setCompletedOrders(doneList);
+        setCompletedOrders(prev => JSON.stringify(prev) === JSON.stringify(doneList) ? prev : doneList);
       }
 
       // Se há um local atualmente selecionado, sincroniza com os dados frescos do servidor
@@ -939,7 +940,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } while (true);
 
         if (usersLoadComplete && syncVersion === customerMutationVersion.current) {
-          setCustomers(users.map(backendUserToCustomer));
+          const nextCustomers = users.map(backendUserToCustomer);
+          setCustomers(prev => JSON.stringify(prev) === JSON.stringify(nextCustomers) ? prev : nextCustomers);
           lastCustomersSyncAt.current = Date.now();
         }
       }
@@ -948,9 +950,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (currentRole !== 'motorista') {
         const liveDrivers = await driverTrackingClient.fetchLiveDrivers();
         const validLiveDrivers = liveDrivers.filter(d => !isDriverStale(d));
-        setDrivers(validLiveDrivers);
+        setDrivers(prev => JSON.stringify(prev) === JSON.stringify(validLiveDrivers) ? prev : validLiveDrivers);
       } else {
-        setDrivers([]);
+        setDrivers(prev => prev.length ? [] : prev);
       }
     } catch (e: any) {
       setServerStatus('offline');
@@ -2394,7 +2396,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [currentRole, user, flyToLocation]);
 
-  const addNewOrder = useCallback(async (newPlace: Place): Promise<boolean> => {
+  const addNewOrder = useCallback(async (rawPlace: Place): Promise<boolean> => {
+    const newPlace = sanitizeNewOrderAssignments(rawPlace);
     // Regra de permissão: Motorista NÃO PODE adicionar pedidos
     if (currentRole === 'motorista' || user?.userRole === 'motorista') {
       console.warn('[addNewOrder] Motoristas não possuem permissão para adicionar pedidos.');
@@ -2406,23 +2409,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const hasPersistedId = Boolean(persistedIdMatch && Number(persistedIdMatch[1]) < 1_000_000_000_000);
     const isExistingOrder = !isTemporaryOrderId(newPlace.id) && hasPersistedId;
     if (isExistingOrder) {
-      updatePlaceDetails(newPlace.id, newPlace);
-      return true;
+      updatePlaceDetails(rawPlace.id, rawPlace);
     }
-
-    setAllPlaces(prev => {
-      const next = [newPlace, ...prev.filter(p => p.id !== newPlace.id)];
-      try {
-        localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-      } catch (e) {
-        // ignore
-      }
-      return next;
-    });
-
-    setSavedPlaces(prev => [newPlace, ...prev.filter(p => p.id !== newPlace.id)]);
-    setSelectedPlace(newPlace);
-    flyToLocation(newPlace.coordinates, 16);
 
     // Regra EncomendasZap: "ao add, e o cliente nao tiver local setado, deve add apenas um maker."
     const op = newPlace.operationType || 'coleta';
@@ -2451,11 +2439,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ? newPlace.exchangeCoordinates!.lng 
       : (op === 'troca' ? newPlace.coordinates?.lng : undefined);
 
-    // Envia o novo pedido para a API Express (/pedidos/save)
-    const removeFailedLocalOrder = () => {
-      setSavedPlaces(prev => prev.filter(p => p.id !== newPlace.id));
-    };
-
+    // O banco é a fonte única: o pedido só entra no mapa depois de gravado (/pedidos/save)
     try {
       const res = await api.savePedido({
       data: newPlace.data || newPlace.scheduledDate,
@@ -2569,7 +2553,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deliverySellerPhone: newPlace.deliverySellerPhone
       });
       if (!res.success || !res.data?.id) {
-        removeFailedLocalOrder();
         window.alert(res.message || 'Não foi possível salvar o pedido. Verifique a conexão e tente novamente.');
         return false;
       }
@@ -2578,15 +2561,18 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const serverPlaceId = `pedido-${savedId}`;
       const serverOrderCode = `EZ-${savedId}-GO`;
       tempPedidoIdMap.set(newPlace.id, serverPlaceId);
+      const persistedPlace: Place = { ...newPlace, id: serverPlaceId, orderCode: serverOrderCode };
+      // Remove o rascunho e qualquer cópia já trazida pela atualização do servidor para nunca duplicar
       setAllPlaces(prev => {
-        const next = prev.map(p => p.id === newPlace.id ? { ...p, id: serverPlaceId, orderCode: serverOrderCode } : p);
+        const next = [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId)];
         try {
           localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
         } catch {}
         return next;
       });
-      setSavedPlaces(prev => prev.map(p => p.id === newPlace.id ? { ...p, id: serverPlaceId, orderCode: serverOrderCode } : p));
-      setSelectedPlace(prev => prev && prev.id === newPlace.id ? { ...prev, id: serverPlaceId, orderCode: serverOrderCode } : prev);
+      setSavedPlaces(prev => [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId)]);
+      setSelectedPlace(prev => (!prev || prev.id === newPlace.id) ? persistedPlace : prev);
+      flyToLocation(persistedPlace.coordinates, 16);
       if (newPlace.customerPhone || newPlace.customerName || newPlace.customerId) {
         const customerStatsRecord = {
           fullName: newPlace.customerName,
@@ -2610,7 +2596,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return true;
     } catch (err) {
       console.warn('Erro ao salvar pedido na API:', err);
-      removeFailedLocalOrder();
       window.alert(err instanceof Error ? err.message : 'Erro ao salvar o pedido. Verifique a conexão e tente novamente.');
       return false;
     }
@@ -3255,6 +3240,21 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
+    // Pedidos que nunca chegaram ao servidor (id local) só precisam sair do cache local
+    const isServerOrder = /\d/.test(placeId) && !/^pedido-\d{10,}/.test(placeId);
+    if (isServerOrder) {
+      try {
+        const res = await api.deletePedido(placeId);
+        if (!res?.success) {
+          console.warn('[MapContext.deletePlace] Servidor recusou a exclusão:', res?.message);
+          return false;
+        }
+      } catch (err) {
+        console.warn('[MapContext.deletePlace] Erro ao excluir pedido na API:', err);
+        return false;
+      }
+    }
+
     setAllPlaces(prev => {
       const next = prev.filter(p => p.id !== placeId);
       try {
@@ -3272,12 +3272,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     setSelectedPlace(prev => (prev?.id === placeId ? null : prev));
-
-    try {
-      await api.deletePedido(placeId);
-    } catch (err) {
-      console.warn('[MapContext.deletePlace] Erro ao excluir pedido na API:', err);
-    }
 
     return true;
   }, [currentRole]);
