@@ -66,13 +66,9 @@ import {
   PricingModelType 
 } from '../../services/pricingSettingsService';
 import { 
-  getImageServerUrl, 
-  getImageServerPassword 
-} from '../../services/api';
-import { 
-  firebaseSettingsService, 
+  settingsService, 
   GlobalAppSettings 
-} from '../../services/firebaseSettingsService';
+} from '../../services/settingsService';
 
 // Subpáginas Competentes Dedicadas Estilo Android
 import { PricingSettingsPage } from './settings/PricingSettingsPage';
@@ -83,6 +79,7 @@ import { ServerSyncSettingsPage } from './settings/ServerSyncSettingsPage';
 import { NavigationSettingsPage } from './settings/NavigationSettingsPage';
 import { SecurityOperationSettingsPage } from './settings/SecurityOperationSettingsPage';
 import { CompanyManagementPage } from './settings/CompanyManagementPage';
+import { CityManagementPage } from './settings/CityManagementPage';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -125,7 +122,7 @@ class SettingsErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBou
                 type="button"
                 onClick={() => {
                   try {
-                    localStorage.removeItem('encomendaszap_firebase_settings_cache_v2');
+                    localStorage.removeItem('encomendaszap_settings_cache_v3');
                   } catch {}
                   this.setState({ hasError: false });
                 }}
@@ -149,7 +146,7 @@ class SettingsErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBou
   }
 }
 
-type SubpageKey = 'pricing' | 'payments' | 'image_server' | 'user_fields' | 'server' | 'navigation' | 'security' | 'companies';
+type SubpageKey = 'pricing' | 'payments' | 'image_server' | 'user_fields' | 'server' | 'navigation' | 'security' | 'companies' | 'cities';
 
 const AdminSettingsContent: React.FC = () => {
   const { 
@@ -178,13 +175,13 @@ const AdminSettingsContent: React.FC = () => {
     setIsAdminSettingsOpen(false);
   }, 80);
 
-  // Configurações sincronizadas em tempo real via Firebase
-  const [globalSettings, setGlobalSettings] = useState<GlobalAppSettings>(() => firebaseSettingsService.getSettings());
+  // Configurações sincronizadas periodicamente com o servidor
+  const [globalSettings, setGlobalSettings] = useState<GlobalAppSettings>(() => settingsService.getSettings());
   const [searchQuery, setSearchQuery] = useState('');
 
   // Escuta alterações na nuvem em tempo real
   useEffect(() => {
-    const unsub = firebaseSettingsService.subscribe((settings) => {
+    const unsub = settingsService.subscribe((settings) => {
       setGlobalSettings(settings);
     });
     return () => unsub();
@@ -223,18 +220,16 @@ const AdminSettingsContent: React.FC = () => {
         {
           id: 'image_server' as SubpageKey,
           title: 'Servidor de Imagens PHP',
-          subtitle: globalSettings.imageServer.url 
-            ? globalSettings.imageServer.url.replace(/^https?:\/\//, '') 
-            : 'Configurar servidor PHP e senha de acesso',
+          subtitle: 'URL e senha gerenciadas no .env do backend',
           icon: ImageIcon,
           iconBg: 'bg-purple-600 text-white',
-          badge: globalSettings.imageServer.url ? 'Configurado' : 'Pendente',
-          badgeColor: globalSettings.imageServer.url ? 'bg-purple-50 text-purple-800 border-purple-200' : 'bg-red-50 text-red-700 border-red-200'
+          badge: 'Backend',
+          badgeColor: 'bg-emerald-50 text-emerald-800 border-emerald-200'
         },
         {
           id: 'server' as SubpageKey,
-          title: 'Servidores & Firebase',
-          subtitle: 'Firestore (default) conectado • RTDB Ativo • Sincronização em nuvem',
+          title: 'Servidor & Banco de Dados',
+          subtitle: 'API conectada • Banco MySQL • Sincronização periódica',
           icon: Server,
           iconBg: 'bg-[#0B5187] text-white',
           badge: 'Nuvem Conectada',
@@ -291,6 +286,20 @@ const AdminSettingsContent: React.FC = () => {
           badgeColor: 'bg-amber-50 text-amber-900 border-amber-300'
         }
       ]
+    },
+    {
+      group: 'Cadastros Logísticos',
+      items: [
+        {
+          id: 'cities' as SubpageKey,
+          title: 'Cidades e Centrais de Coleta',
+          subtitle: 'Cadastre cidades e organize as centrais de coleta por cidade',
+          icon: MapPin,
+          iconBg: 'bg-teal-600 text-white',
+          badge: 'Locais',
+          badgeColor: 'bg-teal-50 text-teal-800 border-teal-200'
+        }
+      ]
     }
   ], [globalSettings]);
 
@@ -344,11 +353,6 @@ const AdminSettingsContent: React.FC = () => {
       <div className="fixed inset-0 z-50 bg-[#F8F9FA] overflow-y-auto">
         <ImageServerSettingsPage
           onBack={() => setCurrentSubpage(null)}
-          serverUrl={globalSettings.imageServer.url}
-          serverPassword={globalSettings.imageServer.password}
-          onUpdate={(url, password) => {
-            setGlobalSettings(prev => ({ ...prev, imageServer: { url, password } }));
-          }}
         />
       </div>
     );
@@ -439,6 +443,12 @@ const AdminSettingsContent: React.FC = () => {
     );
   }
 
+  if (currentSubpage === 'cities') {
+    return (
+      <CityManagementPage onBack={() => setCurrentSubpage(null)} />
+    );
+  }
+
   // ==========================================
   // TELA PRINCIPAL DE CONFIGURAÇÕES ESTILO ANDROID
   // ==========================================
@@ -461,7 +471,7 @@ const AdminSettingsContent: React.FC = () => {
           <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 border border-emerald-200/80 rounded-full text-[11px] font-bold text-emerald-800">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <Cloud className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Sincronizado no Firebase</span>
+            <span>Sincronizado com o servidor</span>
           </div>
         </div>
 
@@ -561,7 +571,7 @@ const AdminSettingsContent: React.FC = () => {
             {globalSettings.system.systemName} • Versão 2.4.0 (Build 507212)
           </span>
           <span className="text-[10px] text-slate-400 block">
-            Banco Firestore (default) • Sincronização multi-dispositivo ativa
+            Banco MySQL • Sincronização multi-dispositivo ativa
           </span>
         </div>
 

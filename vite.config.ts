@@ -130,10 +130,10 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /(^\/(uploads|api\/uploads)\/.*)|(^https:\/\/dotas\.online\/uploads\/.*)/i,
+              urlPattern: /^\/(uploads|api\/uploads)\/.*/i,
               handler: 'StaleWhileRevalidate',
               options: {
-                cacheName: 'dotas-uploads-cache',
+                cacheName: 'uploads-cache',
                 expiration: {
                   maxEntries: 300,
                   maxAgeSeconds: 60 * 60 * 24 * 14,
@@ -144,10 +144,10 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /(^\/(tracking|pedidos|locais|motoristas|cidades|users|tabela-precos).*)|(^https:\/\/dotas\.online\/(tracking|pedidos|locais|motoristas|cidades|users).*)/i,
+              urlPattern: /^\/(tracking|pedidos|locais|motoristas|cidades|users|tabela-precos).*/i,
               handler: 'NetworkFirst',
               options: {
-                cacheName: 'dotas-api-cache',
+                cacheName: 'api-cache',
                 networkTimeoutSeconds: 2.5,
                 expiration: {
                   maxEntries: 100,
@@ -176,35 +176,6 @@ export default defineConfig(() => {
       },
     },
     server: {
-      // Proxy transparente para Dotas.online caso requisições relativas sejam efetuadas
-      // NOTA: '/users' removido conforme migração dos usuários para Firebase
-      proxy: {
-        '/tracking': {
-          target: 'https://dotas.online',
-          changeOrigin: true,
-          secure: false,
-        },
-        '/pedidos': {
-          target: 'https://dotas.online',
-          changeOrigin: true,
-          secure: false,
-        },
-        '/locais': {
-          target: 'https://dotas.online',
-          changeOrigin: true,
-          secure: false,
-        },
-        '/motoristas': {
-          target: 'https://dotas.online',
-          changeOrigin: true,
-          secure: false,
-        },
-        '/cidades': {
-          target: 'https://dotas.online',
-          changeOrigin: true,
-          secure: false,
-        },
-      },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

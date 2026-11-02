@@ -35,6 +35,43 @@ export interface TaxIdInfo {
   displayLabel: string;
 }
 
+export function isValidCpf(value?: string | null): boolean {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length !== 11 || /^(\d)\1{10}$/.test(digits)) return false;
+
+  const calculateDigit = (length: number): number => {
+    let sum = 0;
+    for (let index = 0; index < length; index++) {
+      sum += Number(digits[index]) * (length + 1 - index);
+    }
+    return (sum * 10) % 11 % 10;
+  };
+
+  return calculateDigit(9) === Number(digits[9])
+    && calculateDigit(10) === Number(digits[10]);
+}
+
+export function isValidCnpj(value?: string | null): boolean {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length !== 14 || /^(\d)\1{13}$/.test(digits)) return false;
+
+  const calculateDigit = (length: number): number => {
+    const weights = length === 12
+      ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+      : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const sum = weights.reduce((acc, weight, index) => acc + Number(digits[index]) * weight, 0);
+    const rest = sum % 11;
+    return rest < 2 ? 0 : 11 - rest;
+  };
+
+  return calculateDigit(12) === Number(digits[12])
+    && calculateDigit(13) === Number(digits[13]);
+}
+
+export function isValidTaxId(value?: string | null): boolean {
+  return isValidCpf(value) || isValidCnpj(value);
+}
+
 /**
  * Formata CPF (11 dígitos) ou CNPJ (14 dígitos) e detecta o tipo de documento.
  */

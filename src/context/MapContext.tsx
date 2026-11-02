@@ -21,7 +21,6 @@ import {
 } from '../types/map';
 import { driverTrackingClient, isDriverStale, formatDriverLastSeen } from '../services/driverTrackingClient';
 import { Customer } from '../types/customer';
-import { INITIAL_CUSTOMERS } from '../data/mockCustomers';
 import { customerOrderStatsService } from '../services/customerOrderStatsService';
 import { 
   getSavedLocation, 
@@ -35,8 +34,10 @@ import { fetchRoute, fetchMultiStopRoute } from '../services/routingService';
 import { getOrderLocationsForOperation } from '../utils/customerLocationUtils';
 import { getDistanceMeters } from '../utils/geoUtils';
 import { recordPlaceUsage } from '../utils/mostUsedPlaces';
+import { resolveCustomerCity } from '../utils/addressUtils';
+import { normalizeCustomerId } from '../utils/customerIdentity';
 
-import { ACCOUNTS, AuthAccount, UserRole } from '../data/authAccounts';
+import { AuthAccount, UserRole } from '../types/auth';
 import { api, getApiBaseUrl, setApiBaseUrl } from '../services/api';
 import { 
   backendLocalToPlace, 
@@ -53,7 +54,6 @@ import { filterPlacesBySequence } from '../utils/orderSequence';
 import { BackendPedido } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
-import { loadImportedOrderSeed } from '../data/importedOrderSeed';
 
 export interface CustomerLocationModalData {
   placeId?: string;
@@ -61,7 +61,8 @@ export interface CustomerLocationModalData {
   customerName: string;
   customerPhone?: string;
   customerId?: string;
-  onLocationSelected?: (address: string, coordinates: LocationCoordinates) => void;
+  autoFocusSearch?: boolean;
+  onLocationSelected?: (address: string, coordinates: LocationCoordinates, city?: string) => void;
 }
 
 interface MapContextType {
@@ -95,6 +96,13 @@ interface MapContextType {
   openCustomerList: () => void;
   closeCustomerList: () => void;
   isOrdersModalOpen: boolean;
+  routeSelectMode: boolean;
+  routeSelectedIds: string[];
+  startRouteSelection: () => void;
+  cancelRouteSelection: () => void;
+  toggleRouteSelection: (ids: string[]) => void;
+  isRoutePickerOpen: boolean;
+  setIsRoutePickerOpen: (open: boolean) => void;
   setIsOrdersModalOpen: (open: boolean) => void;
   openOrdersModal: () => void;
   closeOrdersModal: () => void;
@@ -162,8 +170,10 @@ interface MapContextType {
 
   // Customers & Contact Book
   customers: Customer[];
-  addCustomer: (customerData: Omit<Customer, 'id' | 'createdAt'>) => Customer;
-  updateCustomer: (id: string, partial: Partial<Customer>) => void;
+  addCustomer: (customerData: Omit<Customer, 'id' | 'createdAt'>, options?: { persist?: boolean }) => Customer;
+  persistCustomer: (customer: Customer) => Promise<boolean>;
+  updateCustomer: (id: string, partial: Partial<Customer>) => Promise<boolean>;
+  deleteCustomer: (id: string) => Promise<boolean>;
   customerLocationModalData: CustomerLocationModalData | null;
   openCustomerLocationModal: (data: CustomerLocationModalData) => void;
   closeCustomerLocationModal: () => void;
@@ -237,6 +247,16 @@ const DEFAULT_USER: UserProfile = {
   savedPlacesCount: 3,
   contributionsCount: 28
 };
+
+// Pedidos criados no app nascem com id temporário (pedido-<timestamp>) até o servidor devolver o id real.
+const tempPedidoIdMap = new Map<string, string>();
+const resolvePlaceId = (id: string): string => {
+  let current = id;
+  for (let i = 0; i < 5 && tempPedidoIdMap.has(current); i++) current = tempPedidoIdMap.get(current)!;
+  return current;
+};
+// Id numérico que não cabe no banco (timestamp) = pedido ainda sem id real do servidor
+const isTempPedidoNumber = (num?: string | null): boolean => !num || Number(num) > 2147483647;
 
 const MapContext = createContext<MapContextType | null>(null);
 
@@ -338,7 +358,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // O sistema exige login ao ser aberto; se ainda não houver sessão ativa, solicita o login imediatamente
   const [isLoginModalOpen, setIsLoginModalOpen] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('encomendaszap_is_authenticated') !== 'true';
+      return localStorage.getItem('encomendaszap_is_authenticated') !== 'true'
+        || !localStorage.getItem('encomendaszap_logged_account');
     } catch {
       return true;
     }
@@ -351,6 +372,26 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const closeCustomerList = useCallback(() => setIsCustomerListOpen(false), []);
 
   const [isOrdersModalOpen, setIsOrdersModalOpen] = useState<boolean>(false);
+
+  // Passar rota: admin/atendente seleciona vários locais e depois escolhe o motorista
+  const [routeSelectMode, setRouteSelectMode] = useState<boolean>(false);
+  const [routeSelectedIds, setRouteSelectedIds] = useState<string[]>([]);
+  const [isRoutePickerOpen, setIsRoutePickerOpen] = useState<boolean>(false);
+  const startRouteSelection = useCallback(() => {
+    setRouteSelectedIds([]);
+    setRouteSelectMode(true);
+  }, []);
+  const cancelRouteSelection = useCallback(() => {
+    setRouteSelectMode(false);
+    setRouteSelectedIds([]);
+    setIsRoutePickerOpen(false);
+  }, []);
+  const toggleRouteSelection = useCallback((ids: string[]) => {
+    setRouteSelectedIds(prev => {
+      const allSelected = ids.every(id => prev.includes(id));
+      return allSelected ? prev.filter(id => !ids.includes(id)) : Array.from(new Set([...prev, ...ids]));
+    });
+  }, []);
   const openOrdersModal = useCallback(() => setIsOrdersModalOpen(true), []);
   const closeOrdersModal = useCallback(() => setIsOrdersModalOpen(false), []);
 
@@ -428,30 +469,55 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
-  const [driverActiveSeconds, setDriverActiveSeconds] = useState<number>(0);
+  const ONLINE_SINCE_KEY = 'encomendaszap_driver_online_since';
+  const readOnlineSince = (): number => {
+    try {
+      const v = Number(localStorage.getItem(ONLINE_SINCE_KEY));
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    } catch (e) {
+      return 0;
+    }
+  };
+
+  const [driverActiveSeconds, setDriverActiveSeconds] = useState<number>(() => {
+    const since = readOnlineSince();
+    return since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0;
+  });
 
   const setIsDriverOnline = useCallback((online: boolean) => {
     setIsDriverOnlineState(online);
     try {
       localStorage.setItem('encomendaszap_driver_online', online ? 'true' : 'false');
+      if (online) {
+        // Mantém o início original se já estava online (ex.: recarregou a página)
+        if (!readOnlineSince()) localStorage.setItem(ONLINE_SINCE_KEY, String(Date.now()));
+      } else {
+        localStorage.removeItem(ONLINE_SINCE_KEY);
+      }
     } catch (e) {
       // ignore
     }
+    if (online) {
+      const since = readOnlineSince();
+      setDriverActiveSeconds(since ? Math.max(0, Math.floor((Date.now() - since) / 1000)) : 0);
+    } else {
+      setDriverActiveSeconds(0);
+    }
   }, []);
 
-  // Timer quando motorista estiver online (obedece apenas ao GPS real do dispositivo, sem andar sozinho)
+  // Tempo online = agora - momento em que o motorista virou a chave (sobrevive a recarregar a página)
   useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-
-    if (isDriverOnline) {
-      interval = setInterval(() => {
-        setDriverActiveSeconds(prev => prev + 1);
-      }, 1000);
+    if (!isDriverOnline) return;
+    if (!readOnlineSince()) {
+      try { localStorage.setItem(ONLINE_SINCE_KEY, String(Date.now())); } catch (e) { /* ignore */ }
     }
-
-    return () => {
-      if (interval) clearInterval(interval);
+    const tick = () => {
+      const since = readOnlineSince() || Date.now();
+      setDriverActiveSeconds(Math.max(0, Math.floor((Date.now() - since) / 1000)));
     };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
   }, [isDriverOnline]);
   
   // Perfil e tipo de usuário autenticado
@@ -510,52 +576,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return [];
   });
 
-  // Carrega o seed em um chunk separado sem substituir cache ou dados remotos.
-  useEffect(() => {
-    if (allPlaces.length > 0) return;
-
-    let isActive = true;
-    loadImportedOrderSeed().then(seedOrders => {
-      if (!isActive) return;
-
-      const activeSeedPlaces = seedOrders
-        .filter(order => {
-          const stage = (order.etapa || '').toLowerCase().trim();
-          return !['entregue', 'finalizado', 'concluido', 'cancelado'].includes(stage);
-        })
-        .flatMap(backendPedidoToPlaces);
-
-      if (activeSeedPlaces.length > 0) {
-        setAllPlaces(current => current.length > 0 ? current : activeSeedPlaces);
-      }
-    }).catch(() => {});
-
-    return () => {
-      isActive = false;
-    };
-  }, []);
-
   // Pedidos finalizados/entregues: não aparecem no mapa, mas exibidos na Central de Pedidos
   const [completedOrders, setCompletedOrders] = useState<Place[]>([]);
 
-  const [customers, setCustomers] = useState<Customer[]>(() => {
+  const [customers, setCustomers] = useState<Customer[]>([]);
+
+  useEffect(() => {
     try {
-      const saved = localStorage.getItem('encomendaszap_customers');
-      if (saved) {
-        const parsed: Customer[] = JSON.parse(saved);
-        return parsed.map(c => {
-          const init = INITIAL_CUSTOMERS.find(i => i.id === c.id);
-          if (init) {
-            return { ...c, notes: c.notes || init.notes, address: c.address || init.address };
-          }
-          return c;
-        });
-      }
-    } catch (e) {
-      // ignore
-    }
-    return INITIAL_CUSTOMERS;
-  });
+      localStorage.removeItem('encomendaszap_customers');
+    } catch {}
+  }, []);
 
   // Estados de Conexão com o Servidor Express
   const [serverStatus, setServerStatus] = useState<'connected' | 'offline' | 'checking'>('checking');
@@ -586,7 +616,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setServerLatencyMs(conn.latencyMs || null);
       }
 
-      // 1. Busca Markers do endpoint Dotas.online (/tracking/order_markers) para Hoje e Dias Anteriores
+      // 1. Busca Markers do endpoint (/tracking/order_markers) para Hoje e Dias Anteriores
       // Regra de negócio explícita:
       // - Hoje e Dias Anteriores: mostra marcadores que não estiverem finalizados (coletas, trocas e entregas)
       // - Finalizados/Entregues: NUNCA aparecem como marcadores ativos no mapa
@@ -761,6 +791,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             coordinates: { lat: cLat, lng: cLng },
             status: 'success',
             driverName: String(p.coleta_motoristas || p.motorista_nome || 'Motorista'),
+            driverId: p.coleta_user_id ? String(p.coleta_user_id) : undefined,
             photos: photos,
             imageUrl: photoUrl || undefined
           });
@@ -784,7 +815,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (locallyDoneOrderIds.has(p.id)) return false;
         return true;
       }).map(p => {
-        // Enriquecimento prioritário com Realtime Assignment (Firebase Realtime & WebSocket)
+        // Enriquecimento prioritário com Realtime Assignment (REST + polling)
         const numId = p.id.match(/\d+/)?.[0] || (p.orderCode ? p.orderCode.match(/\d+/)?.[0] : null);
         const rt = realtimeAssignmentService.getAssignmentForOrder(p.id, p.operationType) || 
                    (numId ? realtimeAssignmentService.getAssignmentForOrder(numId, p.operationType) : null);
@@ -793,7 +824,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...p,
             assignedDriverId: rt.driverId,
             assignedDriverName: rt.driverName || p.assignedDriverName,
-            assignedDriverPhone: rt.driverPhone || p.assignedDriverPhone
+            assignedDriverPhone: rt.driverPhone || p.assignedDriverPhone,
+            driverEnRoute: Boolean(rt.enRoute)
           };
         }
         return p;
@@ -851,16 +883,10 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       // 3. Busca Clientes / Usuários do backend (POST /pedidos/list_users)
-      const usersRes = await api.listUsersCompact();
-      if (usersRes.success && Array.isArray(usersRes.data) && usersRes.data.length > 0) {
+      const usersRes = await api.listUsers({ limit: 50 });
+      if (usersRes.success && Array.isArray(usersRes.data)) {
         const serverCustomers = usersRes.data.map(backendUserToCustomer);
-        setCustomers(prev => {
-          if (prev.length === serverCustomers.length && prev[0]?.id === serverCustomers[0]?.id) return prev;
-          try {
-            localStorage.setItem('encomendaszap_customers', JSON.stringify(serverCustomers));
-          } catch {}
-          return serverCustomers;
-        });
+        setCustomers(serverCustomers);
       }
 
       // 4. Busca Motoristas Reais Ativos e em Tempo Real (exclui inativos há mais de 30 minutos)
@@ -879,12 +905,12 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [dateRangeFilter]);
 
-  // Busca inicial única ao montar o app no servidor Dotas.online (SEM releitura ou polling periódico)
+  // Busca inicial única ao montar o app no servidor (SEM releitura ou polling periódico)
   useEffect(() => {
     refreshServerData();
   }, [refreshServerData]);
 
-  // Sincronização em tempo real de atribuições (Firebase Realtime & WebSocket)
+  // Sincronização em tempo real de atribuições (REST + polling)
   useEffect(() => {
     const unsubscribe = realtimeAssignmentService.subscribe((assignments) => {
       setAllPlaces(prev => {
@@ -895,13 +921,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                              (p.operationType && numId ? assignments[`${numId}_${p.operationType}`] : null) ||
                              (p.operationType && numId ? assignments[`pedido-${numId}-${p.operationType}`] : null);
           if (assignment && assignment.driverId) {
-            if (p.assignedDriverId !== assignment.driverId || p.assignedDriverName !== assignment.driverName) {
+            if (p.assignedDriverId !== assignment.driverId || p.assignedDriverName !== assignment.driverName || Boolean(p.driverEnRoute) !== Boolean(assignment.enRoute)) {
               hasChanges = true;
               return {
                 ...p,
                 assignedDriverId: assignment.driverId,
                 assignedDriverName: assignment.driverName || p.assignedDriverName,
-                assignedDriverPhone: assignment.driverPhone || p.assignedDriverPhone
+                assignedDriverPhone: assignment.driverPhone || p.assignedDriverPhone,
+                driverEnRoute: Boolean(assignment.enRoute)
               };
             }
           }
@@ -923,12 +950,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const assignment = assignments[prev.id] || 
                            (prev.operationType && numId ? assignments[`${numId}_${prev.operationType}`] : null) ||
                            (prev.operationType && numId ? assignments[`pedido-${numId}-${prev.operationType}`] : null);
-        if (assignment && assignment.driverId && (prev.assignedDriverId !== assignment.driverId || prev.assignedDriverName !== assignment.driverName)) {
+        if (assignment && assignment.driverId && (prev.assignedDriverId !== assignment.driverId || prev.assignedDriverName !== assignment.driverName || Boolean(prev.driverEnRoute) !== Boolean(assignment.enRoute))) {
           return {
             ...prev,
             assignedDriverId: assignment.driverId,
             assignedDriverName: assignment.driverName || prev.assignedDriverName,
-            assignedDriverPhone: assignment.driverPhone || prev.assignedDriverPhone
+            assignedDriverPhone: assignment.driverPhone || prev.assignedDriverPhone,
+            driverEnRoute: Boolean(assignment.enRoute)
           };
         }
         return prev;
@@ -940,57 +968,115 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  const addCustomer = useCallback((customerData: Omit<Customer, 'id' | 'createdAt'>): Customer => {
+  const persistCustomer = useCallback(async (customer: Customer): Promise<boolean> => {
+    const normalizedId = customer.id.trim().replace(/^db-user-/, '');
+    const serverId = /^\d+$/.test(normalizedId) ? normalizedId : undefined;
+    const phone = customer.phone?.trim();
+    if (!serverId && !phone) return false;
+
+    try {
+      const city = resolveCustomerCity(customer);
+      const result = await api.saveUser({
+        ...(serverId ? { id: serverId } : {}),
+        name: customer.contactName?.trim() || customer.fullName,
+        full_name: customer.fullName?.trim() || customer.contactName,
+        name_completo: customer.fullName?.trim() || customer.contactName,
+        phone,
+        cpf: customer.cpf,
+        cnpj: customer.cnpj,
+        person_type: customer.personType,
+        address: customer.address || '',
+        endereco: customer.address || '',
+        coordinates: customer.coordinates || null,
+        additionalAddresses: customer.additionalAddresses || [],
+        additional_addresses: customer.additionalAddresses || [],
+        ...(city ? { city, cidade: city } : {}),
+        access_level: 'cliente'
+      });
+      if (!result.success) return false;
+
+      const savedId = String(result.id ?? result.data?.id ?? normalizedId);
+      setCustomers(prev => {
+        const normalizedCustomerId = customer.id.replace(/^db-user-/, '');
+        const matchingIds = prev
+          .map((item, index) => ({ item, index }))
+          .filter(({ item }) => item.id.replace(/^db-user-/, '') === normalizedCustomerId);
+        const phoneDigits = phone?.replace(/\D/g, '') || '';
+        const phoneMatches = phoneDigits
+          ? prev.map((item, index) => ({ item, index })).filter(({ item }) => item.phone.replace(/\D/g, '') === phoneDigits)
+          : [];
+        const matchIndex = matchingIds[0]?.index ?? (phoneMatches.length === 1 ? phoneMatches[0].index : -1);
+        const savedCustomer = {
+          ...(matchIndex >= 0 ? prev[matchIndex] : {}),
+          ...customer,
+          id: matchIndex >= 0 && !prev[matchIndex].id.replace(/^db-user-/, '').startsWith('cust-')
+            ? prev[matchIndex].id.replace(/^db-user-/, '')
+            : savedId,
+          ...(city ? { city, cidade: city } : {})
+        };
+        const next = [...prev];
+        if (matchIndex >= 0) next[matchIndex] = savedCustomer;
+        else next.unshift(savedCustomer);
+        return next;
+      });
+      return true;
+    } catch (error) {
+      console.warn('[Customers] Falha ao persistir cliente:', error);
+      return false;
+    }
+  }, []);
+
+  const addCustomer = useCallback((customerData: Omit<Customer, 'id' | 'createdAt'>, options?: { persist?: boolean }): Customer => {
+    const city = resolveCustomerCity(customerData);
     const newCustomer: Customer = {
       ...customerData,
+      ...(city ? { city, cidade: city } : {}),
       id: `cust-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       createdAt: Date.now()
     };
-    setCustomers(prev => {
-      const next = [newCustomer, ...prev];
-      try {
-        localStorage.setItem('encomendaszap_customers', JSON.stringify(next));
-      } catch (e) {
-        // ignore
-      }
-      return next;
-    });
+    setCustomers(prev => [newCustomer, ...prev]);
 
-    // Sincroniza novo cliente no backend Express
-    api.saveUser({
-      name: customerData.fullName,
-      name_completo: customerData.fullName,
-      phone: customerData.phone,
-      cpf: customerData.cpf,
-      cidade: customerData.address,
-      access_level: 'cliente'
-    }).catch(() => {});
+    if (options?.persist !== false) {
+      void persistCustomer(newCustomer);
+    }
 
     return newCustomer;
-  }, []);
+  }, [persistCustomer]);
 
-  const updateCustomer = useCallback((id: string, partial: Partial<Customer>) => {
+  const updateCustomer = useCallback(async (id: string, partial: Partial<Customer>): Promise<boolean> => {
+    const existingCustomer = customers.find(customer => customer.id === id);
+    const addressChanged = partial.address !== undefined && partial.address !== existingCustomer?.address;
+    const cityChanged = partial.city !== undefined && partial.city !== existingCustomer?.city;
+    const legacyCityChanged = partial.cidade !== undefined && partial.cidade !== existingCustomer?.cidade;
+    const cityFromAddress = addressChanged ? resolveCustomerCity({ address: partial.address }) : undefined;
+    const cityFromFields = cityChanged || legacyCityChanged
+      ? resolveCustomerCity({ city: partial.city, cidade: partial.cidade })
+      : undefined;
+    const city = cityFromAddress || cityFromFields || resolveCustomerCity(existingCustomer || {}) || resolveCustomerCity(partial);
+    const normalizedPartial = city ? { ...partial, city, cidade: city } : partial;
+
+    const customerToPersist = {
+      ...(existingCustomer || {}),
+      ...normalizedPartial,
+      id
+    } as Customer;
+    const saved = await persistCustomer(customerToPersist);
+    if (!saved) return false;
+
+    return true;
+  }, [customers, persistCustomer]);
+
+  const deleteCustomer = useCallback(async (id: string): Promise<boolean> => {
+    const normalizedId = normalizeCustomerId(id);
+    if (!/^\d+$/.test(normalizedId)) return false;
+
+    const result = await api.deleteUser(normalizedId);
+    if (!result.success) return false;
+
     setCustomers(prev => {
-      const next = prev.map(c => c.id === id ? { ...c, ...partial } : c);
-      try {
-        localStorage.setItem('encomendaszap_customers', JSON.stringify(next));
-      } catch (e) {
-        // ignore
-      }
-      return next;
+      return prev.filter(customer => normalizeCustomerId(customer.id) !== normalizedId);
     });
-
-    // Atualiza no backend Express se for ID do servidor
-    const numericId = id.replace(/\D/g, '');
-    if (numericId) {
-      api.saveUser({
-        id: numericId,
-        ...(partial.fullName ? { name: partial.fullName, name_completo: partial.fullName } : {}),
-        ...(partial.phone ? { phone: partial.phone } : {}),
-        ...(partial.cpf ? { cpf: partial.cpf } : {}),
-        ...(partial.address ? { cidade: partial.address } : {})
-      }).catch(() => {});
-    }
+    return true;
   }, []);
 
   const [customerLocationModalData, setCustomerLocationModalData] = useState<CustomerLocationModalData | null>(null);
@@ -1026,20 +1112,22 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return prev;
     });
 
-    // Sincroniza atualização de pedido no Firebase (Motoristas NÃO podem editar pedidos)
+    // Sincroniza atualização de pedido no servidor (Motoristas NÃO podem editar pedidos)
     const isDriver = currentRole === 'motorista' || user?.userRole === 'motorista' || localStorage.getItem('encomendaszap_user_role') === 'motorista';
     if (isDriver) {
       return;
     }
 
-    const numId = placeId.match(/pedido-(\d+)/)?.[1] || placeId.match(/\d+/)?.[0];
-    if (numId) {
+    const numId = resolvePlaceId(placeId).match(/pedido-(\d+)/)?.[1] || placeId.match(/\d+/)?.[0];
+    if (numId && !isTempPedidoNumber(numId)) {
       api.savePedido({
         id: numId,
         ...(partial.customerName ? { cliente: partial.customerName } : {}),
         ...(partial.customerPhone ? { phone: partial.customerPhone } : {}),
-        ...(partial.orderStage ? { etapa: partial.orderStage } : {}),
-        ...(partial.operationType ? { tipo_encomenda: partial.operationType } : {}),
+        // orderStage (coleta/troca/entrega/retorno) é só a visão da parada ativa no mapa, não a etapa do banco.
+        // Enviá-lo como etapa fazia o backend gravar "pendente" e reabrir pedidos já entregues.
+        ...(partial.orderStage === 'concluido' ? { etapa: 'entregue' } : {}),
+        ...(partial.operationType && !partial.orderStage ? { tipo_encomenda: partial.operationType } : {}),
         ...(partial.vehicleType ? { tipo_veiculo: partial.vehicleType } : {}),
         ...(partial.driverNotes || partial.observations ? { detalhes: partial.driverNotes || partial.observations } : {}),
         ...(partial.price ? { total: partial.price } : {}),
@@ -1054,14 +1142,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const assignPlaceToDriver = useCallback((placeId: string, driverId: string | null, driverPhone?: string, driverName?: string) => {
-    const numericPedidoId = placeId.match(/pedido-(\d+)/)?.[1] || placeId.match(/\d+/)?.[0];
+    const numericPedidoId = resolvePlaceId(placeId).match(/pedido-(\d+)/)?.[1] || placeId.match(/\d+/)?.[0];
     const cleanMotoristaId = driverId ? parseInt(driverId.replace(/\D/g, ''), 10) || null : null;
     const finalDriverId = cleanMotoristaId ? String(cleanMotoristaId) : (driverId || undefined);
 
     const targetPlace = allPlaces.find(p => p.id === placeId) || (selectedPlace?.id === placeId ? selectedPlace : null);
     const op: OperationType = targetPlace?.operationType || (placeId.includes('entrega') ? 'entrega' : placeId.includes('troca') ? 'troca' : 'coleta');
 
-    // 1. Sincroniza via Realtime Assignment Service (WebSocket + Firebase RTDB + REST)
+    // 1. Sincroniza via Realtime Assignment Service (REST)
     if (finalDriverId) {
       realtimeAssignmentService.assignOrder(placeId, {
         id: finalDriverId,
@@ -1128,7 +1216,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Sincroniza persistência do motorista no backend Express (/pedidos/save)
     // Atualiza estritamente os campos da operação correspondente (coleta ou entrega)
-    if (numericPedidoId) {
+    if (numericPedidoId && !isTempPedidoNumber(numericPedidoId)) {
       const payload: Partial<BackendPedido> = {
         id: numericPedidoId,
       };
@@ -1219,7 +1307,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     try {
-      return localStorage.getItem('encomendaszap_is_authenticated') === 'true';
+      return localStorage.getItem('encomendaszap_is_authenticated') === 'true'
+        && !!localStorage.getItem('encomendaszap_logged_account');
     } catch {
       return false;
     }
@@ -1245,18 +1334,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             vehicleType: acc.vehicleType || (acc.role === 'motorista' ? 'moto' : undefined)
           };
         }
-        const savedRole = localStorage.getItem('encomendaszap_user_role') as UserRole;
-        const account = Object.values(ACCOUNTS).find(a => a.role === savedRole) || ACCOUNTS['62996157341'];
         return {
           ...DEFAULT_USER,
-          id: account.id || DEFAULT_USER.id,
-          name: account.name,
-          phone: account.phone,
-          role: account.roleLabel,
-          userRole: account.role,
-          avatarUrl: customAvatar || account.avatarUrl,
-          vehicle: account.vehicle,
-          vehicleType: account.vehicleType || (account.role === 'motorista' ? 'moto' : undefined)
+          name: 'Não Conectado',
+          phone: '',
+          role: 'Aguardando Login',
+          userRole: 'atendente',
+          avatarUrl: '/logo.svg'
         };
       }
     } catch (e) {
@@ -1273,35 +1357,29 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
 
   const setCurrentRole = useCallback((newRole: UserRole) => {
+    // Troca de perfil só é permitida a partir da conta real logada (admin geral)
+    let loggedRole: UserRole | null = null;
+    try {
+      const loggedStr = localStorage.getItem('encomendaszap_logged_account');
+      if (loggedStr) loggedRole = JSON.parse(loggedStr).role;
+    } catch {}
+    if (loggedRole !== 'admin_geral' && loggedRole !== newRole) return;
     setCurrentRoleState(newRole);
     try {
       localStorage.setItem('encomendaszap_user_role', newRole);
     } catch (e) {
       // ignore
     }
-    const account = Object.values(ACCOUNTS).find(a => a.role === newRole);
-    if (account) {
-      const customAvatar = localStorage.getItem('encomendaszap_user_avatar');
-      setUser(prev => ({
-        ...prev,
-        id: account.id || prev.id,
-        name: account.name,
-        phone: account.phone,
-        role: account.roleLabel,
-        userRole: account.role,
-        avatarUrl: customAvatar || account.avatarUrl,
-        vehicle: account.vehicle,
-        vehicleType: account.vehicleType || (account.role === 'motorista' ? 'moto' : undefined)
-      }));
-    }
+    setUser(prev => ({ ...prev, userRole: newRole }));
   }, []);
 
   const loginWithAccount = useCallback((account: AuthAccount) => {
     setIsAuthenticated(true);
     setCurrentRoleState(account.role);
-    const customAvatar = localStorage.getItem('encomendaszap_user_avatar');
-    const finalAvatar = customAvatar || account.avatarUrl;
+    const finalAvatar = account.avatarUrl;
+    setSelectedPlace(null);
     try {
+      localStorage.removeItem('encomendaszap_user_avatar');
       localStorage.setItem('encomendaszap_user_role', account.role);
       localStorage.setItem('encomendaszap_is_authenticated', 'true');
       localStorage.setItem('encomendaszap_logged_account', JSON.stringify({ ...account, avatarUrl: finalAvatar }));
@@ -1310,7 +1388,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     setUser(prev => ({
       ...prev,
-      id: account.id || prev.id,
+      id: account.id || '',
       name: account.name,
       phone: account.phone,
       role: account.roleLabel,
@@ -1324,14 +1402,19 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const logout = useCallback(() => {
     setIsAuthenticated(false);
+    setSelectedPlace(null);
     try {
       localStorage.removeItem('encomendaszap_is_authenticated');
       localStorage.removeItem('encomendaszap_logged_account');
+      localStorage.removeItem('encomendaszap_user_avatar');
     } catch (e) {
       // ignore
     }
     setUser(prev => ({
       ...prev,
+      id: '',
+      vehicle: undefined,
+      vehicleType: undefined,
       name: 'Não Conectado',
       phone: '',
       role: 'Aguardando Login',
@@ -1351,6 +1434,11 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const driverId = user.id || (user.phone === '62996157343' ? 'usr-mot-04' : user.phone === '62996157344' ? 'usr-mot-05' : 'usr-mot-me');
     const driverName = user.name || 'Motorista Parceiro';
     const driverPhone = user.phone || '';
+    const claimOp: OperationType | undefined = allPlaces.find(p => p.id === placeId)?.operationType;
+
+    // Reserva o pedido no servidor primeiro: se outro motorista aceitou antes, este perde
+    const won = await realtimeAssignmentService.claimOrder(placeId, { id: driverId, name: driverName, phone: driverPhone }, claimOp);
+    if (!won) return false;
 
     // Atribui o motorista via serviço de tempo real
     assignPlaceToDriver(placeId, driverId, driverPhone, driverName);
@@ -1408,7 +1496,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     return true;
-  }, [user, assignPlaceToDriver]);
+  }, [user, assignPlaceToDriver, allPlaces]);
 
   // Sincroniza sessão ativa e foto de perfil diretamente com o servidor central
   useEffect(() => {
@@ -1424,7 +1512,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : u.access_level === 'terminal' ? 'terminal'
           : 'atendente';
 
-        const photoUrl = u.foto ? (formatPhotoUrl(u.foto) || u.foto) : null;
+        const rawPhoto = u.foto || u.avatarUrl || u.photo;
+        const photoUrl = rawPhoto ? (formatPhotoUrl(rawPhoto) || rawPhoto) : null;
         setIsAuthenticated(true);
         setCurrentRoleState(mappedRole);
         setUser(prev => {
@@ -2113,7 +2202,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const custId = newPlace.customerId;
 
       setCustomers(prev => {
-        let changed = false;
         const next = prev.map(c => {
           const cPhoneDigits = (c.phone || '').replace(/\D/g, '');
           const cName = (c.fullName || '').toLowerCase().trim();
@@ -2122,7 +2210,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             (custName && cName && (custName === cName || cName.includes(custName) || custName.includes(cName)));
 
           if (matches) {
-            changed = true;
             const updatedCount = (c.orderCount || 0) + 1;
             customerOrderStatsService.registerOrder(c);
             return { ...c, orderCount: updatedCount };
@@ -2130,11 +2217,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return c;
         });
 
-        if (changed) {
-          try {
-            localStorage.setItem('encomendaszap_customers', JSON.stringify(next));
-          } catch {}
-        }
         return next;
       });
 
@@ -2172,7 +2254,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ? newPlace.exchangeCoordinates!.lng 
       : (op === 'troca' ? newPlace.coordinates?.lng : undefined);
 
-    // Envia o novo pedido para a API Express (/pedidos/save) e sincroniza com Firebase
+    // Envia o novo pedido para a API Express (/pedidos/save)
     api.savePedido({
       cliente: newPlace.customerName || 'Cliente EncomendasZap',
       phone: newPlace.customerPhone || '',
@@ -2206,6 +2288,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const savedId = String(res.data.id);
         const serverPlaceId = `pedido-${savedId}`;
         const serverOrderCode = `EZ-${savedId}-GO`;
+        tempPedidoIdMap.set(newPlace.id, serverPlaceId);
         setAllPlaces(prev => {
           const next = prev.map(p => p.id === newPlace.id ? { ...p, id: serverPlaceId, orderCode: serverOrderCode } : p);
           try {
@@ -2222,7 +2305,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [flyToLocation]);
 
   // Dá baixa em um ponto (coleta, troca ou entrega) e avança para a próxima etapa conforme as regras do EncomendasZap
-  const completePlaceWaypoint = useCallback(async (placeId: string, receiverName?: string, notes?: string) => {
+  const completePlaceWaypoint = useCallback(async (rawPlaceId: string, receiverName?: string, notes?: string) => {
+    const placeId = resolvePlaceId(rawPlaceId);
     const now = new Date();
     const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     const todayStr = now.toISOString().split('T')[0];
@@ -2318,6 +2402,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: isFailedAttempt ? 'failed' : 'success',
       isFinal: isFinalOrderCompletion,
       driverName: assignedDriverName,
+      driverId: user?.id ? String(user.id) : undefined,
       driverPhone: user?.phone || place?.assignedDriverPhone,
       driverPhoto: user?.avatarUrl,
       photos: placePhotos,
@@ -2547,8 +2632,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setViewingPhotoPlace(null);
     setViewingPhotoUrl(null);
 
-    // 5. SINCRONIZAÇÃO COMPLETA E GARANTIDA COM O FIREBASE E SERVIDOR
-    if (targetPedidoId) {
+    // 5. SINCRONIZAÇÃO COMPLETA E GARANTIDA COM O SERVIDOR
+    if (targetPedidoId && !isTempPedidoNumber(String(targetPedidoId).replace(/\D/g, '') || null)) {
       const cleanUserId = user?.id ? parseInt(String(user.id).replace(/\D/g, ''), 10) || 1 : 1;
       const operatorName = receiverName || user?.name || 'Operador';
       const nowIso = now.toISOString();
@@ -2570,7 +2655,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ? 'trocado' 
           : 'entregue';
 
-        // 5.1 Marca etapa no Firebase Firestore e servidor Express
+        // 5.1 Marca etapa no servidor
         try {
           await api.marcarColetaEntrega(targetPedidoId, etapaBackend, cleanUserId, operatorName);
         } catch (err) {
@@ -2594,7 +2679,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           console.warn('[Baixa] Erro em savePedido:', err);
         }
 
-        // 5.3 Registra presença de saída no Firebase
+        // 5.3 Registra presença de saída no servidor
         const presenceCampo = currentOp === 'coleta' ? 'coleta_saida_at' : currentOp === 'troca' ? 'troca_saida_at' : 'entrega_saida_at';
         await api.registrarPresenca(targetPedidoId, presenceCampo, nowIso).catch(() => {});
 
@@ -2610,7 +2695,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [allPlaces, savedPlaces, selectedPlace, currentCoords, flyToLocation, user]);
 
-  // Reinicia / sincroniza as encomendas ativas diretamente do servidor Dotas.online
+  // Reinicia / sincroniza as encomendas ativas diretamente do servidor
   const resetWorkflowToColetas = useCallback(() => {
     setCompletedWaypointMarks([]);
     try {
@@ -2912,6 +2997,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         openCustomerList,
         closeCustomerList,
         isOrdersModalOpen,
+        routeSelectMode,
+        routeSelectedIds,
+        startRouteSelection,
+        cancelRouteSelection,
+        toggleRouteSelection,
+        isRoutePickerOpen,
+        setIsRoutePickerOpen,
         setIsOrdersModalOpen,
         openOrdersModal,
         closeOrdersModal,
@@ -2966,7 +3058,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatePlaceDetails,
         customers,
         addCustomer,
+        persistCustomer,
         updateCustomer,
+        deleteCustomer,
         customerLocationModalData,
         openCustomerLocationModal,
         closeCustomerLocationModal,

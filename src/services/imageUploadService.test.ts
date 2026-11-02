@@ -4,8 +4,6 @@ import { uploadImage } from './imageUploadService';
 
 const options = {
   type: 'perfil',
-  imageServerUrl: 'https://images.example.com/images.php',
-  imageServerPassword: 'test-password',
   fallbackEndpoint: '/users/upload_foto',
   fallbackData: { user_id: 42, phone: '62999990000' }
 };
@@ -18,35 +16,33 @@ function mockResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
-test('uses the URL returned by the PHP image server', async () => {
+test('uploads through the app server without sending image server credentials', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => mockResponse({
-    success: true,
-    url: 'https://images.example.com/images.php?f=profile.jpg'
-  });
+  let requestUrl = '';
+  let requestBody: Record<string, unknown> = {};
+  globalThis.fetch = async (input, init) => {
+    requestUrl = String(input);
+    requestBody = JSON.parse(String(init?.body));
+    return mockResponse({ success: true, data: { path: 'https://images.example.com/images.php?f=profile.jpg' } });
+  };
 
   try {
     const url = await uploadImage('data:image/jpeg;base64,dGVzdA==', options);
     assert.equal(url, 'https://images.example.com/images.php?f=profile.jpg');
+    assert.equal(requestUrl, '/users/upload_foto');
+    assert.equal('imageServerPassword' in requestBody, false);
+    assert.equal('imageServerUrl' in requestBody, false);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test('uses a persisted app-server file when PHP upload fails', async () => {
+test('returns the configured backend error without trying a local upload fallback', async () => {
   const originalFetch = globalThis.fetch;
-  let requestCount = 0;
-  globalThis.fetch = async () => {
-    requestCount += 1;
-    return requestCount === 1
-      ? mockResponse({ success: false }, 503)
-      : mockResponse({ success: true, data: { path: '/uploads/users/profile.jpg' } });
-  };
+  globalThis.fetch = async () => mockResponse({ success: false, message: 'Image server unavailable' }, 502);
 
   try {
-    const url = await uploadImage('data:image/jpeg;base64,dGVzdA==', options);
-    assert.equal(url, '/uploads/users/profile.jpg');
-    assert.equal(requestCount, 2);
+    await assert.rejects(uploadImage('data:image/jpeg;base64,dGVzdA==', options), /Image server unavailable/);
   } finally {
     globalThis.fetch = originalFetch;
   }

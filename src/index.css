@@ -49,6 +49,19 @@ input, textarea, select, button {
   font-family: inherit;
 }
 
+input, textarea, select {
+  color-scheme: light;
+  accent-color: #0B5187;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([class*="bg-"]),
+textarea:not([class*="bg-"]),
+select:not([class*="bg-"]) {
+  background-color: #F8FAFC;
+  color: #0F172A;
+  border-color: #CBD5E1;
+}
+
 /* Leaflet container fixes */
 .leaflet-container {
   width: 100%;

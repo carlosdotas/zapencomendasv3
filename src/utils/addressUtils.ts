@@ -1,47 +1,62 @@
-/**
- * Utilitários para tratamento e extração de cidade/endereço
- */
+/** Shared normalization for city names stored on customer records. */
+export function normalizeCityName(value?: string | null): string | undefined {
+  const cleanValue = value?.trim().replace(/\s+/g, ' ');
+  if (!cleanValue) return undefined;
 
-export const extractCityFromAddress = (address: string): string => {
-  if (!address || typeof address !== 'string') return 'Goiânia - GO';
-  
-  // Procura por padrão ", Cidade - UF"
-  const match = address.match(/(?:,\s*|;\s*)([A-Za-zÀ-ÿ\s]+)\s*-\s*([A-Z]{2})\b/i);
-  if (match && match[1] && match[2]) {
-    return `${match[1].trim()} - ${match[2].toUpperCase()}`;
+  const match = cleanValue.match(/^(.*?)\s*[-,]\s*([a-z]{2})$/i);
+  if (!match) return cleanValue;
+
+  const city = match[1].trim().replace(/\s*[-,]\s*[a-z]{2}$/i, '').trim();
+  return city ? `${city} - ${match[2].toUpperCase()}` : undefined;
+}
+
+function extractCityOrUndefined(address?: string | null): string | undefined {
+  if (!address || typeof address !== 'string') return undefined;
+
+  const addressMatch = address.match(/(?:^|[,;])\s*([^,;]+?)\s*[-,]\s*([a-z]{2})\b/i);
+  if (addressMatch?.[1] && addressMatch[2]) {
+    return normalizeCityName(`${addressMatch[1]} - ${addressMatch[2]}`);
   }
 
-  // Identifica estado se presente
-  const stateMatch = address.match(/-\s*([A-Z]{2})\b/i);
-  const stateSuffix = stateMatch ? stateMatch[1].toUpperCase() : 'GO';
-
-  const lower = address.toLowerCase();
-  if (lower.includes('aparecida de goiânia') || lower.includes('aparecida de goiania') || lower.includes('aparecida')) {
-    return `Aparecida de Goiânia - ${stateSuffix}`;
-  }
-  if (lower.includes('anápolis') || lower.includes('anapolis')) {
-    return `Anápolis - ${stateSuffix}`;
-  }
-  if (lower.includes('senador canedo')) {
-    return `Senador Canedo - ${stateSuffix}`;
-  }
-  if (lower.includes('trindade')) {
-    return `Trindade - ${stateSuffix}`;
-  }
-  if (lower.includes('brasília') || lower.includes('brasilia')) {
-    return 'Brasília - DF';
-  }
-  if (lower.includes('goiânia') || lower.includes('goiania')) {
-    return `Goiânia - ${stateSuffix}`;
-  }
+  const normalizedAddress = address.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const stateSuffix = address.match(/[-,]\s*([a-z]{2})\b/i)?.[1]?.toUpperCase() || 'GO';
+  const knownCities = [
+    { match: 'aparecida de goiania', name: 'Aparecida de Goiânia' },
+    { match: 'senador canedo', name: 'Senador Canedo' },
+    { match: 'anapolis', name: 'Anápolis' },
+    { match: 'brasilia', name: 'Brasília', state: 'DF' },
+    { match: 'goiania', name: 'Goiânia' },
+    { match: 'trindade', name: 'Trindade' }
+  ];
+  const knownCity = knownCities.find(city => normalizedAddress.includes(city.match));
+  if (knownCity) return `${knownCity.name} - ${knownCity.state || stateSuffix}`;
 
   const parts = address.split('-');
   if (parts.length >= 2) {
-    const citySegment = parts[parts.length - 2].split(',').pop();
-    if (citySegment && citySegment.trim()) {
-      return `${citySegment.trim()} - ${stateSuffix}`;
+    const citySegment = parts[parts.length - 2].split(',').pop()?.trim();
+    if (citySegment && !/^\d/.test(citySegment)) {
+      return normalizeCityName(`${citySegment} - ${stateSuffix}`);
     }
   }
 
-  return 'Goiânia - GO';
-};
+  return undefined;
+}
+
+export interface CustomerCitySource {
+  city?: string | null;
+  cidade?: string | null;
+  destinationCity?: string | null;
+  originCity?: string | null;
+  address?: string | null;
+}
+
+export function resolveCustomerCity(source: CustomerCitySource): string | undefined {
+  const city = normalizeCityName(source.city) ||
+    normalizeCityName(source.cidade) ||
+    normalizeCityName(source.destinationCity) ||
+    normalizeCityName(source.originCity);
+  return city || extractCityOrUndefined(source.address);
+}
+
+export const extractCityFromAddress = (address: string): string =>
+  extractCityOrUndefined(address) || 'Goiânia - GO';

@@ -1,6 +1,7 @@
 import { Place, LocationCoordinates, OperationType, Driver, OrderDateBadgeType, VehicleCollectionType } from '../types/map';
 import { Customer } from '../types/customer';
 import { isStreetOrAddress, resolveCommercialClosingTime } from '../utils/placeUtils';
+import { resolveCustomerCity } from '../utils/addressUtils';
 import { 
   BackendLocal, 
   BackendPedido, 
@@ -144,7 +145,7 @@ export function getVariantSuffix(size: PhotoVariantSize = 'md'): string {
  * - lg: _lg.jpg (800 x 800 px - ampliação / fullscreen)
  * 
  * Trata tanto caminhos relativos (/uploads/pedidos/mercadoria/...),
- * URLs completas (https://dotas.online/uploads/pedidos/mercadoria/..._lg.jpg),
+ * URLs completas (https://host/uploads/pedidos/mercadoria/..._lg.jpg),
  * caminhos sem sufixo, e URLs legadas base64 data:.
  */
 export function normalizePhotoPath(item: any, size: PhotoVariantSize = 'md'): string {
@@ -176,6 +177,8 @@ export function normalizePhotoPath(item: any, size: PhotoVariantSize = 'md'): st
     ? cleanServerEndpoint 
     : `${cleanServerEndpoint}/images.php`;
   let resolvedPhpEndpoint = phpEndpoint;
+  const defaultImageServer = 'http://localhost/imagens/images.php';
+  const hasConfiguredImageServer = Boolean(cleanServerEndpoint && cleanServerEndpoint !== defaultImageServer);
 
   try {
     const sourceUrl = new URL(trimmed);
@@ -224,11 +227,23 @@ export function normalizePhotoPath(item: any, size: PhotoVariantSize = 'md'): st
     }
   }
 
-  const suffix = getVariantSuffix(size);
   const baseUrl = getApiBaseUrl().replace(/\/+$/, '');
+  const suffix = getVariantSuffix(size);
 
-  // Se for foto de perfil / usuário legada no disco do servidor Node
+  // Fotos de usuário enviadas ao servidor PHP devem usar o endpoint configurado.
   if (trimmed.includes('/uploads/users/') || trimmed.includes('/avatar')) {
+    if (hasConfiguredImageServer) {
+      const filename = trimmed.split('/').pop()?.split(/[?&#]/)[0] || '';
+      const sizeParam = size === 'icon' ? '&w=64&h=64&fit=crop'
+        : size === 'thumb' ? '&w=200&h=200&fit=crop'
+          : size === 'md' ? '&w=480'
+            : '&w=1200';
+      if (filename) {
+        return `${phpEndpoint}?f=${encodeURIComponent(decodeURIComponent(filename))}${sizeParam}`;
+      }
+    }
+
+    // Fallback para fotos armazenadas diretamente no servidor Node.
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
       return trimmed;
     }
@@ -389,6 +404,14 @@ export interface ExtractedDriverAssignment {
   driverId?: string;
   driverName?: string;
   driverPhone?: string;
+}
+
+/** Valor total e situação de pagamento do pedido, como gravados no banco. */
+export function pedidoPaymentFields(pedido?: Partial<BackendPedido> | null): Pick<Place, 'price' | 'paymentStatus' | 'isPaid'> {
+  const anyPedido = (pedido || {}) as any;
+  const price = Number(anyPedido.total ?? anyPedido.valor_total ?? anyPedido.valor ?? 0) || 0;
+  const isPaid = String(anyPedido.status_pagamento || '').toLowerCase().trim() === 'pago';
+  return { price, paymentStatus: isPaid ? 'pago' : 'pendente', isPaid };
 }
 
 /**
@@ -602,6 +625,7 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
 
   return {
     id: `pedido-${pedido.id}-${activeOperationType}`,
+    ...pedidoPaymentFields(pedido),
     orderCode: `EZ-${pedido.id}-GO`,
     name: activeName,
     address: activeAddress,
@@ -746,6 +770,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
   const cleanOrderDate = String(pedido.data || pedido.created_at || '').slice(0, 10) || undefined;
 
   const baseShared = {
+    ...pedidoPaymentFields(pedido),
     id: `pedido-${pedido.id}`,
     orderId: String(pedido.id),
     pedido_id: pedido.id,
@@ -975,7 +1000,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
 }
 
 /**
- * Converte um marcador retornado por POST /tracking/order_markers do Dotas.online em um Place no mapa.
+ * Converte um marcador retornado por POST /tracking/order_markers em um Place no mapa.
  * Garante que:
  * 1. Marcador com tipo === 'coleta' é SEMPRE Coleta (coordenadas, nome do local e operação da coleta)
  * 2. Marcador com tipo === 'entrega' é SEMPRE Entrega ou Troca (coordenadas, nome do local e operação de entrega)
@@ -1072,6 +1097,7 @@ export function backendOrderMarkerToPlace(
 
   return {
     id: `pedido-${marker.pedido_id}-${marker.tipo}`,
+    ...pedidoPaymentFields(fullPedido),
     orderId: String(marker.pedido_id),
     pedido_id: marker.pedido_id,
     orderCode: `EZ-${marker.pedido_id}-GO`,
@@ -1174,17 +1200,35 @@ export function backendOrderMarkerToPlace(
  * Converte um User retornado por POST /users/list ou POST /pedidos/list_users em Customer
  */
 export function backendUserToCustomer(user: BackendUser): Customer {
-  const city = user.cidade || (user as any).city;
+  const rawCoordinates = user.coordinates as { lat?: unknown; lng?: unknown } | undefined;
+  const lat = Number(rawCoordinates?.lat);
+  const lng = Number(rawCoordinates?.lng);
+  const coordinates = Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0)
+    ? { lat, lng }
+    : undefined;
+  const additionalAddresses = Array.isArray(user.additionalAddresses)
+    ? user.additionalAddresses
+    : Array.isArray(user.additional_addresses)
+      ? user.additional_addresses
+      : [];
+  const city = resolveCustomerCity({
+    city: user.city,
+    cidade: user.cidade,
+    address: user.address || user.endereco
+  });
   return {
     id: String(user.id),
-    fullName: user.name_completo || user.name,
+    fullName: user.full_name || user.name_completo || user.name,
+    contactName: user.name,
     phone: user.phone,
     cpf: user.cpf || (user as any).cnpj || '',
     cnpj: (user as any).cnpj,
     personType: (user as any).person_type,
-    city: city,
+    city,
     cidade: city,
-    address: city ? `${city} - GO` : 'Goiânia - GO',
+    address: user.address || user.endereco || '',
+    coordinates,
+    additionalAddresses,
     notes: user.cliente_especial ? 'Cliente Especial' : undefined,
     orderCount: Number(user.orderCount ?? user.order_count ?? user.pedidos_count ?? 0),
     createdAt: user.created_at ? new Date(user.created_at).getTime() : Date.now()

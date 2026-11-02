@@ -8,3 +8,11 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Banco local antigo (SQLite, n√£o utilizado mais)
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+
+# Dados reais do banco (n„o versionar)
+backend/database/u195978639_dotas.sql
+backend/database/importedUsers.json

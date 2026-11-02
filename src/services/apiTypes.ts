@@ -10,6 +10,8 @@ export interface ApiResponse<T = any> {
   data?: T;
   path?: string;
   total?: number;
+  hasMore?: boolean;
+  cursor?: string;
   page?: number;
   limit?: number;
   id?: string | number;
@@ -24,6 +26,8 @@ export interface BackendLoginData {
   phone: string;
   access_level: string;
   foto?: string;
+  avatarUrl?: string;
+  photo?: string;
 }
 
 export interface BackendUser {
@@ -31,8 +35,22 @@ export interface BackendUser {
   name: string;
   phone: string;
   access_level: string;
+  full_name?: string;
   name_completo?: string;
   cpf?: string;
+  address?: string;
+  endereco?: string;
+  coordinates?: { lat: number; lng: number } | null;
+  additionalAddresses?: Array<{
+    id: string;
+    label?: string;
+    address: string;
+    city?: string;
+    cidade?: string;
+    coordinates?: { lat: number; lng: number };
+  }>;
+  additional_addresses?: BackendUser['additionalAddresses'];
+  city?: string;
   cidade?: string;
   cliente_especial?: boolean | number;
   paga_semanal?: boolean | number;

@@ -38,8 +38,7 @@ import {
   MASTER_ADMIN_CLEAN, 
   MASTER_ADMIN_CODE 
 } from '../../../types/company';
-import { firebaseCompanyService } from '../../../services/firebaseCompanyService';
-import { ACCOUNTS } from '../../../data/authAccounts';
+import { companyService } from '../../../services/companyService';
 import { api } from '../../../services/api';
 import { BackendUser } from '../../../services/apiTypes';
 import { formatPhotoUrl } from '../../../services/apiAdapters';
@@ -65,7 +64,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
 
   // Verifica se o usuário atual é o Master Admin
   const isCurrentlyMaster = useMemo(() => {
-    return firebaseCompanyService.isMasterAdmin(user?.phone);
+    return companyService.isMasterAdmin(user?.phone);
   }, [user?.phone]);
 
   // Se não for detectado automaticamente pelo telefone da sessão, permite autenticar via PIN Master
@@ -73,8 +72,8 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState(false);
 
-  // Lista de empresas sincronizada em tempo real com o Firestore
-  const [companies, setCompanies] = useState<CompanyTransportadora[]>(() => firebaseCompanyService.getAll());
+  // Lista de empresas sincronizada periodicamente com o servidor
+  const [companies, setCompanies] = useState<CompanyTransportadora[]>(() => companyService.getAll());
   const [search, setSearch] = useState('');
 
   // Usuários do sistema (carregados da API + Contas + Drivers)
@@ -96,9 +95,9 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   const [isSaving, setIsSaving] = useState(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
 
-  // Carrega lista de empresas do Firestore
+  // Carrega lista de empresas do servidor
   useEffect(() => {
-    const unsub = firebaseCompanyService.subscribe((list) => {
+    const unsub = companyService.subscribe((list) => {
       setCompanies(list);
     });
     return () => unsub();
@@ -109,27 +108,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
     setIsLoadingUsers(true);
     const usersMap = new Map<string, SystemUserOption>();
 
-    // 1. Contas pré-configuradas do sistema (ACCOUNTS)
-    Object.values(ACCOUNTS).forEach(acc => {
-      const clean = acc.cleanPhone || acc.phone.replace(/\D/g, '');
-      const role = (acc.role === 'admin_geral' || (acc.role as string) === 'admin') ? 'admin' 
-        : acc.role === 'atendente' ? 'atendente' 
-        : acc.role === 'motorista' ? 'motorista' 
-        : 'cliente';
-
-      usersMap.set(clean, {
-        id: acc.id || `acc-${clean}`,
-        name: acc.name,
-        phone: acc.phone,
-        cleanPhone: clean,
-        role,
-        roleLabel: acc.roleLabel || (role === 'admin' ? 'Administrador' : role === 'atendente' ? 'Atendente' : role === 'motorista' ? 'Motoboy' : 'Cliente'),
-        avatarUrl: acc.avatarUrl,
-        department: acc.department
-      });
-    });
-
-    // 2. Motoristas cadastrados no estado da aplicação (drivers)
+    // 1. Motoristas cadastrados no estado da aplicação (drivers)
     drivers.forEach(d => {
       const clean = (d.phone || '').replace(/\D/g, '');
       if (clean) {
@@ -147,7 +126,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
       }
     });
 
-    // 3. Usuários registrados no banco de dados (API / Firebase Users)
+    // 3. Usuários registrados no banco de dados (API / Users)
     try {
       const res = await api.listUsers({ limit: 150 });
       if (res && res.success && Array.isArray(res.data)) {
@@ -247,9 +226,9 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   };
 
   const handleDeleteCompany = async (id: string, name: string) => {
-    if (window.confirm(`Tem certeza que deseja excluir a empresa/transportadora "${name}" do Firebase?`)) {
-      await firebaseCompanyService.deleteCompany(id);
-      setSaveToast('Transportadora removida do Firebase com sucesso.');
+    if (window.confirm(`Tem certeza que deseja excluir a empresa/transportadora "${name}"?`)) {
+      await companyService.deleteCompany(id);
+      setSaveToast('Transportadora removida com sucesso.');
       setTimeout(() => setSaveToast(null), 3000);
     }
   };
@@ -261,15 +240,15 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
     }
 
     setIsSaving(true);
-    const success = await firebaseCompanyService.saveCompany(editingCompany as CompanyTransportadora);
+    const success = await companyService.saveCompany(editingCompany as CompanyTransportadora);
     setIsSaving(false);
 
     if (success) {
       setIsModalOpen(false);
-      setSaveToast('Dados da transportadora salvos com sucesso no Firebase!');
+      setSaveToast('Dados da transportadora salvos com sucesso!');
       setTimeout(() => setSaveToast(null), 3000);
     } else {
-      alert('Ocorreu um erro ao salvar no Firebase. Verifique sua conexão e tente novamente.');
+      alert('Ocorreu um erro ao salvar. Verifique sua conexão e tente novamente.');
     }
   };
 
@@ -469,7 +448,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
               </h1>
               <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Firebase Online
+                Servidor Online
               </span>
             </div>
             <p className="text-[11px] text-slate-500 font-medium">
@@ -651,7 +630,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
                     {editingCompany.name || 'Nova Transportadora'}
                   </h2>
                   <p className="text-[10px] text-slate-500 font-medium">
-                    Persistido no Firebase Firestore
+                    Persistido no servidor
                   </p>
                 </div>
               </div>
@@ -1086,7 +1065,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
                 className="inline-flex items-center gap-1.5 px-4.5 py-2 bg-[#0B5187] hover:bg-[#083e68] text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50"
               >
                 <Cloud className="w-4 h-4" />
-                <span>{isSaving ? 'Salvando no Firebase...' : 'Salvar no Firebase'}</span>
+                <span>{isSaving ? 'Salvando...' : 'Salvar'}</span>
               </button>
             </div>
           </div>

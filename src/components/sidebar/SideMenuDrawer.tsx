@@ -15,6 +15,7 @@ import {
 import { useMapStore } from '../../context/MapContext';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 import { usePWAUpdate } from '../../services/pwaUpdateService';
+import { UserAvatar } from '../common/UserAvatar';
 
 export const SideMenuDrawer: React.FC = () => {
   const { 
@@ -100,17 +101,13 @@ export const SideMenuDrawer: React.FC = () => {
         {user && (
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
             <div className="flex items-center gap-2.5 min-w-0">
-              {user.avatarUrl ? (
-                <img
-                  src={user.avatarUrl}
-                  alt={user.name || 'Usuário'}
-                  className="w-9 h-9 rounded-full object-cover border border-[#0B5187]/30 shrink-0"
-                />
-              ) : (
-                <div className="w-9 h-9 rounded-full bg-[#0B5187]/10 flex items-center justify-center text-[#0B5187] font-black text-xs border border-[#0B5187]/30 shrink-0">
-                  {user.name ? user.name.slice(0, 2).toUpperCase() : 'EZ'}
-                </div>
-              )}
+              <UserAvatar
+                src={user.avatarUrl}
+                name={user.name}
+                className="h-9 w-9 overflow-hidden rounded-full border border-[#0B5187]/30"
+                imageClassName="h-full w-full rounded-full object-cover"
+                fallbackClassName="flex h-full w-full items-center justify-center rounded-full bg-[#0B5187]/10 text-xs font-black text-[#0B5187]"
+              />
               <div className="min-w-0">
                 <p className="text-xs font-black text-slate-800 truncate">{user.name}</p>
                 <p className="text-[10px] text-slate-500 font-medium truncate">{user.phone || user.role}</p>

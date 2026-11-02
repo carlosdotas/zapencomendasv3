@@ -5,13 +5,11 @@ import {
   Server, 
   Lock, 
   Eye, 
-  EyeOff, 
   Wifi, 
   CheckCircle2, 
   AlertCircle, 
   RefreshCw, 
   ExternalLink, 
-  Save, 
   Cloud,
   Layers,
   Sparkles,
@@ -25,14 +23,7 @@ import {
   ArrowUpDown,
   FileCheck
 } from 'lucide-react';
-import { 
-  getImageServerUrl, 
-  setImageServerUrl, 
-  getImageServerPassword, 
-  setImageServerPassword, 
-  testImageServerConnection 
-} from '../../../services/api';
-import { firebaseSettingsService } from '../../../services/firebaseSettingsService';
+import { getImageServerUrl, initializeImageServerConfig, testImageServerConnection } from '../../../services/api';
 
 interface ImageItem {
   filename: string;
@@ -48,24 +39,12 @@ interface ImageItem {
 
 interface ImageServerSettingsPageProps {
   onBack: () => void;
-  serverUrl: string;
-  serverPassword: string;
-  onUpdate: (url: string, pass: string) => void;
 }
 
-export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = ({
-  onBack,
-  serverUrl: initialUrl,
-  serverPassword: initialPass,
-  onUpdate
-}) => {
-  const [url, setUrl] = useState(initialUrl);
-  const [password, setPassword] = useState(initialPass);
-  const [showPassword, setShowPassword] = useState(false);
+export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = ({ onBack }) => {
+  const [url, setUrl] = useState(getImageServerUrl());
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; details?: any } | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [savedSuccess, setSavedSuccess] = useState(false);
 
   // Estados da Galeria com Paginação, Filtro por Data e Ordenação
   const [images, setImages] = useState<ImageItem[]>([]);
@@ -91,10 +70,7 @@ export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = (
     if (!url || !url.trim()) return;
     setIsLoadingImages(true);
     try {
-      const cleanUrl = url.trim();
       const params = new URLSearchParams({
-        action: 'list',
-        password: password.trim(),
         page: String(page),
         limit: String(limit),
         sort
@@ -102,7 +78,7 @@ export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = (
       if (from) params.append('date_from', from);
       if (to) params.append('date_to', to);
 
-      const res = await fetch(`${cleanUrl}?${params.toString()}`);
+      const res = await fetch(`/api/image-server/list?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data && data.success && Array.isArray(data.images)) {
@@ -116,21 +92,24 @@ export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = (
     } finally {
       setIsLoadingImages(false);
     }
-  }, [url, password, galleryPage, sortBy, dateFrom, dateTo, galleryLimit]);
+  }, [url, galleryPage, sortBy, dateFrom, dateTo, galleryLimit]);
 
   useEffect(() => {
-    if (url) {
-      fetchImages(1, sortBy, dateFrom, dateTo);
-    }
+    void initializeImageServerConfig().then(() => setUrl(getImageServerUrl()));
+  }, []);
+
+  useEffect(() => {
+    if (url) fetchImages(1, sortBy, dateFrom, dateTo);
   }, [url, sortBy, dateFrom, dateTo]);
 
   const handleDeleteImage = async (filename: string) => {
     if (!window.confirm(`Deseja realmente excluir permanentemente a imagem "${filename}"?`)) return;
     setDeletingFile(filename);
     try {
-      const cleanUrl = url.trim();
-      const res = await fetch(`${cleanUrl}?action=delete&password=${encodeURIComponent(password.trim())}&f=${encodeURIComponent(filename)}`, {
-        method: 'POST'
+      const res = await fetch('/api/image-server/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename })
       });
       const data = await res.json();
       if (data && data.success) {
@@ -156,28 +135,13 @@ export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = (
     setIsTesting(true);
     setTestResult(null);
     try {
-      const res = await testImageServerConnection(url, password);
+      const res = await testImageServerConnection();
       setTestResult(res);
     } catch (e: any) {
       setTestResult({ success: false, message: e?.message || 'Falha na requisição ao servidor de imagens' });
     } finally {
       setIsTesting(false);
     }
-  };
-
-  const handleSave = async () => {
-    setIsSaving(true);
-    setImageServerUrl(url);
-    setImageServerPassword(password);
-    onUpdate(url, password);
-
-    await firebaseSettingsService.saveSettings({
-      imageServer: { url, password }
-    });
-
-    setIsSaving(false);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2500);
   };
 
   return (
@@ -203,32 +167,15 @@ export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = (
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={isSaving}
-          className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#0B5187] hover:bg-[#083e68] active:scale-95 text-white font-bold text-xs rounded-full shadow-md shadow-[#0B5187]/20 transition-all cursor-pointer"
-        >
-          {savedSuccess ? (
-            <>
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 stroke-[3]" />
-              <span>Salvo na Nuvem!</span>
-            </>
-          ) : (
-            <>
-              <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Salvando...' : 'Salvar no Firebase'}</span>
-            </>
-          )}
-        </button>
+        <span className="text-[11px] font-bold text-slate-500">Configuração local do servidor</span>
       </div>
 
       <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-6">
-        {/* Banner de Sincronização Android */}
+        {/* Configuração gerenciada no backend */}
         <div className="flex items-center gap-2.5 p-3 rounded-2xl bg-purple-50 border border-purple-200/70 text-purple-950 text-xs">
           <Cloud className="w-4 h-4 text-purple-600 shrink-0 stroke-[2.4]" />
           <span className="font-semibold">
-            Ao salvar a URL do servidor PHP, todos os dispositivos (motoristas, clientes e admins) passarão a enviar e carregar fotos por este servidor.
+            URL e senha são lidas pelo backend do arquivo <code>.env</code>. Após alterar <code>IMAGE_SERVER_URL</code> ou <code>IMAGE_SERVER_PASSWORD</code>, reinicie o servidor.
           </span>
         </div>
 
@@ -253,41 +200,19 @@ export const ImageServerSettingsPage: React.FC<ImageServerSettingsPageProps> = (
                 <input
                   type="url"
                   value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder="http://localhost/imagens/images.php"
+                  readOnly
+                  placeholder="Defina IMAGE_SERVER_URL no .env"
                   className="w-full text-xs font-bold bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0B5187] rounded-xl px-3.5 py-2.5 focus:outline-none transition-colors"
                 />
               </div>
               <span className="text-[10px] text-slate-400 mt-1 block">
-                Exemplo local: <code>http://localhost/imagens/images.php</code> ou na rede: <code>http://192.168.1.100/imagens/images.php</code>
+                Defina o endereço completo de <code>images.php</code> em <code>IMAGE_SERVER_URL</code> no arquivo <code>.env</code> do servidor.
               </span>
             </div>
 
-            {/* Campo Senha do Servidor */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                Senha de Acesso do Servidor (Proteção de Upload e Visualização)
-              </label>
-              <div className="relative flex items-center">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Senha definida no arquivo PHP"
-                  className="w-full text-xs font-black bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0B5187] rounded-xl px-3.5 py-2.5 pr-10 focus:outline-none transition-colors"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
-                  title={showPassword ? 'Ocultar senha' : 'Ver senha'}
-                >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                Essa senha é exigida no painel web do PHP e em todas as requisições autenticadas.
-              </span>
+            <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+              <Lock className="w-4 h-4 shrink-0 text-slate-500" />
+              <span>A senha fica somente no backend em <code>IMAGE_SERVER_PASSWORD</code>; ela não é enviada ao navegador nem sincronizada com outros aparelhos.</span>
             </div>
 
             {/* Botão de Teste */}

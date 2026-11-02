@@ -11,7 +11,7 @@ import {
   Filter
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
-import { DateRangeFilter, DateFilterPreset } from '../../types/map';
+import { DateRangeFilter, DateFilterPreset, Place } from '../../types/map';
 import { 
   toLocalISODate, 
   formatISODateToBR, 
@@ -31,18 +31,33 @@ const WEEKDAY_NAMES = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 interface CalendarFilterModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Modo independente: usa este intervalo e devolve o resultado em onApply, sem alterar o filtro global do mapa. */
+  value?: DateRangeFilter;
+  onApply?: (filter: DateRangeFilter) => void;
+  /** Lista usada na contagem por dia (padrão: marcadores do mapa). */
+  places?: Place[];
+  title?: string;
+  zIndexClass?: string;
 }
 
-export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({ isOpen, onClose }) => {
+export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({
+  isOpen,
+  onClose,
+  value,
+  onApply,
+  places,
+  title = 'Filtrar Markers por Data',
+  zIndexClass = 'z-50'
+}) => {
   useBackButton('calendar-filter-modal', isOpen, onClose, 92);
 
-  const { 
-    dateRangeFilter, 
-    setDateRangeFilter, 
-    clearDateRangeFilter,
-    allPlaces,
-    savedPlaces
-  } = useMapStore();
+  const store = useMapStore();
+  const isStandalone = Boolean(onApply);
+  const dateRangeFilter: DateRangeFilter = value ?? store.dateRangeFilter;
+  const setDateRangeFilter = (filter: DateRangeFilter) => (onApply ? onApply(filter) : store.setDateRangeFilter(filter));
+  const clearDateRangeFilter = () => (onApply ? onApply({ startDate: null, endDate: null, preset: null }) : store.clearDateRangeFilter());
+  const allPlaces = places ?? store.allPlaces;
+  const savedPlaces = isStandalone ? [] : store.savedPlaces;
 
   const today = useMemo(() => new Date(), []);
   const todayStr = useMemo(() => toLocalISODate(today), [today]);
@@ -82,12 +97,12 @@ export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({ isOpen
     const counts = new Map<string, number>();
     const all = [...(allPlaces || []), ...(savedPlaces || [])];
     all.forEach(p => {
-      if (p.orderStage === 'concluido' || (p.operationType as any) === 'concluido') return;
+      if (!isStandalone && (p.orderStage === 'concluido' || (p.operationType as any) === 'concluido')) return;
       const day = getPlaceCalendarDate(p);
       counts.set(day, (counts.get(day) || 0) + 1);
     });
     return counts;
-  }, [allPlaces, savedPlaces]);
+  }, [allPlaces, savedPlaces, isStandalone]);
 
   // Contagem de markers no range selecionado atualmente
   const filteredMarkersCount = useMemo(() => {
@@ -96,11 +111,11 @@ export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({ isOpen
     }
     const all = [...(allPlaces || []), ...(savedPlaces || [])];
     return all.filter(p => {
-      if (p.orderStage === 'concluido' || (p.operationType as any) === 'concluido') return false;
+      if (!isStandalone && (p.orderStage === 'concluido' || (p.operationType as any) === 'concluido')) return false;
       const day = getPlaceCalendarDate(p);
       return isDateInInterval(day, rangeStart, rangeEnd);
     }).length;
-  }, [allPlaces, savedPlaces, rangeStart, rangeEnd]);
+  }, [allPlaces, savedPlaces, rangeStart, rangeEnd, isStandalone]);
 
   // Geração dos dias do mês atual para a grade
   const calendarDays = useMemo(() => {
@@ -255,7 +270,7 @@ export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({ isOpen
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+    <div className={`fixed inset-0 ${zIndexClass} flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200`}>
       
       {/* Backdrop */}
       <div className="absolute inset-0 cursor-pointer" onClick={onClose} />
@@ -271,7 +286,7 @@ export const CalendarFilterModal: React.FC<CalendarFilterModalProps> = ({ isOpen
             </div>
             <div>
               <h2 className="text-sm sm:text-base font-black text-slate-900 leading-tight">
-                Filtrar Markers por Data
+                {title}
               </h2>
               <p className="text-[11px] text-slate-500 font-semibold">
                 Clique no dia início e dia final para definir o período

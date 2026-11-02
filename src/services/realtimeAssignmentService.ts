@@ -1,11 +1,14 @@
 /**
- * Serviço de Gerenciamento de Direcionamento em Tempo Real (Firebase Realtime & WebSocket Server)
+ * Serviço de Gerenciamento de Direcionamento em Tempo Real (API REST /api/realtime com polling)
  * 
- * Permite direcionar coletas, entregas e trocas para motoristas específicos com atualização instantânea
- * em tempo real para todos os clientes conectados (incluindo o motorista logado).
+ * Permite direcionar coletas, entregas e trocas para motoristas específicos, mantendo
+ * todos os clientes conectados (incluindo o motorista logado) atualizados periodicamente.
  */
 
 import { Place, UserProfile } from '../types/map';
+import { request, startPolling } from './httpClient';
+
+const POLL_INTERVAL_MS = 5000;
 
 export interface OrderAssignment {
   orderId: string;
@@ -14,75 +17,23 @@ export interface OrderAssignment {
   driverPhone?: string;
   vehicleType?: string;
   assignedAt: number;
+  enRoute?: boolean;
 }
 
 type AssignmentListener = (assignments: Record<string, OrderAssignment>) => void;
 
-const STORAGE_KEY = 'encomendaszap_order_driver_assignments';
-const FIREBASE_RTDB_KEY = 'encomendaszap_firebase_rtdb_url';
-
 class RealtimeAssignmentService {
   private assignments: Record<string, OrderAssignment> = {};
   private listeners: Set<AssignmentListener> = new Set();
-  private ws: WebSocket | null = null;
-  private isConnecting: boolean = false;
-  private reconnectTimer: any = null;
+  private stopPolling: (() => void) | null = null;
 
   constructor() {
-    this.loadFromStorage();
-    if (typeof window !== 'undefined') {
-      this.initWebSocket();
-      this.fetchServerAssignments();
-    }
-  }
-
-  /**
-   * Obtém a URL configurada do Firebase Realtime Database (opcional)
-   */
-  public getFirebaseRtdbUrl(): string {
-    try {
-      const saved = localStorage.getItem(FIREBASE_RTDB_KEY);
-      if (saved && saved.trim()) return saved.trim().replace(/\/+$/, '');
-    } catch {}
-    const envUrl = (import.meta as any).env?.VITE_FIREBASE_DATABASE_URL;
-    if (envUrl && typeof envUrl === 'string') return envUrl.trim().replace(/\/+$/, '');
-    return '';
-  }
-
-  public setFirebaseRtdbUrl(url: string) {
-    try {
-      if (url && url.trim()) {
-        localStorage.setItem(FIREBASE_RTDB_KEY, url.trim().replace(/\/+$/, ''));
-      } else {
-        localStorage.removeItem(FIREBASE_RTDB_KEY);
-      }
-    } catch {}
-  }
-
-  private loadFromStorage() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          this.assignments = parsed;
-        }
-      }
-    } catch (e) {
-      // ignore
-    }
-  }
-
-  private saveToStorage() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.assignments));
-    } catch (e) {
-      // ignore
-    }
+    this.stopPolling = startPolling(async () => {
+      await this.fetchServerAssignments();
+    }, POLL_INTERVAL_MS);
   }
 
   private notifyListeners() {
-    this.saveToStorage();
     const copy = { ...this.assignments };
     this.listeners.forEach((listener) => {
       try {
@@ -93,97 +44,13 @@ class RealtimeAssignmentService {
     });
   }
 
-  /**
-   * Conecta ao WebSocket para receber alterações em tempo real de outros usuários
-   */
-  private initWebSocket() {
-    if (typeof window === 'undefined' || this.isConnecting) return;
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      return;
-    }
-
-    this.isConnecting = true;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/tracking`;
-
-    try {
-      this.ws = new WebSocket(wsUrl);
-
-      this.ws.onopen = () => {
-        this.isConnecting = false;
-        console.log('[Realtime Assignments] Conectado ao canal WebSocket de direcionamento.');
-      };
-
-      this.ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'assignments:init' && msg.assignments && typeof msg.assignments === 'object') {
-            this.assignments = {
-              ...this.assignments,
-              ...msg.assignments
-            };
-            this.notifyListeners();
-          } else if (msg.type === 'assignment:update' && msg.orderId && msg.assignment) {
-            const orderIdStr = String(msg.orderId);
-            this.assignments[orderIdStr] = msg.assignment;
-            this.notifyListeners();
-          } else if (msg.type === 'assignment:remove' && msg.orderId) {
-            const orderIdStr = String(msg.orderId);
-            delete this.assignments[orderIdStr];
-            this.notifyListeners();
-          }
-        } catch (e) {
-          // ignore
-        }
-      };
-
-      this.ws.onclose = () => {
-        this.isConnecting = false;
-        this.ws = null;
-        this.scheduleReconnect();
-      };
-
-      this.ws.onerror = () => {
-        this.isConnecting = false;
-        if (this.ws) this.ws.close();
-      };
-    } catch (e) {
-      this.isConnecting = false;
-      this.scheduleReconnect();
-    }
-  }
-
-  private scheduleReconnect() {
-    if (this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      if (typeof window !== 'undefined' && navigator.onLine) {
-        this.initWebSocket();
-      }
-    }, 4000);
-  }
-
-  /**
-   * Sincroniza atribuições com o endpoint REST (/api/realtime/assignments)
-   */
   public async fetchServerAssignments(): Promise<Record<string, OrderAssignment>> {
-    try {
-      const res = await fetch(`/api/realtime/assignments?_t=${Date.now()}`, {
-        headers: { 'Cache-Control': 'no-cache' }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && json.data && typeof json.data === 'object') {
-          this.assignments = {
-            ...this.assignments,
-            ...json.data
-          };
-          this.notifyListeners();
-          return this.assignments;
-        }
-      }
-    } catch (e) {
-      // fallback to storage
+    const res = await request<Record<string, OrderAssignment>>('/api/realtime/assignments', 'GET');
+    if (res.success) {
+      this.assignments = res.data || {};
+      this.notifyListeners();
+    } else {
+      console.warn('[Realtime Assignments] Falha ao consultar atribuições:', res.message);
     }
     return this.assignments;
   }
@@ -230,48 +97,81 @@ class RealtimeAssignmentService {
       assignedAt: Date.now()
     };
 
-    // 1. Atualiza estado em memória e localStorage imediatamente pelo ID específico do marcador
+    // Atualiza o estado em memória e grava as chaves do pedido no servidor.
     this.assignments[rawPlaceId] = assignment;
+    const assignmentKeys = [rawPlaceId];
     if (operationType) {
-      this.assignments[`${numId}_${operationType}`] = assignment;
-      this.assignments[`pedido-${numId}-${operationType}`] = assignment;
+      const byOperationKey = `${numId}_${operationType}`;
+      const legacyOperationKey = `pedido-${numId}-${operationType}`;
+      this.assignments[byOperationKey] = assignment;
+      this.assignments[legacyOperationKey] = assignment;
+      assignmentKeys.push(byOperationKey, legacyOperationKey);
     }
     this.notifyListeners();
-
-    // 2. Transmite via WebSocket se conectado
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.send(JSON.stringify({
-          type: 'assignment:set',
-          orderId: rawPlaceId,
-          assignment
-        }));
-      } catch (e) {}
-    }
-
-    // 3. Persiste no servidor (/api/realtime/assign-driver)
-    try {
-      fetch('/api/realtime/assign-driver', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(assignment)
-      }).catch(() => {});
-    } catch {}
-
-    // 4. Sincroniza com Firebase Realtime Database se configurado
-    const firebaseRtdbUrl = this.getFirebaseRtdbUrl();
-    if (firebaseRtdbUrl) {
-      try {
-        const sanitizedKey = rawPlaceId.replace(/[^a-zA-Z0-9_-]/g, '_');
-        fetch(`${firebaseRtdbUrl}/assignments/${sanitizedKey}.json`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(assignment)
-        }).catch(() => {});
-      } catch {}
-    }
+    const results = await Promise.all(assignmentKeys.map(key =>
+      request('/api/realtime/assign-driver', 'POST', {
+        orderId: key,
+        driverId: assignment.driverId,
+        driverName: assignment.driverName,
+        driverPhone: assignment.driverPhone,
+        vehicleType: assignment.vehicleType
+      })
+    ));
+    const failed = results.find(r => !r.success);
+    if (failed) throw new Error(failed.message || 'Não foi possível direcionar o pedido ao motorista.');
 
     return assignment;
+  }
+
+  /**
+   * Aceite de pedido público: o servidor recusa se outro motorista já aceitou.
+   * Retorna false (e ressincroniza as atribuições) quando perdeu a disputa.
+   */
+  public async claimOrder(
+    rawPlaceId: string,
+    driver: { id: string; name?: string; phone?: string; vehicleType?: string },
+    operationType?: string
+  ): Promise<boolean> {
+    const numId = rawPlaceId.match(/\d+/)?.[0] || rawPlaceId;
+    const cleanDriverId = driver.id.replace(/\D/g, '') || driver.id;
+    const keys = [rawPlaceId];
+    if (operationType) keys.push(`${numId}_${operationType}`, `pedido-${numId}-${operationType}`);
+
+    const results = await Promise.all(keys.map(key =>
+      request('/api/realtime/assign-driver', 'POST', {
+        orderId: key,
+        driverId: String(cleanDriverId),
+        driverName: driver.name,
+        driverPhone: driver.phone,
+        vehicleType: driver.vehicleType,
+        claim: true
+      })
+    ));
+    if (results.some(r => !r.success)) {
+      await this.fetchServerAssignments().catch(() => {});
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Marca que o motorista iniciou o deslocamento (clicou no GPS) até o local do pedido
+   */
+  public async markEnRoute(rawPlaceId: string, operationType?: string, enRoute = true): Promise<void> {
+    const numId = rawPlaceId.match(/\d+/)?.[0];
+    const keys = [rawPlaceId];
+    if (operationType && numId) keys.push(`${numId}_${operationType}`, `pedido-${numId}-${operationType}`);
+
+    let changed = false;
+    keys.forEach(key => {
+      const current = this.assignments[key];
+      if (current && Boolean(current.enRoute) !== enRoute) {
+        this.assignments[key] = { ...current, enRoute };
+        changed = true;
+      }
+    });
+    if (changed) this.notifyListeners();
+    await request('/api/realtime/en-route', 'POST', { orderIds: keys, enRoute });
   }
 
   /**
@@ -280,42 +180,19 @@ class RealtimeAssignmentService {
   public async unassignOrder(rawPlaceId: string, operationType?: string): Promise<void> {
     const numId = rawPlaceId.match(/\d+/)?.[0];
 
+    const assignmentKeys = [rawPlaceId];
     delete this.assignments[rawPlaceId];
     if (operationType && numId) {
-      delete this.assignments[`${numId}_${operationType}`];
-      delete this.assignments[`pedido-${numId}-${operationType}`];
+      const byOperationKey = `${numId}_${operationType}`;
+      const legacyOperationKey = `pedido-${numId}-${operationType}`;
+      delete this.assignments[byOperationKey];
+      delete this.assignments[legacyOperationKey];
+      assignmentKeys.push(byOperationKey, legacyOperationKey);
     }
     this.notifyListeners();
-
-    // 1. Transmite via WebSocket
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        this.ws.send(JSON.stringify({
-          type: 'assignment:clear',
-          orderId: rawPlaceId
-        }));
-      } catch (e) {}
-    }
-
-    // 2. Persiste no servidor
-    try {
-      fetch('/api/realtime/unassign-driver', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId: rawPlaceId })
-      }).catch(() => {});
-    } catch {}
-
-    // 3. Sincroniza com Firebase Realtime Database se configurado
-    const firebaseRtdbUrl = this.getFirebaseRtdbUrl();
-    if (firebaseRtdbUrl) {
-      try {
-        const sanitizedKey = rawPlaceId.replace(/[^a-zA-Z0-9_-]/g, '_');
-        fetch(`${firebaseRtdbUrl}/assignments/${sanitizedKey}.json`, {
-          method: 'DELETE'
-        }).catch(() => {});
-      } catch {}
-    }
+    await Promise.all(assignmentKeys.map(key =>
+      request('/api/realtime/unassign-driver', 'POST', { orderId: key })
+    ));
   }
 
   /**
@@ -397,47 +274,25 @@ class RealtimeAssignmentService {
       return false;
     }
 
-    // A. Comparação por ID limpo (ex: 1380 === 1380 ou usr-mot-04)
+    // Comparação estrita: ID exato, telefone (últimos 8 dígitos) ou nome completo idêntico
     if (userIdClean && candidateIds.some(id => id === userIdClean)) {
       return true;
     }
 
-    // B. Comparação por ID em formato de texto (ex: usr-mot-04 === usr-mot-04)
-    if (userIdStr && candidateIds.some(id => id === userIdStr || id === `usr-mot-${userIdStr}` || userIdStr.endsWith(id))) {
+    if (userIdStr && candidateIds.some(id => id === userIdStr || id === `usr-mot-${userIdStr}`)) {
       return true;
     }
 
-    // C. Comparação por Telefone (últimos 8 dígitos para cobrir com ou sem DDD/nono dígito)
     if (userPhoneClean.length >= 8) {
       const userPhoneSuffix = userPhoneClean.slice(-8);
-      if (candidatePhones.some(phone => phone.slice(-8) === userPhoneSuffix)) {
+      if (candidatePhones.some(phone => phone.length >= 8 && phone.slice(-8) === userPhoneSuffix)) {
         return true;
       }
     }
 
-    // D. Comparação por Nome do Condutor (ex: Marcos Silva)
-    if (userNameClean.length >= 3) {
-      const firstName = userNameClean.split(' ')[0];
-      if (candidateNames.some(name => {
-        if (name === userNameClean) return true;
-        if (name.includes(userNameClean) || userNameClean.includes(name)) return true;
-        if (firstName.length >= 3 && name.startsWith(firstName)) return true;
-        return false;
-      })) {
-        return true;
-      }
-    }
-
-    // E. Caso especial: Conta de teste de motorista (Marcos Silva Moto 62996157343 / usr-mot-04)
-    if (userPhoneClean === '62996157343' || userIdStr.includes('04')) {
-      if (candidateIds.some(id => id === '4' || id === '04' || id.includes('04'))) return true;
-      if (candidateNames.some(name => name.includes('marcos'))) return true;
-    }
-
-    // F. Caso especial: Roberto Andrade Carro (62996157344 / usr-mot-05)
-    if (userPhoneClean === '62996157344' || userIdStr.includes('05')) {
-      if (candidateIds.some(id => id === '5' || id === '05' || id.includes('05'))) return true;
-      if (candidateNames.some(name => name.includes('roberto'))) return true;
+    // Nome só vale quando o pedido não traz ID nem telefone do motorista
+    if (candidateIds.length === 0 && candidatePhones.length === 0 && userNameClean.length >= 3) {
+      return candidateNames.some(name => name === userNameClean);
     }
 
     return false;

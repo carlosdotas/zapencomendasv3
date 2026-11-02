@@ -1,0 +1,375 @@
+// Schema Prisma (MySQL) espelhando o banco MariaDB u195978639_dotas.
+// Os nomes de tabela/coluna seguem o dump SQL; colunas "extra" guardam campos
+// do app que não existem no dump (JSON serializado).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model users {
+  id           Int      @id @default(autoincrement())
+  name         String
+  phone        String?  @unique
+  password     String?
+  access_level String   @default("cliente")
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+  city         String?
+  cpf          String?
+  full_name    String?
+  photo        String?  @db.Text
+  cnpj         String?
+  person_type  String   @default("fisica")
+  extra        String?  @db.LongText
+
+  bills_owned     bills[]           @relation("BillOwner")
+  bills_paid      bills[]           @relation("BillPayer")
+  driver_tracking driver_tracking[]
+  user_sessions   user_sessions[]
+}
+
+model user_sessions {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  token      String   @unique
+  device_id  String
+  source     String?
+  type       String   @default("cliente")
+  is_logged  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  user users @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([device_id])
+  @@index([user_id])
+}
+
+model bills {
+  id              Int       @id @default(autoincrement())
+  user_id         Int
+  type            String
+  description     String    @db.Text
+  amount          Float
+  due_date        String
+  category        String
+  status          String    @default("pendente")
+  notes           String?   @db.Text
+  document_number String?
+  paid_by_user_id Int?
+  paid_at         DateTime?
+  interest        Float     @default(0)
+  amount_paid     Float?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  user  users  @relation("BillOwner", fields: [user_id], references: [id], onDelete: Cascade)
+  payer users? @relation("BillPayer", fields: [paid_by_user_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id])
+  @@index([type])
+  @@index([status])
+  @@index([due_date])
+}
+
+model caixa_lancamentos {
+  id                  Int      @id @default(autoincrement())
+  user_id             Int
+  entry_date          String
+  amount              Float
+  description         String   @db.Text
+  entry_type          String
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  source_type         String?
+  source_order_id     Int?
+  source_service_kind String?
+  source_meta         String?  @db.Text
+
+  @@unique([source_type, source_order_id, source_service_kind])
+  @@index([user_id, entry_date])
+  @@index([user_id, created_at])
+}
+
+model company {
+  id                            Int      @id @default(autoincrement())
+  fantasy_name                  String?
+  legal_name                    String?
+  cnpj                          String?
+  phone                         String?
+  email                         String?
+  pix_key                       String?
+  pix_account                   String?
+  show_pix                      Boolean  @default(false)
+  address                       String?  @db.Text
+  city                          String?
+  logo                          String?  @db.Text
+  created_at                    DateTime @default(now())
+  updated_at                    DateTime @updatedAt
+  orders_price_table_name       String?
+  orders_auto_finance_enabled   Boolean  @default(true)
+  orders_auto_finance_items     String?  @db.Text
+  orders_city_price_rules       String?  @db.Text
+  orders_pickup_delivery_prices String?  @db.Text
+  orders_distance_price_matrix  String?  @db.Text
+}
+
+model config_cities {
+  id         Int      @id @default(autoincrement())
+  city       String   @unique
+  state      String?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+}
+
+model driver_tracking {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  lat        Float
+  lng        Float
+  timestamp  Float
+  created_at DateTime @default(now())
+
+  user users @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([timestamp])
+}
+
+model drivers {
+  id            Int      @id @default(autoincrement())
+  name          String
+  phone         String
+  email         String?
+  cpf           String   @unique
+  birth_date    String?
+  address       String?  @db.Text
+  city          String?
+  state         String?
+  vehicle_type  String?
+  vehicle_plate String?
+  vehicle_model String?
+  vehicle_year  Int?
+  vehicle_color String?
+  cnh           String   @unique
+  cnh_category  String?
+  cnh_expiry    String?
+  rg            String?
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@index([is_active])
+  @@index([vehicle_type])
+}
+
+model locais {
+  id                    Int     @id @default(autoincrement())
+  link                  String? @db.Text
+  name                  String? @db.Text
+  endereco              String? @db.Text
+  cidade                String?
+  cep                   Float?
+  place_id              String?
+  rating                String?
+  icon                  String? @db.Text
+  icon_background_color String?
+  qd_lt                 String?
+  street_number         String?
+  Lagradouto            String?
+  setor                 String?
+  estado                String?
+  lat                   Float?
+  lng                   Float?
+  telefone              String?
+  horario_funcionamento String? @db.Text
+  types                 String? @db.Text
+  photos                String? @db.LongText
+}
+
+model locations {
+  id                Int      @id @default(autoincrement())
+  name              String   @db.Text
+  link_maps         String?  @db.Text
+  place_id          String?
+  address           String?  @db.Text
+  city              String?
+  state             String?
+  zip               String?
+  street            String?  @db.Text
+  district          String?
+  number            String?
+  phone             String?
+  website           String?  @db.Text
+  lat               Float?
+  lng               Float?
+  icon              String?  @db.Text
+  icon_color        String?
+  status            String   @default("active")
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  is_collection_hub Boolean  @default(false)
+  extra             String?  @db.LongText
+
+  @@index([place_id])
+  @@index([city])
+}
+
+model merchandises {
+  id                    Int      @id @default(autoincrement())
+  name                  String   @unique
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+  item_height           String?
+  item_width            String?
+  item_length           String?
+  item_weight           String?
+  item_fragile          Boolean  @default(false)
+  item_charge_by_volume Boolean  @default(false)
+  item_volume_rate      Float    @default(0)
+  item_qty              Int      @default(1)
+}
+
+model order_logs {
+  id           Int      @id @default(autoincrement())
+  order_id     Int
+  user_id      Int?
+  stage_before String
+  stage_after  String
+  details      String?  @db.Text
+  created_at   DateTime @default(now())
+
+  @@index([order_id])
+  @@index([user_id])
+}
+
+model orders {
+  id                    Int       @id @default(autoincrement())
+  created_at            DateTime  @default(now())
+  updated_at            DateTime  @updatedAt
+  date                  String
+  stage                 String    @default("novo")
+  order_type            String    @default("entrega")
+  vehicle_type          String    @default("moto")
+  notes                 String?   @db.Text
+  client_name           String
+  contact_phone         String
+  client_id             Int?
+  creator_id            Int?
+  origin_location_id    Int?
+  orig_name             String?
+  orig_date             String?
+  orig_notes            String?   @db.Text
+  orig_priority         String    @default("media")
+  orig_contact          String?
+  orig_phone            String?
+  orig_city             String?
+  orig_drivers          String?   @db.Text
+  orig_foto_path        String?   @db.Text
+  orig_value            Float     @default(0)
+  pickup_location_id    Int?
+  collector_id          Int?
+  collected_at          DateTime?
+  dest_name             String?
+  dest_date             String?
+  dest_notes            String?   @db.Text
+  dest_priority         String    @default("media")
+  dest_contact          String?
+  dest_phone            String?
+  dest_city             String?
+  dest_drivers          String?   @db.Text
+  dest_foto_path        String?   @db.Text
+  dest_value            Float     @default(0)
+  intercity_value       Float     @default(0)
+  delivered_at          DateTime?
+  delivery_location_id  Int?
+  item_name             String?
+  item_height           String?
+  item_width            String?
+  item_length           String?
+  item_weight           String?
+  item_fragile          Boolean   @default(false)
+  item_charge_by_volume Boolean   @default(false)
+  item_volume_rate      Float     @default(0)
+  item_qty              Float     @default(1)
+  item_foto_path        String?   @db.Text
+  base_value            Float     @default(0)
+  discount              Float     @default(0)
+  total                 Float     @default(0)
+  extra_items           String?   @db.Text
+  payment_status        String    @default("nao_pago")
+  paid_at               DateTime?
+  payment_method        String?
+  receipt_path          String?   @db.Text
+  payment_receiver_id   Int?
+  payment_receiver_name String?
+  approved_at           DateTime?
+  approver_id           Int?
+  loading_at            DateTime?
+  loading_end_at        DateTime?
+  deposit_start_at      DateTime?
+  deposit_end_at        DateTime?
+  finalized_at          DateTime?
+  cancelled_at          DateTime?
+  // Cancelamento pelo motorista (desistência da rota, com justificativa obrigatória)
+  driver_cancel_reason  String?   @db.Text
+  driver_cancel_at      DateTime?
+  driver_cancel_user_id Int?
+  merchandise_id        Int?
+  // Campos do app sem coluna equivalente (JSON) e token público de rastreio
+  extra                 String?   @db.LongText
+  public_tracking_token String?   @unique
+
+  @@index([client_id])
+  @@index([creator_id])
+  @@index([stage])
+  @@index([payment_status])
+  @@index([date])
+}
+
+// Configurações globais do app
+model app_settings {
+  key        String   @id
+  value      String   @db.LongText
+  updated_at DateTime @updatedAt
+}
+
+// Transportadoras (multiempresa)
+model transportadoras {
+  id         String   @id
+  data       String   @db.LongText
+  updated_at DateTime @updatedAt
+}
+
+// Ganhos diários do motorista: preço cobrado por pedido aceito/coletado (renova por dia)
+model driver_earnings {
+  id           Int       @id @default(autoincrement())
+  driver_key   String    @db.VarChar(64)
+  day          String    @db.VarChar(10)
+  order_key    String    @db.VarChar(64)
+  operation    String?   @db.VarChar(20)
+  label        String?   @db.VarChar(255)
+  address      String?   @db.VarChar(255)
+  status       String    @default("aceito") @db.VarChar(20)
+  price        Float     @default(0)
+  accepted_at  DateTime?
+  collected_at DateTime?
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+
+  @@unique([driver_key, day, order_key])
+  @@index([driver_key, day])
+}
+
+// Direcionamento de pedidos a motoristas em tempo real
+model assignments {
+  order_key   String   @id
+  data        String   @db.LongText
+  assigned_at Float
+  updated_at  DateTime @updatedAt
+}

@@ -13,7 +13,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { PaymentConditionRule, formatCurrency } from '../../../services/paymentSettingsService';
-import { firebaseSettingsService } from '../../../services/firebaseSettingsService';
+import { settingsService } from '../../../services/settingsService';
 
 interface PaymentSettingsPageProps {
   onBack: () => void;
@@ -37,7 +37,7 @@ export const PaymentSettingsPage: React.FC<PaymentSettingsPageProps> = ({
   const handleSave = async () => {
     setIsSaving(true);
     onUpdate(localRules);
-    await firebaseSettingsService.saveSettings({ payments: localRules });
+    await settingsService.saveSettings({ payments: localRules });
     setIsSaving(false);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 2500);
@@ -80,7 +80,7 @@ export const PaymentSettingsPage: React.FC<PaymentSettingsPageProps> = ({
           ) : (
             <>
               <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Salvando...' : 'Salvar no Firebase'}</span>
+              <span>{isSaving ? 'Salvando...' : 'Salvar'}</span>
             </>
           )}
         </button>

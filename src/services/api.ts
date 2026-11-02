@@ -1,5 +1,5 @@
 /**
- * Cliente HTTP EncomendasZap para comunicação com o backend Express
+ * Cliente HTTP EncomendasZap para comunicação com o backend Express (mesma origem)
  * Conforme contratos documentados em src/routes
  */
 
@@ -14,13 +14,14 @@ import {
   BackendCidade,
   BackendOrderMarker
 } from './apiTypes';
-import { firebaseUserService } from './firebaseUserService';
-import { firebaseOrderService } from './firebaseOrderService';
-import { firebasePlaceService } from './firebasePlaceService';
 import { uploadImage } from './imageUploadService';
+import { userService } from './userService';
+import { orderService } from './orderService';
+import { placeService } from './placeService';
+import { request, getAuthToken, setAuthToken, getApiBaseUrl, setApiBaseUrl, getStoredUserRole } from './httpClient';
 
-const STORAGE_API_URL_KEY = 'encomendaszap_api_base_url';
-const STORAGE_TOKEN_KEY = 'encomendaszap_auth_token';
+export { getAuthToken, setAuthToken, getApiBaseUrl, setApiBaseUrl };
+
 const STORAGE_DEVICE_ID_KEY = 'encomendaszap_device_id';
 
 export function getDeviceId(): string {
@@ -36,126 +37,31 @@ export function getDeviceId(): string {
   }
 }
 
-export function getApiBaseUrl(): string {
-  try {
-    const saved = localStorage.getItem(STORAGE_API_URL_KEY);
-    if (
-      saved && 
-      saved.trim() && 
-      saved !== 'http://localhost:3000' && 
-      saved !== 'http://127.0.0.1:3000' &&
-      saved !== 'https://dotas.online' &&
-      saved !== 'https://dotas.online/'
-    ) {
-      return saved.trim().replace(/\/+$/, '');
-    }
-  } catch {}
+let imageServerUrl = 'http://localhost/imagens/images.php';
+let imageServerConfigPromise: Promise<void> | null = null;
 
-  const envUrl = (import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.VITE_API_URL;
-  if (envUrl && typeof envUrl === 'string' && envUrl.trim() && envUrl !== 'https://dotas.online') {
-    return envUrl.trim().replace(/\/+$/, '');
-  }
-
-  // Padrão do sistema: rota relativa (proxy Express do próprio app)
-  // No navegador (seja no dev, no preview ou em produção), as requisições relativas
-  // vão para o próprio servidor Node/Express do applet, que repassa para o dotas.online
-  // sem qualquer bloqueio de CORS ou Mixed Content!
-  return '';
+export function initializeImageServerConfig(): Promise<void> {
+  if (imageServerConfigPromise) return imageServerConfigPromise;
+  imageServerConfigPromise = fetch('/api/image-server-config')
+    .then(async response => {
+      if (!response.ok) return;
+      const result = await response.json();
+      if (result?.success && result.data) {
+        if (typeof result.data.url === 'string') imageServerUrl = result.data.url.trim().replace(/\/+$/, '');
+      }
+    })
+    .catch(error => {
+      console.warn('[Image Server] Não foi possível carregar a configuração do backend:', error);
+    });
+  return imageServerConfigPromise;
 }
-
-export function setApiBaseUrl(url: string): void {
-  try {
-    localStorage.setItem(STORAGE_API_URL_KEY, url.trim().replace(/\/+$/, ''));
-  } catch {}
-}
-
-export const STORAGE_IMAGE_SERVER_URL_KEY = 'encomendaszap_image_server_url';
-export const STORAGE_IMAGE_SERVER_PASSWORD_KEY = 'encomendaszap_image_server_password';
-export const STORAGE_SETTINGS_CACHE_KEY = 'encomendaszap_firebase_settings_cache_v2';
 
 export function getImageServerUrl(): string {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      // 1. Prioridade máxima: Configurações do Firebase/Painel do Administrador
-      const globalRaw = localStorage.getItem(STORAGE_SETTINGS_CACHE_KEY);
-      if (globalRaw) {
-        try {
-          const parsed = JSON.parse(globalRaw);
-          if (parsed?.imageServer?.url && typeof parsed.imageServer.url === 'string' && parsed.imageServer.url.trim()) {
-            return parsed.imageServer.url.trim().replace(/\/+$/, '');
-          }
-        } catch {}
-      }
-
-      // 2. Chave individual no localStorage
-      const saved = localStorage.getItem(STORAGE_IMAGE_SERVER_URL_KEY);
-      if (saved && saved.trim()) return saved.trim().replace(/\/+$/, '');
-    }
-
-    return 'http://localhost/imagens/images.php';
-  } catch {
-    return 'http://localhost/imagens/images.php';
-  }
-}
-
-export function setImageServerUrl(url: string): void {
-  try {
-    const cleanUrl = url.trim().replace(/\/+$/, '');
-    localStorage.setItem(STORAGE_IMAGE_SERVER_URL_KEY, cleanUrl);
-
-    // Sincroniza também no cache consolidado de configurações para consistência
-    const globalRaw = localStorage.getItem(STORAGE_SETTINGS_CACHE_KEY);
-    if (globalRaw) {
-      try {
-        const parsed = JSON.parse(globalRaw);
-        parsed.imageServer = { ...(parsed.imageServer || {}), url: cleanUrl };
-        localStorage.setItem(STORAGE_SETTINGS_CACHE_KEY, JSON.stringify(parsed));
-      } catch {}
-    }
-  } catch {}
-}
-
-export function getImageServerPassword(): string {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const globalRaw = localStorage.getItem(STORAGE_SETTINGS_CACHE_KEY);
-      if (globalRaw) {
-        try {
-          const parsed = JSON.parse(globalRaw);
-          if (parsed?.imageServer?.password && typeof parsed.imageServer.password === 'string' && parsed.imageServer.password.trim()) {
-            return parsed.imageServer.password.trim();
-          }
-        } catch {}
-      }
-
-      const saved = localStorage.getItem(STORAGE_IMAGE_SERVER_PASSWORD_KEY);
-      if (saved && saved.trim() && saved.trim() !== 'zap123') return saved.trim();
-    }
-    return '821332';
-  } catch {
-    return '821332';
-  }
-}
-
-export function setImageServerPassword(pass: string): void {
-  try {
-    const cleanPass = pass.trim();
-    localStorage.setItem(STORAGE_IMAGE_SERVER_PASSWORD_KEY, cleanPass);
-
-    const globalRaw = localStorage.getItem(STORAGE_SETTINGS_CACHE_KEY);
-    if (globalRaw) {
-      try {
-        const parsed = JSON.parse(globalRaw);
-        parsed.imageServer = { ...(parsed.imageServer || {}), password: cleanPass };
-        localStorage.setItem(STORAGE_SETTINGS_CACHE_KEY, JSON.stringify(parsed));
-      } catch {}
-    }
-  } catch {}
+  return imageServerUrl;
 }
 
 /**
- * Envia foto de perfil diretamente para o Servidor de Fotos PHP (images.php)
- * com tipo 'perfil' e autenticação segura via header + parâmetro password.
+ * Envia a foto pelo backend, que mantém a senha do servidor PHP fora do navegador.
  */
 export async function uploadProfilePhoto(
   base64: string,
@@ -168,40 +74,20 @@ export async function uploadProfilePhoto(
 
   return uploadImage(base64, {
     type: 'perfil',
-    imageServerUrl: getImageServerUrl(),
-    imageServerPassword: getImageServerPassword(),
     fallbackEndpoint: '/users/upload_foto',
     fallbackData: { user_id: userId, id: userId, phone }
   });
 }
 
-export async function testImageServerConnection(url?: string, password?: string): Promise<{
+export async function testImageServerConnection(): Promise<{
   success: boolean;
   message: string;
   details?: any;
 }> {
-  const targetUrl = (url || getImageServerUrl()).trim().replace(/\/+$/, '');
-  if (!targetUrl) {
-    return { success: false, message: 'URL do servidor de imagens não informada.' };
-  }
-  const pass = password !== undefined ? password : getImageServerPassword();
-
   try {
-    const separator = targetUrl.includes('?') ? '&' : '?';
-    const pingUrl = `${targetUrl}${separator}action=ping`;
-    const res = await fetch(pingUrl, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-        'X-Access-Password': pass
-      }
-    });
-
-    if (!res.ok) {
-      return { success: false, message: `Servidor respondeu com status HTTP ${res.status}` };
-    }
-
+    const res = await fetch('/api/image-server/ping', { headers: { Accept: 'application/json' } });
     const data = await res.json();
+    if (!res.ok) return { success: false, message: data.message || `Servidor respondeu com status HTTP ${res.status}` };
     if (data && data.success) {
       return {
         success: true,
@@ -212,110 +98,6 @@ export async function testImageServerConnection(url?: string, password?: string)
     return { success: false, message: data.message || 'Resposta inesperada do servidor' };
   } catch (err: any) {
     return { success: false, message: `Falha de conexão: ${err.message || 'Verifique se a URL está correta e acessível.'}` };
-  }
-}
-
-export function getAuthToken(): string | null {
-  try {
-    return localStorage.getItem(STORAGE_TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setAuthToken(token: string | null): void {
-  try {
-    if (token) {
-      localStorage.setItem(STORAGE_TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(STORAGE_TOKEN_KEY);
-    }
-  } catch {}
-}
-
-/**
- * Função genérica de requisição HTTP
- */
-async function request<T = any>(
-  path: string, 
-  method: 'GET' | 'POST' | 'DELETE' = 'GET', 
-  bodyData?: any,
-  customTimeoutMs: number = 8000
-): Promise<ApiResponse<T>> {
-  const baseUrl = getApiBaseUrl();
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  const fullUrl = baseUrl ? `${baseUrl}${cleanPath}` : cleanPath;
-  const token = getAuthToken();
-
-  const headers: Record<string, string> = {
-    'Accept': 'application/json'
-  };
-
-  const userRole = typeof window !== 'undefined' ? localStorage.getItem('encomendaszap_user_role') : null;
-  if (userRole) {
-    headers['X-User-Role'] = userRole;
-  }
-
-  let requestBody: string | undefined = undefined;
-
-  if (method === 'POST') {
-    headers['Content-Type'] = 'application/json';
-    const payload = {
-      ...(bodyData || {}),
-      ...(token ? { token } : {})
-    };
-    requestBody = JSON.stringify(payload);
-  }
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), customTimeoutMs);
-
-  try {
-    const response = await fetch(fullUrl, {
-      method,
-      headers,
-      body: requestBody,
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok && response.status === 404) {
-      throw new Error(`Endpoint não encontrado (404)`);
-    }
-
-    const data = await response.json();
-    return data;
-  } catch (error: any) {
-    clearTimeout(timeoutId);
-
-    // Fallback: se a chamada principal falhou e não estava chamando https://dotas.online diretamente, tenta fallback direto
-    if (baseUrl !== 'https://dotas.online') {
-      try {
-        const fallbackRes = await fetch(`https://dotas.online${cleanPath}`, {
-          method,
-          headers,
-          body: requestBody
-        });
-        if (fallbackRes.ok) {
-          const fallbackData = await fallbackRes.json();
-          return fallbackData;
-        }
-      } catch {
-        // Ignora erro do fallback
-      }
-    }
-
-    return {
-      success: false,
-      message: error.name === 'AbortError' 
-        ? 'Tempo limite de conexão esgotado.' 
-        : (error.message || 'Falha ao conectar com o servidor Express.')
-    };
   }
 }
 
@@ -372,8 +154,7 @@ export const api = {
   },
 
   // ==========================================
-  // LOCAIS (Firebase Firestore & Realtime Database)
-  // Integrado aos 3636 locais importados com busca prioritária
+  // LOCAIS (/locais)
   // ==========================================
   async getLocais(params?: {
     search?: string;
@@ -385,39 +166,38 @@ export const api = {
     sort_by?: string;
     sort_dir?: 'ASC' | 'DESC';
   }): Promise<ApiResponse<BackendLocal[]>> {
-    return firebasePlaceService.getLocais(params);
+    return placeService.getLocais(params);
   },
 
   async getLocaisCentrais(): Promise<ApiResponse<Array<{ id: number | string; name: string; cidade: string; lat: number; lng: number }>>> {
-    return firebasePlaceService.getLocaisCentrais();
+    return placeService.getLocaisCentrais();
   },
 
   async getLocalById(id: string | number): Promise<ApiResponse<BackendLocal>> {
-    return firebasePlaceService.getLocalById(id);
+    return placeService.getLocalById(id);
   },
 
   async buscarLocalLink(link: string): Promise<ApiResponse<BackendLocal>> {
-    return firebasePlaceService.buscarLocalLink(link);
+    return placeService.buscarLocalLink(link);
   },
 
   async getLocaisNearby(lat: number, lng: number, radiusKm: number = 0.5): Promise<ApiResponse<{ id: number; name: string; lat: number; lng: number; dist_km?: number } | null>> {
-    return firebasePlaceService.getLocaisNearby(lat, lng, radiusKm);
+    return placeService.getLocaisNearby(lat, lng, radiusKm);
   },
 
   async updateLocal(id: number | string, data: Partial<BackendLocal>): Promise<ApiResponse<BackendLocal>> {
-    return firebasePlaceService.updateLocal(id, data);
+    return placeService.updateLocal(id, data);
   },
 
   async saveLocal(data: Partial<BackendLocal>): Promise<ApiResponse<BackendLocal>> {
-    return firebasePlaceService.saveLocal(data);
+    return placeService.saveLocal(data);
   },
 
-  /** Referência ao serviço Firebase de locais */
-  places: firebasePlaceService,
+  /** Referência ao serviço de locais */
+  places: placeService,
 
   // ==========================================
-  // PEDIDOS (Firebase Firestore & Realtime Database)
-  // Integrado aos 2000 pedidos importados com sincronização em tempo real
+  // PEDIDOS (/pedidos)
   // ==========================================
   async listPedidos(filters?: {
     data_ini?: string;
@@ -431,21 +211,20 @@ export const api = {
     motorista_id?: string | number;
     cidade?: string;
   }): Promise<ApiResponse<BackendPedido[]>> {
-    return firebaseOrderService.listPedidos(filters);
+    return orderService.listPedidos(filters);
   },
 
   async getPedido(id: string | number): Promise<ApiResponse<BackendPedido>> {
-    return firebaseOrderService.getPedido(id);
+    return orderService.getPedido(id);
   },
 
   async createPublicTrackingLink(id: string | number): Promise<ApiResponse<{ token: string }>> {
-    return firebaseOrderService.ensurePublicTrackingToken(id);
+    return orderService.ensurePublicTrackingToken(id);
   },
 
   async savePedido(pedidoData: Partial<BackendPedido>): Promise<ApiResponse<{ id: number | string }>> {
     // Motoristas NÃO possuem permissão para adicionar ou editar pedidos
-    const userRole = typeof window !== 'undefined' ? localStorage.getItem('encomendaszap_user_role') : null;
-    if (userRole === 'motorista') {
+    if (getStoredUserRole() === 'motorista') {
       console.warn('[api.savePedido] Motoristas não possuem permissão para adicionar ou editar pedidos.');
       return {
         success: false,
@@ -453,25 +232,12 @@ export const api = {
       };
     }
 
-    // 1. Salva no Firebase Firestore (default) e cache local
-    const fbRes = await firebaseOrderService.savePedido(pedidoData);
-
-    // 2. Manda para o servidor backend Express/Dotas.online (/pedidos/save)
-    try {
-      const serverRes = await request<{ id: number | string }>('/pedidos/save', 'POST', pedidoData);
-      console.log(`[API savePedido] Resposta servidor backend:`, serverRes);
-      if (serverRes && serverRes.success) {
-        return serverRes;
-      }
-    } catch (err: any) {
-      console.warn(`[API savePedido] Aviso ao enviar para servidor Express:`, err.message);
-    }
-
-    return fbRes;
+    // O id retornado pelo servidor é a referência definitiva do pedido
+    return orderService.savePedido(pedidoData);
   },
 
   async deletePedido(id: string | number): Promise<ApiResponse> {
-    return firebaseOrderService.deletePedido(id);
+    return orderService.deletePedido(id);
   },
 
   async marcarColetaEntrega(
@@ -481,66 +247,25 @@ export const api = {
     userName?: string
   ): Promise<ApiResponse<{ pedido_id: string | number; etapa: string }>> {
     const cleanId = String(pedidoId).replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim();
-    const finalId = cleanId || pedidoId;
-
-    // 1. Atualiza no Firebase Firestore (default) e cache local imediatamente
-    const fbRes = await firebaseOrderService.marcarColetaEntrega(finalId, etapa, userId, userName);
-
-    // 2. Manda para o servidor backend Express/Dotas.online (/pedidos/marcar_coleta_entrega)
-    try {
-      const serverRes = await request<{ pedido_id: string | number; etapa: string }>('/pedidos/marcar_coleta_entrega', 'POST', {
-        pedido_id: finalId,
-        etapa: etapa,
-        user_id: userId,
-        user_nome: userName
-      });
-      console.log(`[API marcarColetaEntrega] Servidor backend respondeu:`, serverRes);
-    } catch (err: any) {
-      console.warn(`[API marcarColetaEntrega] Aviso servidor:`, err.message);
-    }
-
-    // 3. Garante que /pedidos/save também receba a etapa no servidor backend
-    try {
-      const nowIso = new Date().toISOString();
-      await request('/pedidos/save', 'POST', {
-        id: finalId,
-        etapa: etapa,
-        ...(etapa === 'coletado' ? { coleta_saida_at: nowIso, coleta_user_id: userId, coleta_user_nome: userName } : {}),
-        ...(etapa === 'trocado' ? { troca_saida_at: nowIso, troca_at: nowIso, troca_user_id: userId, troca_user_nome: userName } : {}),
-        ...(etapa === 'entregue' ? { entrega_saida_at: nowIso, entrega_at: nowIso, entrega_user_id: userId, entrega_user_nome: userName, status_pagamento: 'pago' } : {})
-      });
-    } catch (err: any) {
-      console.warn(`[API savePedido Baixa] Aviso:`, err.message);
-    }
-
-    return fbRes;
+    return orderService.marcarColetaEntrega(cleanId || pedidoId, etapa, userId, userName);
   },
 
   async setEtapa(pedidoId: string | number, userId?: string | number): Promise<ApiResponse> {
     const cleanId = String(pedidoId).replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim() || pedidoId;
-    const fbRes = await firebaseOrderService.setEtapa(cleanId, userId);
-    try {
-      await request('/pedidos/set_etapa', 'POST', { pedido_id: cleanId, user_id: userId });
-    } catch (e) {}
-    return fbRes;
+    return orderService.setEtapa(cleanId, userId);
   },
 
   async finalizarPedido(pedidoId: string | number, userId?: string | number): Promise<ApiResponse> {
     const cleanId = String(pedidoId).replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim() || pedidoId;
-    const fbRes = await firebaseOrderService.finalizarPedido(cleanId, userId);
-    try {
-      await request('/pedidos/finalizar_pedido', 'POST', { pedido_id: cleanId, user_id: userId });
-      await request('/pedidos/save', 'POST', { id: cleanId, etapa: 'finalizado', status_pagamento: 'pago' });
-    } catch (e) {}
-    return fbRes;
+    return orderService.finalizarPedido(cleanId, userId);
   },
 
   async uploadFoto(base64: string, tipo: 'mercadoria' | 'coleta' | 'entrega' | 'comprovante' | 'declaracao' = 'coleta'): Promise<ApiResponse<{ path: string }>> {
-    return firebaseOrderService.uploadFoto(base64, tipo);
+    return orderService.uploadFoto(base64, tipo);
   },
 
   async appendFoto(pedidoId: string | number, fotoPath: string, campo: 'mercadoria_foto' | 'coleta_foto' | 'entrega_foto' = 'coleta_foto'): Promise<ApiResponse<{ path: string }>> {
-    return firebaseOrderService.appendFoto(pedidoId, fotoPath, campo);
+    return orderService.appendFoto(pedidoId, fotoPath, campo);
   },
 
   async registrarPresenca(
@@ -548,43 +273,48 @@ export const api = {
     campo: 'coleta_chegada_at' | 'coleta_saida_at' | 'troca_chegada_at' | 'troca_saida_at' | 'entrega_chegada_at' | 'entrega_saida_at',
     timestamp?: string
   ): Promise<ApiResponse> {
-    const fbRes = await firebaseOrderService.registrarPresenca(pedidoId, campo, timestamp);
-    try {
-      await request('/pedidos/registrar_presenca', 'POST', {
-        pedido_id: pedidoId,
-        campo,
-        timestamp: timestamp || new Date().toISOString()
-      });
-    } catch (e) {}
-    return fbRes;
+    return orderService.registrarPresenca(pedidoId, campo, timestamp);
   },
 
-  /** Referência ao serviço Firebase de pedidos */
-  orders: firebaseOrderService,
+  /** Referência ao serviço de pedidos */
+  orders: orderService,
 
   // ==========================================
-  // CLIENTES & USUÁRIOS (Firebase Firestore & Realtime Database)
-  // Integrado aos 928 usuários importados com sincronização em tempo real
+  // CLIENTES & USUÁRIOS (/users)
   // ==========================================
   async listUsers(params?: {
     search?: string;
     page?: number;
     limit?: number;
+    cursor?: string;
     access_level?: string;
   }): Promise<ApiResponse<BackendUser[]>> {
-    return firebaseUserService.listUsers(params);
+    return userService.listUsers(params);
+  },
+
+  watchUsersPage(
+    params: { search?: string; cursor?: string; limit?: number; access_level?: string },
+    onUpdate: (response: ApiResponse<BackendUser[]>) => void,
+    onError?: (error: Error) => void
+  ): () => void {
+    return userService.subscribeUsersPage(params, onUpdate, onError);
   },
 
   async listUsersCompact(name?: string): Promise<ApiResponse<BackendUser[]>> {
-    return firebaseUserService.listUsersCompact(name);
+    return userService.listUsersCompact(name);
   },
 
   async getUser(id: string | number): Promise<ApiResponse<BackendUser>> {
-    return firebaseUserService.getUser(id);
+    return userService.getUser(id);
+  },
+
+  async deleteUser(id: string | number): Promise<ApiResponse> {
+    return userService.deleteUser(id);
   },
 
   async saveUser(user: Partial<BackendUser>): Promise<ApiResponse<{ id: number | string; foto?: string; avatarUrl?: string }>> {
     let savedFotoUrl = user.foto || (user as any).avatarUrl;
+    let resolvedUserId = user.id;
 
     // Se a foto for enviada em base64, sobe para o servidor de fotos PHP primeiro
     if (savedFotoUrl && typeof savedFotoUrl === 'string' && savedFotoUrl.startsWith('data:image/')) {
@@ -604,43 +334,31 @@ export const api = {
       ...(savedFotoUrl ? { foto: savedFotoUrl, avatarUrl: savedFotoUrl } : {})
     };
 
-    // 1. Envia para o backend Express (/users/save)
-    try {
-      const serverRes = await request<{ id: number | string; foto?: string; avatarUrl?: string }>(
-        '/users/save',
-        'POST',
-        payloadWithCleanPhoto
-      );
-      if (serverRes && serverRes.success) {
-        const foundUrl = (serverRes as any)?.foto || (serverRes as any)?.avatarUrl || serverRes.data?.foto || serverRes.data?.avatarUrl;
-        if (foundUrl) {
-          savedFotoUrl = foundUrl;
-        }
-      }
-    } catch (e) {
-      console.warn('Erro ao salvar usuário no backend Express:', e);
+    const serverRes = await userService.saveUser(payloadWithCleanPhoto);
+    if (!serverRes.success) {
+      return {
+        success: false,
+        id: resolvedUserId,
+        message: serverRes.message || 'Não foi possível gravar o cliente.'
+      } as any;
     }
 
-    // 2. Atualiza no Firebase Firestore & Realtime com a URL limpa da foto (evita estouro de 1MB do Firestore e quota do localStorage)
-    const userToSave: Partial<BackendUser> = {
-      ...payloadWithCleanPhoto,
-      ...(savedFotoUrl ? { foto: savedFotoUrl, avatarUrl: savedFotoUrl } : {})
-    };
-    const fbRes = await firebaseUserService.saveUser(userToSave);
-
-    const finalFoto = savedFotoUrl || (fbRes as any).foto;
-    const finalAvatar = savedFotoUrl || (fbRes as any).avatarUrl || finalFoto;
+    resolvedUserId = serverRes.id || serverRes.data?.id || resolvedUserId;
+    const foundUrl = (serverRes as any)?.foto || (serverRes as any)?.avatarUrl || serverRes.data?.foto || serverRes.data?.avatarUrl;
+    if (foundUrl) {
+      savedFotoUrl = foundUrl;
+    }
 
     return {
       success: true,
-      id: userToSave.id || (fbRes as any).id || (fbRes.data as any)?.id,
-      foto: finalFoto,
-      avatarUrl: finalAvatar,
+      id: resolvedUserId,
+      foto: savedFotoUrl,
+      avatarUrl: savedFotoUrl,
       data: {
-        id: userToSave.id || (fbRes as any).id || (fbRes.data as any)?.id,
-        foto: finalFoto,
-        avatarUrl: finalAvatar,
-        ...(fbRes.data || {})
+        ...(serverRes.data || {}),
+        id: resolvedUserId,
+        foto: savedFotoUrl,
+        avatarUrl: savedFotoUrl
       },
       message: 'Usuário salvo com sucesso!'
     } as any;
@@ -665,17 +383,19 @@ export const api = {
 
   async registerUser(user: {
     name: string;
+    full_name?: string;
+    name_completo?: string;
     phone: string;
     password?: string;
     access_level?: string;
     terms?: boolean;
     cidade?: string;
   }): Promise<ApiResponse<{ id: number | string }>> {
-    return firebaseUserService.registerUser(user);
+    return userService.registerUser(user);
   },
 
-  /** Referência ao serviço Firebase de usuários */
-  users: firebaseUserService,
+  /** Referência ao serviço de usuários */
+  users: userService,
 
   // ==========================================
   // MOTORISTAS & TRACKING (/motoristas & /tracking)
@@ -730,7 +450,7 @@ export const api = {
   },
 
   /**
-   * Busca as markers ativas de Hoje e Dias Anteriores no endpoint Dotas.online:
+   * Busca as markers ativas de Hoje e Dias Anteriores no endpoint /tracking/order_markers:
    * 1. Hoje: traz todas não finalizadas (coletas não coletadas, trocas e entregas ativas).
    * 2. Dias anteriores: traz todas as markers ativas pendentes/em rota dos dias anteriores.
    * Encomendas finalizadas/entregues são estritamente excluídas do mapa.

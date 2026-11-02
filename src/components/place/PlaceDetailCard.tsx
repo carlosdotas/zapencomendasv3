@@ -54,30 +54,7 @@ import { OrderFinalDetailsModal } from '../order/OrderFinalDetailsModal';
 import { isStreetOrAddress, resolveCommercialClosingTime, resolveCommercialOpeningTime } from '../../utils/placeUtils';
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
 
-// Ícone visual autêntico do Google Maps em vetor SVG
-const GoogleMapsIcon: React.FC<{ className?: string }> = ({ className = "w-5 h-5" }) => (
-  <svg className={className} viewBox="0 0 48 48" fill="none">
-    <path fill="#4885ED" d="M24 4C14.06 4 6 12.06 6 22c0 8.04 5.34 14.86 12.69 17.16L24 44l5.31-4.84C36.66 36.86 42 30.04 42 22c0-9.94-8.06-18-18-18z"/>
-    <path fill="#34A853" d="M24 4c-9.94 0-18 8.06-18 18 0 4.97 2.03 9.47 5.32 12.73l12.68-12.73V4z"/>
-    <path fill="#FBBC05" d="M24 22l-12.68 12.73c3.27 3.25 7.74 5.27 12.68 5.27V22z"/>
-    <path fill="#EA4335" d="M24 22v18c4.94 0 9.41-2.02 12.68-5.27L24 22z"/>
-    <circle fill="#FFFFFF" cx="24" cy="22" r="7"/>
-    <circle fill="#4285F4" cx="24" cy="22" r="4.5"/>
-  </svg>
-);
-
-// Ícone visual autêntico do Waze em vetor SVG
-const WazeIcon: React.FC<{ className?: string }> = ({ className = "w-5 h-5" }) => (
-  <svg className={className} viewBox="0 0 48 48" fill="none">
-    <rect width="48" height="48" rx="12" fill="#33CCFF"/>
-    <path fill="#FFFFFF" d="M37.5 24c0-7.46-6.04-13.5-13.5-13.5S10.5 16.54 10.5 24c0 2.22.54 4.31 1.49 6.16l-1.39 4.34a1 1 0 0 0 1.25 1.25l4.34-1.39A13.43 13.43 0 0 0 24 37.5c7.46 0 13.5-6.04 13.5-13.5z"/>
-    <circle cx="19" cy="22.5" r="2.2" fill="#222222"/>
-    <circle cx="29" cy="22.5" r="2.2" fill="#222222"/>
-    <path d="M20 28.5c1.2 1.5 2.6 2.2 4 2.2s2.8-.7 4-2.2" stroke="#222222" strokeWidth="2" strokeLinecap="round"/>
-    <circle cx="17.5" cy="35" r="2.5" fill="#222222"/>
-    <circle cx="30.5" cy="35" r="2.5" fill="#222222"/>
-  </svg>
-);
+import { GoogleMapsIcon, WazeIcon } from '../map/NavAppIcons';
 import { Place, OperationType, PackageItemType, VehicleCollectionType } from '../../types/map';
 import { CustomerSelectorDrawer } from '../customer/CustomerSelectorDrawer';
 import { CustomerFormFullScreen } from '../customer/CustomerFormFullScreen';
@@ -246,7 +223,7 @@ export const PlaceDetailCard: React.FC = () => {
     drivers,
     updatePlaceDetails,
     addNewOrder,
-    addCustomer,
+    persistCustomer,
     viewingPhotoUrl,
     setViewingPhotoUrl,
     openPhotoViewer,
@@ -275,7 +252,12 @@ export const PlaceDetailCard: React.FC = () => {
     if (!selectedPlace) return;
     setIsClaimingOrder(true);
     try {
-      await claimPublicOrder(selectedPlace.id);
+      const won = await claimPublicOrder(selectedPlace.id);
+      if (!won) {
+        setSaveSuccessToast('Este pedido já foi aceito por outro motorista.');
+        setSelectedPlace(null);
+        return;
+      }
       setSaveSuccessToast('🎉 Pedido aceito com sucesso! Você é o responsável.');
       setSelectedPlace({
         ...selectedPlace,
@@ -773,32 +755,38 @@ export const PlaceDetailCard: React.FC = () => {
     }, 240);
   }, [selectedPlace, setSelectedPlace, dismissPlaceProximity]);
 
-  // Recusa ou cancelamento da rota pelo motorista
+  // Cancelamento do pedido pelo motorista (desiste da rota; justificativa obrigatória gravada no banco)
   const handleConfirmRefusal = useCallback(async () => {
+    const justification = refusalNotes.trim();
     if (!selectedPlace || !refusalReason) return;
+    if (justification.length < 5) return;
     setIsSubmittingRefusal(true);
 
     try {
-      const fullReasonText = refusalNotes.trim() ? `${refusalReason} - ${refusalNotes.trim()}` : refusalReason;
-      const driverIdentifier = user?.name || 'Motorista';
-      const refusalNoteFormatted = `[RECUSADA PELO MOTORISTA: ${driverIdentifier}]: ${fullReasonText}`;
+      const fullReasonText = justification ? `${refusalReason} - ${justification}` : refusalReason;
+      const driverUserId = parseInt(String(user?.id ?? '').replace(/\D/g, ''), 10);
 
-      // 1. Desvincula o motorista desta marker específica em tempo real
+      // 1. Desvincula o motorista e devolve o pedido ao público para a central reatribuir
       assignPlaceToDriver(selectedPlace.id, null, undefined, undefined);
+      updatePlaceDetails(selectedPlace.id, {
+        orderVisibility: 'publico',
+        assignedDriverId: undefined,
+        assignedDriverPhone: undefined,
+        assignedDriverName: undefined
+      });
 
-      // 2. Persiste a anotação da recusa no backend Express (/pedidos/save)
+      // 2. Grava a justificativa nos campos próprios do pedido (/pedidos/save)
       const numericPedidoId = selectedPlace.id.match(/pedido-(\d+)/)?.[1] || selectedPlace.id.match(/\d+/)?.[0];
-      if (numericPedidoId) {
-        const isColeta = selectedPlace.operationType === 'coleta';
+      if (numericPedidoId && Number(numericPedidoId) <= 2147483647) {
         await api.savePedido({
           id: numericPedidoId,
-          ...(isColeta 
-            ? { coleta_obs: refusalNoteFormatted } 
-            : { entrega_obs: refusalNoteFormatted })
-        }).catch(() => {});
+          motorista_cancel_motivo: fullReasonText,
+          motorista_cancel_em: new Date().toISOString(),
+          motorista_cancel_user_id: Number.isFinite(driverUserId) ? driverUserId : null
+        } as any).catch(() => {});
       }
 
-      setDriverToast('Rota recusada. A central foi notificada.');
+      setDriverToast('Pedido cancelado. A central foi notificada.');
       setTimeout(() => setDriverToast(null), 4000);
       setShowRefusalModal(false);
       setRefusalReason('');
@@ -811,7 +799,7 @@ export const PlaceDetailCard: React.FC = () => {
     } finally {
       setIsSubmittingRefusal(false);
     }
-  }, [selectedPlace, refusalReason, refusalNotes, user, assignPlaceToDriver, triggerClose]);
+  }, [selectedPlace, refusalReason, refusalNotes, user, assignPlaceToDriver, updatePlaceDetails, triggerClose]);
 
   // Gestos de toque (Touch) para arrastar para baixo e fechar
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -1303,11 +1291,14 @@ export const PlaceDetailCard: React.FC = () => {
     setIsCustomerRegistrationOpen(true);
   };
 
-  const handleSaveCustomerFromRegistration = (newCustomer: Customer) => {
-    // 1. Salva no banco de clientes
-    addCustomer(newCustomer);
+  const handleSaveCustomerFromRegistration = async (newCustomer: Customer) => {
+    const saved = await persistCustomer(newCustomer);
+    if (!saved) {
+      window.alert('Não foi possível salvar o endereço do cliente no banco de dados.');
+      return;
+    }
 
-    // 2. Vincula imediatamente ao botão selecionado no ponto atual
+    // Vincula o cliente salvo ao pedido selecionado no mapa.
     if (selectedPlace) {
       if (selectorTargetField === 'customer') {
         const op = selectedPlace.operationType || 'coleta';
@@ -1608,6 +1599,10 @@ ${horarioText}
     // 1. Traça a rota animada no mapa interno estilo Uber somente quando clica para ir no GPS
     calculateRouteToPlace(selectedPlace);
 
+    // Avisa a central (admin/atendente/terminal) que o motorista está a caminho
+    if (isDriverRole) {
+      void realtimeAssignmentService.markEnRoute(selectedPlace.id, selectedPlace.operationType, true).catch(() => {});
+    }
     // 2. Fecha o card de detalhes suavemente mantendo a rota visível na tela
     triggerClose();
     setShowNavChooser(false);
@@ -2801,8 +2796,9 @@ ${horarioText}
           </div>
 
 
-            {/* CLIENTE E VENDEDOR (RESPONSÁVEL) - CLARO, COMPACTO E ELEGANTE */}
-            <div className="w-full grid grid-cols-2 gap-1.5 sm:gap-2 shrink-0">
+            {/* CLIENTE E VENDEDOR (RESPONSÁVEL) - motorista só vê os cartões preenchidos */}
+            {(!isDriverRole || hasCustomer || hasResponsible) && (
+            <div className={`w-full grid ${isDriverRole && (hasCustomer !== hasResponsible) ? 'grid-cols-1' : 'grid-cols-2'} gap-1.5 sm:gap-2 shrink-0`}>
               {/* CARD 1: CLIENTE - Tema Azul Corporativo #0B5187 */}
               {hasCustomer ? (
                 <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-blue-50/90 via-white to-sky-50/60 border border-blue-200/90 shadow-2xs hover:shadow-xs transition-all">
@@ -2877,34 +2873,6 @@ ${horarioText}
                     </div>
                   </button>
 
-                  {/* ALERTA: CLIENTE SEM LOCALIZAÇÃO CADASTRADA */}
-                  {customerMissingLocation && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!selectedPlace) return;
-                        openCustomerLocationModal({
-                          place: selectedPlace,
-                          placeId: selectedPlace.id,
-                          customerName: customerName,
-                          customerPhone: customerPhone,
-                          customerId: selectedPlace.customerId
-                        });
-                      }}
-                      className="my-1 w-full py-1 px-1.5 rounded-lg bg-amber-50 hover:bg-amber-100/90 border border-amber-300 text-amber-900 text-[9.5px] font-black flex items-center justify-between gap-1 shadow-2xs transition-all cursor-pointer group"
-                      title="Cliente sem localização cadastrada! Clique para buscar e definir local."
-                    >
-                      <span className="flex items-center gap-1 min-w-0">
-                        <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
-                        <span className="truncate">Sem Localização</span>
-                      </span>
-                      <span className="bg-amber-500 group-hover:bg-amber-600 text-white px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wider shrink-0 transition-colors">
-                        Cadastrar
-                      </span>
-                    </button>
-                  )}
-
                   {/* Botão de Ação WhatsApp ou Adicionar Telefone */}
                   {customerPhone ? (
                     <button
@@ -2933,7 +2901,7 @@ ${horarioText}
                     </button>
                   ) : null}
                 </div>
-              ) : (
+              ) : isDriverRole ? null : (
                 /* Card Cliente Vazio - Compacto e convidativo */
                 <button
                   type="button"
@@ -3067,7 +3035,7 @@ ${horarioText}
                     </button>
                   ) : null}
                 </div>
-              ) : (
+              ) : isDriverRole ? null : (
                 /* Card Vendedor Vazio - Abre diretamente formulário com Nome, Telefone e Agenda */
                 <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-orange-50/50 via-white to-amber-50/30 border-2 border-dashed border-orange-200 hover:border-[#FF5E00] hover:bg-orange-50/60 transition-all min-h-[74px]">
                   <button
@@ -3118,42 +3086,6 @@ ${horarioText}
                 </div>
               )}
             </div>
-
-            {/* ADVERTÊNCIA: CLIENTE SEM LOCALIZAÇÃO CADASTRADA */}
-            {customerMissingLocation && (
-              <div className="w-full rounded-2xl p-3 bg-amber-500/10 border-2 border-amber-400/50 shadow-xs flex items-start gap-2.5 animate-in fade-in duration-150 shrink-0">
-                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1 flex-wrap">
-                    <h4 className="text-xs font-black text-amber-900 leading-tight">
-                      Advertência: Cliente Sem Localização
-                    </h4>
-                    <span className="text-[9px] font-black uppercase tracking-wider bg-amber-200/90 text-amber-900 px-1.5 py-0.5 rounded">
-                      Rota não traçada
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-amber-900/80 mt-1 leading-snug">
-                    O cliente não possui endereço ou coordenadas cadastradas. Cadastre a localização para traçar a rota da encomenda.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!selectedPlace) return;
-                      openCustomerLocationModal({
-                        place: selectedPlace,
-                        placeId: selectedPlace.id,
-                        customerName: customerName,
-                        customerPhone: customerPhone,
-                        customerId: selectedPlace.customerId
-                      });
-                    }}
-                    className="mt-2 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 active:scale-95 text-white font-black text-xs inline-flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
-                  >
-                    <MapPin className="w-3.5 h-3.5 stroke-[2.5]" />
-                    <span>Cadastrar Localização do Cliente</span>
-                  </button>
-                </div>
-              </div>
             )}
 
             {/* SEÇÃO DA ROTA DA ENCOMENDA NO DETALHE DO PEDIDO (QUANDO CLIENTE POSSUI LOCALIZAÇÃO) */}
@@ -3329,7 +3261,7 @@ ${horarioText}
             )}
 
             {/* SEÇÃO VISIBILIDADE / DIRECIONAMENTO: PÚBLICO OU PRIVADO */}
-            {(() => {
+            {!isDriverRole && (() => {
               const isPublicMode = selectedPlace.orderVisibility === 'publico' || 
                 (!selectedPlace.orderVisibility && !selectedPlace.assignedDriverId && !selectedPlace.assignedDriverPhone);
 
@@ -3551,7 +3483,8 @@ ${horarioText}
               </div>
             )}
 
-            {/* OBSERVAÇÕES COM BOTÃO DE EDITAR E SUGESTÕES RÁPIDAS */}
+            {/* OBSERVAÇÕES COM BOTÃO DE EDITAR E SUGESTÕES RÁPIDAS (motorista só vê se houver observação) */}
+            {(!isDriverRole || observations) && (
             <div className="bg-amber-50/90 rounded-2xl p-3 border border-amber-200/90 shadow-2xs space-y-2 shrink-0">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
@@ -3639,6 +3572,7 @@ ${horarioText}
                 </p>
               )}
             </div>
+            )}
 
           </div>
 
@@ -3813,7 +3747,8 @@ ${horarioText}
                       </div>
                     </button>
 
-                    {/* Detalhes do Pedido & Preço */}
+                    {/* Detalhes do Pedido & Preço (oculto para motoristas) */}
+                    {!isDriverRole && (
                     <button
                       type="button"
                       onClick={() => {
@@ -3834,6 +3769,7 @@ ${horarioText}
                         </div>
                       </div>
                     </button>
+                    )}
 
                     {/* Editar Pedido (Desabilitado para motoristas) */}
                     {!isDriverRole && (
@@ -3854,6 +3790,32 @@ ${horarioText}
                           </div>
                           <div className="text-[10px] text-slate-500 truncate">
                             Alterar dados, endereço ou cliente
+                          </div>
+                        </div>
+                      </button>
+                    )}
+
+                    {/* Cancelar pedido (motorista, com justificativa) */}
+                    {isDriverRole && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsActionsMenuOpen(false);
+                          setRefusalReason('');
+                          setRefusalNotes('');
+                          setShowRefusalModal(true);
+                        }}
+                        className="w-full px-3 py-2.5 rounded-xl hover:bg-rose-50/70 text-slate-700 hover:text-rose-800 flex items-center gap-2.5 text-left transition-colors cursor-pointer group"
+                      >
+                        <div className="w-8 h-8 rounded-lg bg-rose-100 group-hover:bg-rose-200 text-rose-700 flex items-center justify-center shrink-0 transition-colors">
+                          <Ban className="w-4 h-4 stroke-[2.3]" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold text-slate-800 group-hover:text-rose-800 truncate">
+                            Cancelar pedido
+                          </div>
+                          <div className="text-[10px] text-slate-500 truncate">
+                            Desistir da rota com justificativa
                           </div>
                         </div>
                       </button>
@@ -5110,7 +5072,7 @@ ${horarioText}
                 </div>
                 <div>
                   <h3 className="text-sm sm:text-base font-bold text-slate-900">
-                    Recusar / Cancelar Rota
+                    Cancelar pedido
                   </h3>
                   <p className="text-xs text-slate-500">
                     A central será notificada para reatribuir a outro entregador:
@@ -5162,7 +5124,7 @@ ${horarioText}
             {/* Campo de observações adicionais */}
             <div className="space-y-1.5">
               <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">
-                Detalhes adicionais (opcional):
+                Justificativa (obrigatória):
               </label>
               <textarea
                 value={refusalNotes}
@@ -5185,7 +5147,7 @@ ${horarioText}
               </button>
               <button
                 type="button"
-                disabled={!refusalReason || isSubmittingRefusal}
+                disabled={!refusalReason || refusalNotes.trim().length < 5 || isSubmittingRefusal}
                 onClick={handleConfirmRefusal}
                 className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition-colors shadow-xs disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 cursor-pointer"
               >
@@ -5197,7 +5159,7 @@ ${horarioText}
                 ) : (
                   <>
                     <Ban className="w-3.5 h-3.5" />
-                    <span>Confirmar Recusa</span>
+                    <span>Confirmar Cancelamento</span>
                   </>
                 )}
               </button>

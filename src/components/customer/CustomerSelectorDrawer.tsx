@@ -1,17 +1,18 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { 
   X, 
   Search, 
   User, 
   UserCheck, 
-  Phone, 
+  MessageCircle,
   MapPin, 
   Plus, 
   BookOpen, 
   Check, 
-  ArrowRight,
+  MoreVertical,
   Database,
   Loader2,
+  Trash2,
   Smartphone,
   ShieldCheck,
   CreditCard,
@@ -22,18 +23,19 @@ import {
 } from 'lucide-react';
 import { Customer, AgendaContact, TargetFieldType } from '../../types/customer';
 import { Place } from '../../types/map';
-import { INITIAL_AGENDA_CONTACTS } from '../../data/mockCustomers';
-import { searchDatabaseCustomers } from '../../services/customerSearchService';
-import { checkUserCompleteness } from '../../utils/userCompleteness';
+import { subscribeDatabaseCustomersPage } from '../../services/customerSearchService';
+import { checkUserCompleteness, isValidTaxId } from '../../utils/userCompleteness';
 import { api } from '../../services/api';
 import { useBackButton } from '../../hooks/useBackButton';
 import { PhoneAgendaModal } from './PhoneAgendaModal';
 import { useMapStore } from '../../context/MapContext';
 import { hasCustomerLocation } from '../../utils/customerLocationUtils';
 import { CustomerOrderHistoryFullScreen } from '../order/CustomerOrderHistoryFullScreen';
-import { firebaseCompanyService } from '../../services/firebaseCompanyService';
+import { companyService } from '../../services/companyService';
 import { PastOrderRecord } from '../order/NewOrderModal';
 import { customerOrderStatsService } from '../../services/customerOrderStatsService';
+import { backendUserToCustomer } from '../../services/apiAdapters';
+import { customersRepresentSamePerson, mergeCustomerLists, normalizeCustomerId, normalizeCustomerPhone } from '../../utils/customerIdentity';
 
 interface CustomerSelectorDrawerProps {
   isOpen: boolean;
@@ -41,6 +43,7 @@ interface CustomerSelectorDrawerProps {
   targetField: TargetFieldType;
   onSelectCustomer: (customer: Customer) => void;
   onOpenRegistration: (initialData?: Partial<Customer> | AgendaContact) => void;
+  canDeleteCustomer?: boolean;
 }
 
 const extractCityFromAddress = (address?: string): string => {
@@ -57,12 +60,29 @@ const extractCityFromAddress = (address?: string): string => {
   return 'Goiânia';
 };
 
+const hasDetailedAddress = (address?: string, city?: string): boolean => {
+  if (!address?.trim()) return false;
+  const normalize = (value: string) => value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s*[,;-]\s*[a-z]{2}\s*$/, '')
+    .replace(/[,.]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const normalizedAddress = normalize(address);
+  const normalizedCity = city ? normalize(city) : '';
+  if (normalizedCity && normalizedAddress === normalizedCity) return false;
+  return /\d/.test(address) || address.includes(',') || /\b(rua|r\.|avenida|av\.|alameda|rodovia|estrada|travessa|praca|praça|setor|quadra|lote|km)\b/i.test(address);
+};
+
 export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
   isOpen,
   onClose,
   targetField,
   onSelectCustomer,
-  onOpenRegistration
+  onOpenRegistration,
+  canDeleteCustomer = false
 }) => {
   useBackButton('customer-selector-drawer', isOpen, onClose, 95);
 
@@ -70,6 +90,7 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
     customers, 
     user,
     currentRole,
+    deleteCustomer,
     openCustomerLocationModal, 
     selectedPlace,
     allPlaces,
@@ -81,13 +102,27 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
   const isDriverRole = currentRole === 'motorista' || user?.userRole === 'motorista';
 
   const [searchTerm, setSearchTerm] = useState('');
-  const [agendaContacts, setAgendaContacts] = useState<AgendaContact[]>(INITIAL_AGENDA_CONTACTS);
+  const [agendaContacts, setAgendaContacts] = useState<AgendaContact[]>([]);
   const [dbCustomers, setDbCustomers] = useState<Customer[]>([]);
   const [initialDbUsers, setInitialDbUsers] = useState<Customer[]>([]);
+  const [initialDbLoaded, setInitialDbLoaded] = useState(false);
   const [isSearchingDb, setIsSearchingDb] = useState(false);
+  const [isLoadingMoreDbUsers, setIsLoadingMoreDbUsers] = useState(false);
+  const [initialDbCursor, setInitialDbCursor] = useState<string | undefined>();
+  const [searchDbCursor, setSearchDbCursor] = useState<string | undefined>();
+  const [hasMoreInitialDbUsers, setHasMoreInitialDbUsers] = useState(false);
+  const [hasMoreSearchDbUsers, setHasMoreSearchDbUsers] = useState(false);
   const [isPhoneAgendaModalOpen, setIsPhoneAgendaModalOpen] = useState(false);
   const [historyCustomer, setHistoryCustomer] = useState<Customer | null>(null);
+  const [openCustomerMenuId, setOpenCustomerMenuId] = useState<string | null>(null);
+  const [deletingCustomerId, setDeletingCustomerId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const resultsScrollRef = useRef<HTMLDivElement>(null);
+  const resultsSentinelRef = useRef<HTMLDivElement>(null);
+  const loadingMoreDbRef = useRef(false);
+  const pageSubscriptionsRef = useRef(new Map<string, () => void>());
+  const initialPagesRef = useRef(new Map<string, Customer[]>());
+  const searchPagesRef = useRef(new Map<string, Customer[]>());
 
   // Lista de pedidos históricos do cliente ordenada pelos locais mais frequentes
   const customerPastOrdersList = useMemo(() => {
@@ -262,34 +297,54 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
 
   // Carrega lista inicial de usuários do banco ao abrir o drawer
   useEffect(() => {
-    if (isOpen) {
-      setSearchTerm('');
-      setIsSearchingDb(false);
+    if (!isOpen) return;
+    let active = true;
+    const pageKey = 'initial:first';
+    let firstPageReceived = false;
+    setSearchTerm('');
+    setIsSearchingDb(false);
+    setInitialDbUsers([]);
+    setInitialDbLoaded(false);
+    setInitialDbCursor(undefined);
+    setHasMoreInitialDbUsers(false);
+    initialPagesRef.current.clear();
+    setIsLoadingMoreDbUsers(true);
 
-      // Carrega primeiros usuários do banco oficial para já estarem visíveis
-      api.listUsers({ limit: 30 })
-        .then(res => {
-          if (res.success && Array.isArray(res.data)) {
-            const mapped: Customer[] = res.data.map(u => ({
-              id: `db-user-${u.id}`,
-              fullName: (u.name_completo && u.name_completo.trim()) || u.name || 'Usuário Sem Nome',
-              phone: (u.phone || '').trim(),
-              cpf: (u.cpf || '').trim(),
-              address: u.cidade ? `${u.cidade} - GO` : 'Goiânia - GO',
-              notes: u.access_level ? `Banco de Dados (${u.access_level})` : 'Banco de Dados',
-              orderCount: Number((u as any).orderCount ?? (u as any).pedidos_count ?? (u as any).order_count ?? 0),
-              createdAt: Date.now()
-            }));
-            setInitialDbUsers(customerOrderStatsService.sortCustomersByOrderCount(mapped));
-          }
-        })
-        .catch(err => console.warn('Erro ao carregar usuários iniciais do banco:', err));
+    const unsubscribe = subscribeDatabaseCustomersPage('', undefined, 30, page => {
+      if (!active) return;
+      initialPagesRef.current.set(pageKey, page.customers);
+      const mergedPage = mergeCustomerLists(...Array.from(initialPagesRef.current.values()));
+      setInitialDbUsers(customerOrderStatsService.sortCustomersByOrderCount(mergedPage));
+      // Atualizações periódicas não podem reiniciar o cursor das páginas já carregadas
+      if (!firstPageReceived) {
+        firstPageReceived = true;
+        setInitialDbCursor(page.cursor);
+        setHasMoreInitialDbUsers(page.hasMore);
+      }
+      setInitialDbLoaded(true);
+      setIsLoadingMoreDbUsers(false);
+    }, error => {
+      if (!active) return;
+      console.warn('Erro ao carregar usuários iniciais:', error);
+      setHasMoreInitialDbUsers(false);
+      setIsLoadingMoreDbUsers(false);
+    });
+    pageSubscriptionsRef.current.set(pageKey, unsubscribe);
 
-      const timer = setTimeout(() => {
-        searchInputRef.current?.focus();
-      }, 100);
-      return () => clearTimeout(timer);
-    }
+    const timer = setTimeout(() => {
+      if (active) searchInputRef.current?.focus();
+    }, 100);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      for (const [key, stop] of pageSubscriptionsRef.current) {
+        if (key.startsWith('initial:')) {
+          stop();
+          pageSubscriptionsRef.current.delete(key);
+        }
+      }
+      initialPagesRef.current.clear();
+    };
   }, [isOpen]);
 
   // Normalização para busca insensível a acentos (ex: "joao" acha "João", "conceicao" acha "Conceição")
@@ -298,21 +353,23 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
 
   const cleanSearch = searchTerm.trim().toLowerCase();
   const normSearch = normalize(searchTerm);
-  const searchDigits = searchTerm.replace(/\D/g, '');
+  const searchDigits = normalizeCustomerPhone(searchTerm);
 
-  const matchesItem = (c: { fullName?: string; name?: string; phone?: string; cpf?: string; address?: string; notes?: string; city?: string; cidade?: string }) => {
+  const matchesItem = (c: { fullName?: string; name?: string; phone?: string; cpf?: string; cnpj?: string; address?: string; notes?: string; city?: string; cidade?: string }) => {
     if (!normSearch) return true;
     const nameStr = c.fullName || c.name || '';
     if (normalize(nameStr).includes(normSearch)) return true;
 
     if (searchDigits.length >= 2) {
-      const pDigits = (c.phone || '').replace(/\D/g, '');
+      const pDigits = normalizeCustomerPhone(c.phone);
       if (pDigits.includes(searchDigits)) return true;
       const cpfDigits = (c.cpf || '').replace(/\D/g, '');
-      if (cpfDigits.includes(searchDigits)) return true;
+      const cnpjDigits = (c.cnpj || '').replace(/\D/g, '');
+      if (cpfDigits.includes(searchDigits) || cnpjDigits.includes(searchDigits)) return true;
     }
 
     if (c.cpf && normalize(c.cpf).includes(normSearch)) return true;
+    if (c.cnpj && normalize(c.cnpj).includes(normSearch)) return true;
     if (c.city && normalize(c.city).includes(normSearch)) return true;
     if (c.cidade && normalize(c.cidade).includes(normSearch)) return true;
     if (c.address && normalize(c.address).includes(normSearch)) return true;
@@ -324,69 +381,157 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
 
   // Busca em tempo real no banco de dados com debounce rápido
   useEffect(() => {
-    if (!cleanSearch) {
+    let active = true;
+    for (const [key, stop] of pageSubscriptionsRef.current) {
+      if (key.startsWith('search:')) {
+        stop();
+        pageSubscriptionsRef.current.delete(key);
+      }
+    }
+    searchPagesRef.current.clear();
+
+    if (!isOpen || !cleanSearch) {
       setDbCustomers([]);
+      setSearchDbCursor(undefined);
+      setHasMoreSearchDbUsers(false);
       setIsSearchingDb(false);
-      return;
+      return () => { active = false; };
     }
 
     setIsSearchingDb(true);
-    const timer = setTimeout(async () => {
-      try {
-        const results = await searchDatabaseCustomers(cleanSearch);
-        setDbCustomers(results);
-      } catch (err) {
-        console.warn('Erro na busca de usuários no banco:', err);
-      } finally {
+    setDbCustomers([]);
+    setSearchDbCursor(undefined);
+    setHasMoreSearchDbUsers(false);
+    setIsSearchingDb(true);
+    const timer = setTimeout(() => {
+      const pageKey = `search:${cleanSearch}:first`;
+      let firstSearchResponse = true;
+      const unsubscribe = subscribeDatabaseCustomersPage(cleanSearch, undefined, 30, page => {
+        if (!active) return;
+        searchPagesRef.current.set(pageKey, page.customers);
+        const mergedPage = mergeCustomerLists(...Array.from(searchPagesRef.current.values()));
+        setDbCustomers(customerOrderStatsService.sortCustomersByOrderCount(mergedPage));
+        if (firstSearchResponse) {
+          firstSearchResponse = false;
+          setSearchDbCursor(page.cursor);
+          setHasMoreSearchDbUsers(page.hasMore);
+        }
         setIsSearchingDb(false);
-      }
+      }, error => {
+        if (!active) return;
+        console.warn('Erro na busca de usuários:', error);
+        setHasMoreSearchDbUsers(false);
+        setIsSearchingDb(false);
+      });
+      pageSubscriptionsRef.current.set(pageKey, unsubscribe);
     }, 180);
 
-    return () => clearTimeout(timer);
-  }, [cleanSearch]);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      for (const [key, stop] of pageSubscriptionsRef.current) {
+        if (key.startsWith(`search:${cleanSearch}:`)) {
+          stop();
+          pageSubscriptionsRef.current.delete(key);
+        }
+      }
+      searchPagesRef.current.clear();
+    };
+  }, [cleanSearch, isOpen]);
+
+  const loadMoreDbUsers = useCallback(async () => {
+    if (loadingMoreDbRef.current || isSearchingDb) return;
+    const isSearching = Boolean(cleanSearch);
+    const hasMore = isSearching ? hasMoreSearchDbUsers : hasMoreInitialDbUsers;
+    const cursor = isSearching ? searchDbCursor : initialDbCursor;
+    if (!hasMore || !cursor) return;
+
+    const pageKey = `${isSearching ? `search:${cleanSearch}` : 'initial'}:${cursor}`;
+    if (pageSubscriptionsRef.current.has(pageKey)) return;
+
+    loadingMoreDbRef.current = true;
+    setIsLoadingMoreDbUsers(true);
+    try {
+      let firstResponse = true;
+      const unsubscribe = subscribeDatabaseCustomersPage(isSearching ? cleanSearch : '', cursor, 30, page => {
+        const pages = isSearching ? searchPagesRef.current : initialPagesRef.current;
+        pages.set(pageKey, page.customers);
+        const mergedPages = mergeCustomerLists(...Array.from(pages.values()));
+        // Só a primeira resposta avança o cursor; o polling não deve fazê-lo retroceder
+        const advance = firstResponse;
+        firstResponse = false;
+        if (isSearching) {
+          setDbCustomers(customerOrderStatsService.sortCustomersByOrderCount(mergedPages));
+          if (advance) {
+            setSearchDbCursor(page.cursor);
+            setHasMoreSearchDbUsers(page.hasMore);
+          }
+        } else {
+          setInitialDbUsers(customerOrderStatsService.sortCustomersByOrderCount(mergedPages));
+          if (advance) {
+            setInitialDbCursor(page.cursor);
+            setHasMoreInitialDbUsers(page.hasMore);
+          }
+        }
+        loadingMoreDbRef.current = false;
+        setIsLoadingMoreDbUsers(false);
+      }, error => {
+        console.warn('Erro ao acompanhar página de usuários:', error);
+        if (isSearching) setHasMoreSearchDbUsers(false);
+        else setHasMoreInitialDbUsers(false);
+        loadingMoreDbRef.current = false;
+        setIsLoadingMoreDbUsers(false);
+      });
+      pageSubscriptionsRef.current.set(pageKey, unsubscribe);
+    } catch (error) {
+      console.warn('Erro ao carregar mais usuários:', error);
+      if (cleanSearch) setHasMoreSearchDbUsers(false);
+      else setHasMoreInitialDbUsers(false);
+      loadingMoreDbRef.current = false;
+      setIsLoadingMoreDbUsers(false);
+    }
+  }, [cleanSearch, hasMoreInitialDbUsers, hasMoreSearchDbUsers, initialDbCursor, isSearchingDb, searchDbCursor]);
+
+  const hasMoreDbUsers = cleanSearch ? hasMoreSearchDbUsers : hasMoreInitialDbUsers;
+
+  useEffect(() => {
+    if (!isOpen || !hasMoreDbUsers || isSearchingDb || isLoadingMoreDbUsers) return;
+    const root = resultsScrollRef.current;
+    const sentinel = resultsSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadMoreDbUsers();
+    }, { root, rootMargin: '160px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreDbUsers, isLoadingMoreDbUsers, isOpen, isSearchingDb, loadMoreDbUsers]);
 
   // Lista de usuários do Banco de Dados a exibir:
   // Mescla os usuários do banco oficial com clientes já cadastrados/atualizados no app
   const displayedDbUsers = useMemo(() => {
     const baseList = cleanSearch ? dbCustomers : initialDbUsers;
+    // Sem busca, só mistura a lista local depois que o banco respondeu (evita dados que aparecem e somem)
     const localFiltered = normSearch
       ? customers.filter(matchesItem)
-      : customers;
+      : initialDbLoaded ? customers : [];
     const baseFiltered = normSearch
       ? baseList.filter(matchesItem)
       : baseList;
 
-    const map = new Map<string, Customer>();
-    // Clientes do app têm prioridade máxima (pois têm coordenadas e atualizações recentes)
-    localFiltered.forEach(c => {
-      const key = (c.phone ? c.phone.replace(/\D/g, '') : '') || c.id;
-      if (key) map.set(key, c);
-    });
-    baseFiltered.forEach(u => {
-      const key = (u.phone ? u.phone.replace(/\D/g, '') : '') || u.id;
-      if (key && !map.has(key)) {
-        map.set(key, u);
-      }
-    });
-    const accessible = Array.from(map.values()).filter(c => 
-      firebaseCompanyService.canUserAccessCustomer(c, user?.phone)
+    const merged = mergeCustomerLists(baseFiltered, localFiltered);
+    const accessible = merged.filter(c =>
+      companyService.canUserAccessCustomer(c, user?.phone)
     );
     // Organiza por ordem de quem tem mais pedidos (decrescente)
     return customerOrderStatsService.sortCustomersByOrderCount(accessible);
-  }, [cleanSearch, normSearch, searchDigits, dbCustomers, initialDbUsers, customers, user?.phone]);
+  }, [cleanSearch, normSearch, searchDigits, dbCustomers, initialDbUsers, initialDbLoaded, customers, user?.phone]);
 
   // Resolve se o cliente possui localização cadastrada (diretamente ou salvo na lista de clientes do app)
   const resolveCustomerLocationRecord = (item: { id?: string; phone?: string; coordinates?: any; address?: string }): Customer | null => {
     if (hasCustomerLocation(item as Customer)) return item as Customer;
     const cleanPhone = (item.phone || '').replace(/\D/g, '');
-    const match = customers.find(c => {
-      if (item.id && c.id === item.id) return true;
-      if (cleanPhone && cleanPhone.length >= 8) {
-        const cPhone = (c.phone || '').replace(/\D/g, '');
-        return cPhone === cleanPhone || cPhone.endsWith(cleanPhone) || cleanPhone.endsWith(cPhone);
-      }
-      return false;
-    });
+    const match = customers.find(customer => customersRepresentSamePerson(customer, item as Customer));
     if (match && hasCustomerLocation(match)) return match;
     return null;
   };
@@ -473,6 +618,19 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
     setIsPhoneAgendaModalOpen(true);
   };
 
+  const openCustomerWhatsApp = (rawPhone?: string) => {
+    const digits = (rawPhone || '').replace(/\D/g, '');
+    if (!digits) return;
+    const phone = !digits.startsWith('55') && (digits.length === 10 || digits.length === 11)
+      ? `55${digits}`
+      : digits;
+    if (window.AndroidApp?.openWhatsApp) {
+      window.AndroidApp.openWhatsApp(phone, '');
+    } else {
+      window.open(`https://wa.me/${phone}`, '_blank', 'noopener,noreferrer');
+    }
+  };
+
   const hasNativeContactsApi = (typeof window !== 'undefined' && Boolean(window.AndroidApp?.pickContact)) || 
     (typeof navigator !== 'undefined' && 'contacts' in navigator && 'ContactsManager' in window);
 
@@ -510,18 +668,9 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
-      {/* Backdrop para fechar */}
-      <div className="flex-1 cursor-pointer" onClick={onClose} />
-
-      {/* PAINEL INFERIOR: BANCO DE DADOS & AGENDA TELEFÔNICA */}
-      <div className="bg-white rounded-t-3xl shadow-2xl border-t border-slate-200 max-h-[88vh] sm:max-h-[82vh] flex flex-col w-full max-w-xl mx-auto overflow-hidden animate-in slide-in-from-bottom duration-250">
-        
-        {/* TOPO: PUXADOR + CABEÇALHO */}
-        <div className="pt-2 pb-1 flex flex-col items-center justify-center shrink-0">
-          <div className="w-12 h-1.5 bg-slate-300 rounded-full" />
-        </div>
-
+    <div className="fixed inset-0 z-50 flex h-screen w-screen flex-col bg-white animate-in fade-in duration-150">
+      {/* JANELA DE TELA INTEIRA: BANCO DE DADOS & AGENDA TELEFÔNICA */}
+      <div className="flex h-full w-full flex-col overflow-hidden bg-white">
         <div className="px-3.5 py-2 border-b border-slate-100 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
             <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-xl flex items-center justify-center text-white shadow-xs ${
@@ -574,7 +723,16 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
         {/* ========================================================
             CENTRO: RESULTADOS COMPACTOS (DOBRA A VISIBILIDADE NA TELA)
             ======================================================== */}
-        <div className="flex-1 overflow-y-auto p-2 sm:p-2.5 space-y-2.5 min-h-[160px]">
+        <div
+          ref={resultsScrollRef}
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            if (element.scrollHeight - element.scrollTop - element.clientHeight < 120) {
+              void loadMoreDbUsers();
+            }
+          }}
+          className="min-h-0 flex-1 overflow-y-auto p-2 sm:p-2.5 space-y-2.5"
+        >
           
           {/* FONTE 1: BANCO DE DADOS CENTRAL (OFICIAL) */}
           {displayedDbUsers.length > 0 && (
@@ -597,7 +755,36 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
                   const city = cityValue || (addressValue ? extractCityFromAddress(addressValue) : '');
                   const orderCount = typeof userItem.orderCount === 'number' ? userItem.orderCount : customerOrderStatsService.getOrderCount(userItem);
                   const hasLocation = Boolean(locRecord && hasCustomerLocation(locRecord));
-                  const locationLabel = locRecord?.address || userItem.address || 'Local cadastrado';
+                  const additionalAddress = locRecord?.additionalAddresses?.find(address =>
+                    address.coordinates && hasDetailedAddress(address.address, address.city || city)
+                  );
+                  const completeAddress = hasDetailedAddress(addressValue, city) ? addressValue : additionalAddress?.address;
+                  const localTitle = (locRecord as any)?.local_name
+                    || (userItem as any).local_name
+                    || additionalAddress?.label
+                    || '';
+                  const locationName = [...new Set([localTitle, completeAddress].filter(Boolean))].join(' · ');
+                  const hasCompleteLocation = hasLocation && hasDetailedAddress(locationName, city);
+                  const completeness = checkUserCompleteness({
+                    fullName: userItem.fullName,
+                    phone: userItem.phone,
+                    cpf: userItem.cpf,
+                    cnpj: userItem.cnpj
+                  });
+                  const statusClasses = completeness.isComplete && hasCompleteLocation
+                    ? 'bg-emerald-50 hover:bg-emerald-100/70 border-emerald-300 hover:border-emerald-400'
+                    : !completeness.hasCpf
+                      ? 'bg-orange-50 hover:bg-orange-100/70 border-orange-300 hover:border-orange-400'
+                      : !hasCompleteLocation
+                        ? 'bg-sky-50 hover:bg-sky-100/70 border-sky-300 hover:border-sky-400'
+                        : 'bg-orange-50 hover:bg-orange-100/70 border-orange-300 hover:border-orange-400';
+                  const avatarColorClass = completeness.isComplete && hasCompleteLocation
+                    ? 'bg-emerald-600'
+                    : !completeness.hasCpf
+                      ? 'bg-orange-500'
+                      : !hasCompleteLocation
+                        ? 'bg-sky-600'
+                        : 'bg-orange-500';
                   const finalCust: Customer = locRecord 
                     ? { ...userItem, address: locRecord.address || userItem.address, coordinates: locRecord.coordinates, city: city || locRecord.city, cidade: city || locRecord.cidade, orderCount } 
                     : { ...userItem, city: city || (userItem as any).city, cidade: city || (userItem as any).cidade, orderCount };
@@ -605,71 +792,77 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
                   return (
                     <div
                       key={userItem.id}
-                      onClick={() => onSelectCustomer(finalCust)}
+                      onClick={() => {
+                        if (openCustomerMenuId) {
+                          setOpenCustomerMenuId(null);
+                          return;
+                        }
+                        onSelectCustomer(finalCust);
+                      }}
                       title={`${userItem.fullName} • ${orderCount} pedidos`}
-                      className="w-full text-left px-2.5 py-1.5 sm:py-2 rounded-xl transition-all flex items-center justify-between gap-2 group cursor-pointer shadow-2xs border bg-white hover:bg-sky-50/50 border-slate-200/90 hover:border-sky-300"
+                      className={`w-full text-left px-2.5 py-1.5 sm:py-2 rounded-xl transition-all flex items-center justify-between gap-2 group cursor-pointer shadow-2xs border ${statusClasses}`}
                     >
                       {/* Avatar compacto e informações essenciais */}
                       <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[#0B5187] font-black text-xs flex items-center justify-center shrink-0 shadow-2xs text-white">
+                        <div className={`relative w-7 h-7 sm:w-8 sm:h-8 rounded-lg ${avatarColorClass} font-black text-xs flex items-center justify-center shrink-0 shadow-2xs text-white`}>
                           {userItem.fullName.charAt(0).toUpperCase()}
+                          {(isValidTaxId(userItem.cpf) || isValidTaxId(userItem.cnpj)) && (
+                            <span
+                              className="absolute -top-1 -right-1 inline-flex h-4 w-4 items-center justify-center rounded-full border-2 border-white bg-emerald-600 text-white"
+                              title="CPF/CNPJ verificado"
+                              aria-label="CPF/CNPJ verificado"
+                            >
+                              <Check className="h-2.5 w-2.5 stroke-[3]" />
+                            </span>
+                          )}
                         </div>
 
                         <div className="min-w-0 flex-1">
-                          {/* Cidade e nome do contato */}
-                          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                            {city && (
-                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 shrink-0" title={`Cidade: ${city}`}>
-                                <MapPin className="w-3 h-3 text-[#FF5E00]" />
-                                <span>{city}</span>
-                              </span>
-                            )}
-                            <span className="font-extrabold text-xs sm:text-[13px] text-slate-900 group-hover:text-[#0B5187] truncate leading-tight">
+                          {/* Nome do contato e selo de CPF */}
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="font-extrabold text-xs sm:text-[13px] text-slate-900 group-hover:text-[#0B5187] truncate leading-tight min-w-0 flex-1">
                               {userItem.fullName}
                             </span>
                           </div>
 
-                          {/* Telefone */}
-                          <div className="flex items-center gap-1.5 text-[10.5px] font-semibold text-slate-600 mt-0.5 truncate">
-                            {userItem.phone ? (
-                              <span className="font-bold text-slate-800 shrink-0">{userItem.phone}</span>
-                            ) : (
-                              <span className="text-slate-400 font-medium text-[10px] shrink-0">
-                                Sem telefone
+                          {/* Local completo em destaque ou cidade quando ainda falta endereço */}
+                          <div className="mt-0.5 flex min-w-0 items-center gap-2 text-[10px] font-semibold">
+                            {hasCompleteLocation && locationName ? (
+                              <span className="inline-flex min-w-0 items-center gap-1 truncate text-emerald-700" title={locationName}>
+                                <MapPin className="h-3 w-3 shrink-0" />
+                                <span className="truncate">{locationName}</span>
                               </span>
-                            )}
+                            ) : city ? (
+                              <span className="inline-flex min-w-0 items-center gap-1 text-[10px] font-semibold text-slate-500" title={`Cidade: ${city}`}>
+                                <MapPin className="w-3 h-3 shrink-0 text-[#FF5E00]" />
+                                <span className="truncate">{city}</span>
+                              </span>
+                            ) : null}
                           </div>
                         </div>
                       </div>
 
                       {/* Local, histórico, edição e seleção */}
                       <div className="shrink-0 flex items-center gap-1 sm:gap-1.5">
-                        {hasLocation ? (
-                          <span
-                            className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center"
-                            title={locationLabel}
-                            aria-label={`Local cadastrado: ${locationLabel}`}
-                          >
-                            <MapPin className="w-3.5 h-3.5" />
-                          </span>
-                        ) : (
+                        {!hasCompleteLocation && (
                           <button
                             type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
+                            onClick={(event) => {
+                              event.stopPropagation();
                               openCustomerLocationModal({
                                 customerId: userItem.id,
                                 customerName: userItem.fullName,
                                 customerPhone: userItem.phone,
                                 place: selectedPlace || undefined,
-                                placeId: selectedPlace?.id || undefined
+                                placeId: selectedPlace?.id || undefined,
+                                autoFocusSearch: true
                               });
                             }}
-                            className="w-7 h-7 rounded-lg bg-amber-50 hover:bg-amber-100 active:scale-95 border border-amber-200 text-amber-800 flex items-center justify-center transition-all cursor-pointer"
-                            title="Adicionar localização"
-                            aria-label="Adicionar localização do cliente"
+                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 text-rose-700 transition-colors hover:bg-rose-100"
+                            title={hasLocation ? 'Completar endereço do cliente' : 'Adicionar localização do cliente'}
+                            aria-label={hasLocation ? 'Completar endereço do cliente' : 'Adicionar localização do cliente'}
                           >
-                            <MapPin className="w-3.5 h-3.5" />
+                            <MapPin className="h-3.5 w-3.5" />
                           </button>
                         )}
 
@@ -692,29 +885,104 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
                           )}
                         </button>
 
-                        {/* Botão EDITAR (Apenas ícone) */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onOpenRegistration(userItem);
-                          }}
-                          className="w-7 h-7 rounded-lg bg-amber-50 hover:bg-amber-100 active:scale-95 text-amber-900 border border-amber-300 flex items-center justify-center shadow-2xs transition-all cursor-pointer"
-                          title="Editar cadastro deste cliente"
-                          aria-label="Editar cadastro do cliente"
-                        >
-                          <Edit3 className="w-3.5 h-3.5 text-amber-700" />
-                        </button>
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setOpenCustomerMenuId(current => current === String(userItem.id) ? null : String(userItem.id));
+                            }}
+                            className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-2xs transition-colors hover:bg-slate-100"
+                            title="Ações do cliente"
+                            aria-label="Ações do cliente"
+                            aria-expanded={openCustomerMenuId === String(userItem.id)}
+                          >
+                            <MoreVertical className="h-4 w-4" />
+                          </button>
+                          {openCustomerMenuId === String(userItem.id) && (
+                            <div
+                              className="absolute right-0 top-full z-50 mt-1 min-w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-xl"
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              {hasCompleteLocation && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setOpenCustomerMenuId(null);
+                                    openCustomerLocationModal({
+                                      customerId: userItem.id,
+                                      customerName: userItem.fullName,
+                                      customerPhone: userItem.phone,
+                                      place: selectedPlace || undefined,
+                                      placeId: selectedPlace?.id || undefined,
+                                      autoFocusSearch: true
+                                    });
+                                  }}
+                                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-semibold text-sky-800 hover:bg-sky-50"
+                                >
+                                  <MapPin className="h-3.5 w-3.5" />
+                                  Alterar local
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenCustomerMenuId(null);
+                                  onOpenRegistration(userItem);
+                                }}
+                                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                                Editar
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!userItem.phone}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openCustomerWhatsApp(userItem.phone);
+                                  setOpenCustomerMenuId(null);
+                                }}
+                                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-semibold text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
+                              >
+                                <MessageCircle className="h-3.5 w-3.5" />
+                                WhatsApp
+                              </button>
+                              {canDeleteCustomer && /^\d+$/.test(normalizeCustomerId(userItem.id)) && (
+                                <button
+                                  type="button"
+                                  disabled={deletingCustomerId === String(userItem.id)}
+                                  onClick={async (event) => {
+                                    event.stopPropagation();
+                                    const confirmed = window.confirm(
+                                      `Excluir o cadastro de ${userItem.fullName}? Os pedidos existentes não serão apagados.`
+                                    );
+                                    if (!confirmed) return;
 
-                        {/* Ícone de Seleção Rápida */}
-                        <button
-                          type="button"
-                          onClick={() => onSelectCustomer(finalCust)}
-                          className="w-6 h-6 rounded-lg bg-slate-100 group-hover:bg-[#0B5187] text-slate-500 group-hover:text-white flex items-center justify-center transition-colors shadow-2xs cursor-pointer ml-0.5"
-                          title="Selecionar este cliente"
-                        >
-                          <ArrowRight className="w-3.5 h-3.5 stroke-[2.5]" />
-                        </button>
+                                    setDeletingCustomerId(String(userItem.id));
+                                    try {
+                                      const deleted = await deleteCustomer(userItem.id);
+                                      setOpenCustomerMenuId(null);
+                                      if (!deleted) window.alert('Não foi possível excluir o cliente do banco de dados.');
+                                    } catch {
+                                      window.alert('Não foi possível excluir o cliente do banco de dados.');
+                                    } finally {
+                                      setDeletingCustomerId(null);
+                                    }
+                                  }}
+                                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-wait disabled:opacity-50"
+                                >
+                                  {deletingCustomerId === String(userItem.id)
+                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    : <Trash2 className="h-3.5 w-3.5" />}
+                                  Excluir cliente
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -732,7 +1000,7 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
           )}
 
           {/* CASO NADA SEJA ENCONTRADO NA BUSCA */}
-          {displayedDbUsers.length === 0 && !isSearchingDb && (
+          {displayedDbUsers.length === 0 && !isSearchingDb && !isLoadingMoreDbUsers && !hasMoreDbUsers && (
             <div className="text-center py-6 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
               <div className="w-10 h-10 rounded-xl bg-orange-100 text-[#FF5E00] flex items-center justify-center mx-auto mb-2">
                 <Search className="w-5 h-5" />
@@ -763,6 +1031,14 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
               </div>
             </div>
           )}
+
+          {isLoadingMoreDbUsers && (
+            <div className="flex items-center justify-center gap-2 py-2 text-xs font-semibold text-slate-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[#0B5187]" />
+              Carregando mais clientes...
+            </div>
+          )}
+          <div ref={resultsSentinelRef} className={hasMoreDbUsers ? 'h-2' : 'h-0'} aria-hidden="true" />
         </div>
 
         {/* ========================================================

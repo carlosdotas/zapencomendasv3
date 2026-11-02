@@ -11,7 +11,7 @@ import {
   Check, 
   Building2 
 } from 'lucide-react';
-import { firebaseSettingsService } from '../../../services/firebaseSettingsService';
+import { settingsService } from '../../../services/settingsService';
 
 interface SecurityOperationSettingsPageProps {
   onBack: () => void;
@@ -82,7 +82,7 @@ export const SecurityOperationSettingsPage: React.FC<SecurityOperationSettingsPa
       autoAssignDrivers: autoAssign
     });
 
-    await firebaseSettingsService.saveSettings({
+    await settingsService.saveSettings({
       system: {
         systemName,
         systemMode
@@ -136,7 +136,7 @@ export const SecurityOperationSettingsPage: React.FC<SecurityOperationSettingsPa
           ) : (
             <>
               <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Salvando...' : 'Salvar no Firebase'}</span>
+              <span>{isSaving ? 'Salvando...' : 'Salvar'}</span>
             </>
           )}
         </button>

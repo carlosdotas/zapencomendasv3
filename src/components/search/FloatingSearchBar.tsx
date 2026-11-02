@@ -13,18 +13,18 @@ import {
   Check,
   User,
   Plus,
-  Flame,
-  TrendingUp
+  Database
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
-import { searchAddress, isGoogleMapsUrl, resolveGoogleMapsUrl } from '../../services/geocodingService';
+import { reverseGeocode, searchAddress, isGoogleMapsUrl, resolveGoogleMapsUrl } from '../../services/geocodingService';
 import { Place, OperationType } from '../../types/map';
 import { Customer, AgendaContact } from '../../types/customer';
 import { useBackButton } from '../../hooks/useBackButton';
 import { CustomerSelectorDrawer } from '../customer/CustomerSelectorDrawer';
 import { CustomerFormFullScreen } from '../customer/CustomerFormFullScreen';
 import { isUnnamedOrGenericPlace, getCustomerPlaceName } from '../../utils/customerLocationUtils';
-import { getTop20MostUsedPlaces, recordPlaceUsage } from '../../utils/mostUsedPlaces';
+import { recordPlaceUsage } from '../../utils/mostUsedPlaces';
+import { normalizeCityName, resolveCustomerCity } from '../../utils/addressUtils';
 
 interface FloatingSearchBarProps {
   dropdownDirection?: 'up' | 'down';
@@ -33,6 +33,17 @@ interface FloatingSearchBarProps {
   placeholder?: string;
   isLocating?: boolean;
   autoFocus?: boolean;
+}
+
+async function findCityForPlace(place: Place, address: string): Promise<string | undefined> {
+  const placeCity = resolveCustomerCity({ ...place, address });
+  if (placeCity) return placeCity;
+
+  try {
+    return resolveCustomerCity(await reverseGeocode(place.coordinates));
+  } catch {
+    return undefined;
+  }
 }
 
 export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({ 
@@ -55,16 +66,10 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
     updateCustomer,
     addCustomer,
     operationsFilter,
-    allPlaces,
     currentRole
   } = useMapStore();
 
   const isDriverRole = currentRole === 'motorista';
-
-  // Top 20 Locais mais buscados e mais usados
-  const mostUsedPlaces = React.useMemo(() => {
-    return getTop20MostUsedPlaces(allPlaces);
-  }, [allPlaces]);
 
   const isEmbedded = Boolean(onSelectPlace);
   const [localQuery, setLocalQuery] = useState('');
@@ -296,15 +301,17 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
     setIsCustomerSelectorOpen(true);
   };
 
-  const handleSelectCustomerForLocation = (customer: Customer) => {
+  const handleSelectCustomerForLocation = async (customer: Customer) => {
     if (!pendingPlace) return;
     const isUnnamed = isUnnamedOrGenericPlace(pendingPlace);
     const finalPlaceName = isUnnamed ? getCustomerPlaceName(customer.fullName) : pendingPlace.name;
     const addressToSet = pendingPlace.address || finalPlaceName;
+    const city = await findCityForPlace(pendingPlace, addressToSet) || normalizeCityName(customer.city || customer.cidade);
 
     updateCustomer(customer.id, {
       address: addressToSet,
-      coordinates: pendingPlace.coordinates
+      coordinates: pendingPlace.coordinates,
+      ...(city ? { city, cidade: city } : {})
     });
 
     const updatedPlace: Place = {
@@ -314,7 +321,8 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
       customerPhone: customer.phone,
       customerId: customer.id,
       customerAddress: addressToSet,
-      customerCoordinates: pendingPlace.coordinates
+      customerCoordinates: pendingPlace.coordinates,
+      destinationCity: city || pendingPlace.destinationCity
     };
 
     setUpdatedCustomerInfo({ customer, place: updatedPlace });
@@ -335,10 +343,14 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
     setIsRegistrationOpen(true);
   };
 
-  const handleSaveNewCustomer = (newCustomer: Customer) => {
+  const handleSaveNewCustomer = async (newCustomer: Customer) => {
     const isUnnamed = isUnnamedOrGenericPlace(pendingPlace);
     const finalPlaceName = isUnnamed ? getCustomerPlaceName(newCustomer.fullName) : (pendingPlace?.name || newCustomer.address);
     const addressToSet = pendingPlace?.address || pendingPlace?.name || newCustomer.address;
+    const city = pendingPlace
+      ? await findCityForPlace(pendingPlace, addressToSet)
+      : resolveCustomerCity({ ...newCustomer, address: addressToSet });
+    const finalCity = city || normalizeCityName(newCustomer.city || newCustomer.cidade);
 
     addCustomer({
       fullName: newCustomer.fullName,
@@ -346,6 +358,7 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
       cpf: newCustomer.cpf,
       address: addressToSet,
       coordinates: pendingPlace?.coordinates || newCustomer.coordinates,
+      ...(finalCity ? { city: finalCity, cidade: finalCity } : {}),
       email: newCustomer.email,
       notes: newCustomer.notes
     });
@@ -357,6 +370,7 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
           customerName: newCustomer.fullName,
           customerPhone: newCustomer.phone,
           customerId: newCustomer.id,
+          destinationCity: finalCity,
           customerAddress: addressToSet,
           customerCoordinates: pendingPlace.coordinates
         }
@@ -560,20 +574,33 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
             {/* Results List */}
             {results.length > 0 && (
               <div className="py-1">
-                {results.map((place) => (
-                  <div
-                    key={place.id}
-                    onClick={() => handleSelectPlace(place)}
-                    className="w-full text-left px-4 py-3 flex items-center justify-between gap-3 hover:bg-[#F0F6FB] transition-colors group cursor-pointer border-b border-slate-100 last:border-none"
-                  >
+                {results.map((place) => {
+                  const isDatabasePlace = /local cadastrado/i.test(place.category || '');
+                  return (
+                    <div
+                      key={place.id}
+                      onClick={() => handleSelectPlace(place)}
+                      className="w-full text-left px-4 py-3 flex items-center justify-between gap-3 hover:bg-[#F0F6FB] transition-colors group cursor-pointer border-b border-slate-100 last:border-none"
+                    >
                     <div className="flex items-start gap-3 min-w-0 flex-1">
-                      <div className="w-8 h-8 rounded-md bg-[#0B5187] text-white flex items-center justify-center shrink-0 mt-0.5 group-hover:scale-105 transition-all shadow-xs">
+                      <div className="relative w-8 h-8 rounded-md bg-[#0B5187] text-white flex items-center justify-center shrink-0 mt-0.5 group-hover:scale-105 transition-all shadow-xs">
                         <MapPin className="w-4 h-4 text-sky-300" />
+                        {isDatabasePlace && (
+                          <span
+                            className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border-2 border-white bg-emerald-600 text-white"
+                            title="Local salvo no banco"
+                            aria-label="Local salvo no banco"
+                          >
+                            <Database className="h-2 w-2" />
+                          </span>
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm sm:text-base font-black text-[#0B5187] truncate">
-                          {place.name}
-                        </p>
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <p className="min-w-0 flex-1 truncate text-sm font-black text-[#0B5187] sm:text-base">
+                            {place.name}
+                          </p>
+                        </div>
                         <p className="text-xs sm:text-sm text-slate-700 truncate mt-0.5 font-semibold">
                           {place.address}
                         </p>
@@ -599,7 +626,8 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -613,79 +641,6 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
               </div>
             )}
 
-            {/* Locais Mais Buscados (Top 20 Mais Usados) */}
-            {!query && mostUsedPlaces.length > 0 && (
-              <div className="py-1">
-                <div className="px-4 py-2 flex items-center justify-between bg-slate-50/90 border-b border-slate-100">
-                  <div className="flex items-center gap-1.5 text-xs font-black text-[#0B5187]">
-                    <Flame className="w-4 h-4 text-orange-500 fill-orange-500" />
-                    <span>Locais mais buscados</span>
-                  </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-orange-100 text-orange-800 border border-orange-200">
-                    20 mais usados
-                  </span>
-                </div>
-
-                <div className="divide-y divide-slate-100/80 max-h-[40vh] overflow-y-auto overscroll-contain">
-                  {mostUsedPlaces.map((item, index) => {
-                    const rank = index + 1;
-                    return (
-                      <div
-                        key={item.id || `top-place-${index}`}
-                        onClick={() => handleSelectPlace(item)}
-                        className="w-full text-left px-4 py-2.5 flex items-center justify-between gap-3 hover:bg-[#F0F6FB] transition-colors group cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          <div className={`w-5 h-5 rounded-md flex items-center justify-center font-black text-[10px] shrink-0 ${
-                            rank === 1 ? 'bg-amber-100 text-amber-900 border border-amber-300' :
-                            rank === 2 ? 'bg-slate-200 text-slate-800 border border-slate-300' :
-                            rank === 3 ? 'bg-orange-100 text-orange-900 border border-orange-300' :
-                            'bg-slate-100 text-slate-500'
-                          }`}>
-                            {rank}
-                          </div>
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-sm font-bold text-slate-900 group-hover:text-[#0B5187] truncate">
-                                {item.name}
-                              </span>
-                              {item.category && (
-                                <span className="text-[9px] font-semibold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 truncate max-w-[130px] hidden sm:inline-block">
-                                  {item.category}
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-xs text-slate-500 truncate block mt-0.5 font-medium">
-                              {item.address}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSetPlaceForCustomer(item);
-                            }}
-                            className="px-2 py-1 bg-blue-50 hover:bg-blue-100 active:scale-95 text-[#0B5187] border border-blue-200/90 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-colors cursor-pointer shadow-2xs"
-                            title="Vincular endereço diretamente a um cliente"
-                          >
-                            <User className="w-3 h-3 text-[#0B5187]" />
-                            <span className="hidden sm:inline">Setar Cliente</span>
-                          </button>
-                          <div className="flex items-center gap-1 text-[11px] font-bold text-[#FF5E00] bg-orange-50 px-2.5 py-1 rounded-lg border border-orange-200/80 group-hover:bg-[#FF5E00] group-hover:text-white transition-all shadow-2xs">
-                            <span>+ Add</span>
-                            <ArrowRight className="w-3.5 h-3.5 stroke-[2.5]" />
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       )}

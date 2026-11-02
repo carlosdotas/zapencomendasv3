@@ -24,7 +24,7 @@ import {
   FileText
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
-import { ACCOUNTS, AuthAccount, UserRole } from '../../data/authAccounts';
+import { AuthAccount, UserRole } from '../../types/auth';
 import { api, uploadProfilePhoto } from '../../services/api';
 import { BackendUser } from '../../services/apiTypes';
 import { formatPhotoUrl } from '../../services/apiAdapters';
@@ -37,6 +37,7 @@ export interface SystemUserRecord {
   id: string;
   numericId?: number;
   name: string;
+  fullName?: string;
   phone: string;
   cleanPhone: string;
   accessLevel: SystemAccessLevel;
@@ -78,6 +79,55 @@ const ROLE_CONFIGS: Record<SystemAccessLevel, { label: string; badgeColor: strin
   }
 };
 
+function mapDatabaseUserRecord(user: BackendUser, existing?: SystemUserRecord): SystemUserRecord {
+  const cleanPhone = String(user.phone || '').replace(/\D/g, '');
+  const rawAccess = String(user.access_level || '').toLowerCase().trim();
+  const role: SystemAccessLevel = rawAccess.includes('admin') ? 'admin'
+    : rawAccess.includes('atendente') ? 'atendente'
+      : rawAccess.includes('motorista') ? 'motorista'
+        : 'cliente';
+  const photoUrl = user.foto ? (formatPhotoUrl(user.foto, 'thumb') || user.foto) : undefined;
+
+  return {
+    id: String(user.id),
+    numericId: Number(user.id),
+    name: user.name || user.full_name || user.name_completo || existing?.name || 'Usuário Sem Nome',
+    fullName: user.full_name || user.name_completo || existing?.fullName || '',
+    phone: user.phone || existing?.phone || '',
+    cleanPhone,
+    accessLevel: role,
+    roleLabel: ROLE_CONFIGS[role].label,
+    badgeColor: ROLE_CONFIGS[role].badgeColor,
+    avatarUrl: photoUrl || existing?.avatarUrl,
+    city: user.city || user.cidade || existing?.city,
+    cpf: user.cpf || user.cnpj || existing?.cpf,
+    department: existing?.department || ((user.city || user.cidade) ? `Base: ${user.city || user.cidade}` : undefined),
+    description: existing?.description,
+    code: existing?.code,
+    isDatabase: true
+  };
+}
+
+function mergeDatabaseUserRecords(existingUsers: SystemUserRecord[], databaseUsers: BackendUser[]): SystemUserRecord[] {
+  const records = new Map(existingUsers.map(user => [user.cleanPhone || `usr-${user.id}`, user]));
+  for (const user of databaseUsers) {
+    const cleanPhone = String(user.phone || '').replace(/\D/g, '');
+    const key = cleanPhone || `usr-${user.id}`;
+    records.set(key, mapDatabaseUserRecord(user, records.get(key)));
+  }
+  return Array.from(records.values());
+}
+
+function mergeDatabaseUserPages(
+  defaultUsers: SystemUserRecord[],
+  pages: Map<string, BackendUser[]>
+): SystemUserRecord[] {
+  return Array.from(pages.values()).reduce(
+    (users, page) => mergeDatabaseUserRecords(users, page),
+    defaultUsers
+  );
+}
+
 export const AdminUsersPage: React.FC = () => {
   const { 
     isAdminUsersOpen, 
@@ -95,18 +145,28 @@ export const AdminUsersPage: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState<'todos' | SystemAccessLevel>('todos');
   const [isEditing, setIsEditing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingMoreUsers, setIsLoadingMoreUsers] = useState(false);
+  const [usersCursor, setUsersCursor] = useState<string | undefined>();
+  const [hasMoreUsers, setHasMoreUsers] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
   // Form states for editing selected user
   const [editName, setEditName] = useState('');
+  const [editFullName, setEditFullName] = useState('');
   const [editPhone, setEditPhone] = useState('');
   const [editAccessLevel, setEditAccessLevel] = useState<SystemAccessLevel>('motorista');
   const [editCity, setEditCity] = useState('');
   const [editCpf, setEditCpf] = useState('');
 
   const adminAvatarInputRef = useRef<HTMLInputElement>(null);
+  const pageScrollRef = useRef<HTMLDivElement>(null);
+  const pageSentinelRef = useRef<HTMLDivElement>(null);
+  const loadingMoreRef = useRef(false);
+  const defaultUsersRef = useRef<SystemUserRecord[]>([]);
+  const databasePagesRef = useRef(new Map<string, BackendUser[]>());
+  const pageSubscriptionsRef = useRef(new Map<string, () => void>());
 
   // Intercepta botão Voltar para fechar o modal de detalhes/edição do usuário antes de fechar a tela inteira
   useBackButton('admin-user-detail-modal', !!selectedUser, () => {
@@ -115,94 +175,99 @@ export const AdminUsersPage: React.FC = () => {
   }, 85);
 
   // Busca lista de usuários cadastrados no banco de dados (/users/list)
-  const fetchDatabaseUsers = useCallback(async () => {
+  const fetchDatabaseUsers = useCallback(() => {
     setIsLoading(true);
     setErrorMsg('');
-    try {
-      const res = await api.listUsers({ limit: 1000 });
-      const dbUsers: BackendUser[] = (res.success && Array.isArray(res.data)) ? res.data : [];
+    setUsersList([]);
+    setUsersCursor(undefined);
+    setHasMoreUsers(false);
+    pageSubscriptionsRef.current.forEach(unsubscribe => unsubscribe());
+    pageSubscriptionsRef.current.clear();
+    databasePagesRef.current.clear();
 
-      const recordsMap = new Map<string, SystemUserRecord>();
-
-      // 1. Mapeia contas padrão do sistema como base
-      Object.values(ACCOUNTS).forEach(acc => {
-        const cleanPhone = acc.cleanPhone || acc.phone.replace(/\D/g, '');
-        const role = (acc.role === 'admin_geral' || (acc.role as string) === 'admin') ? 'admin' 
-          : acc.role === 'atendente' ? 'atendente' 
-          : acc.role === 'motorista' ? 'motorista' 
-          : 'cliente';
-
-        recordsMap.set(cleanPhone, {
-          id: acc.id || `acc-${cleanPhone}`,
-          name: acc.name,
-          phone: acc.phone,
-          cleanPhone,
-          accessLevel: role,
-          roleLabel: ROLE_CONFIGS[role].label,
-          badgeColor: ROLE_CONFIGS[role].badgeColor,
-          avatarUrl: acc.avatarUrl,
-          department: acc.department,
-          description: acc.description,
-          code: acc.code,
-          isDatabase: false
-        });
-      });
-
-      // 2. Mescla e prioriza os usuários reais do banco de dados oficial (/users/list)
-      dbUsers.forEach(u => {
-        const cleanPhone = String(u.phone || '').replace(/\D/g, '');
-        const rawAccess = String(u.access_level || '').toLowerCase().trim();
-        const role: SystemAccessLevel = 
-          rawAccess.includes('admin') ? 'admin'
-          : rawAccess.includes('atendente') ? 'atendente'
-          : rawAccess.includes('motorista') ? 'motorista'
-          : 'cliente';
-
-        const photoUrl = u.foto ? (formatPhotoUrl(u.foto, 'thumb') || u.foto) : undefined;
-        const key = cleanPhone || `usr-${u.id}`;
-
-        const existing = recordsMap.get(cleanPhone);
-        const taxDoc = u.cpf || (u as any).cnpj || (u as any).cpf_cnpj || existing?.cpf;
-        recordsMap.set(key, {
-          id: String(u.id),
-          numericId: Number(u.id),
-          name: u.name || existing?.name || 'Usuário Sem Nome',
-          phone: u.phone || existing?.phone || '',
-          cleanPhone,
-          accessLevel: role,
-          roleLabel: ROLE_CONFIGS[role].label,
-          badgeColor: ROLE_CONFIGS[role].badgeColor,
-          avatarUrl: photoUrl || existing?.avatarUrl,
-          city: u.cidade || existing?.city,
-          cpf: taxDoc,
-          department: existing?.department || (u.cidade ? `Base: ${u.cidade}` : undefined),
-          description: existing?.description,
-          code: existing?.code,
-          isDatabase: true
-        });
-      });
-
-      setUsersList(Array.from(recordsMap.values()));
-    } catch (err: any) {
-      console.warn('Erro ao carregar usuários:', err);
-      setErrorMsg('Não foi possível sincronizar com o banco de dados. Exibindo dados locais.');
-    } finally {
+    defaultUsersRef.current = [];
+    setUsersList([]);
+    const unsubscribe = api.watchUsersPage({ limit: 50 }, response => {
+      if (!response.success || !Array.isArray(response.data)) {
+        setIsLoading(false);
+        setHasMoreUsers(false);
+        setErrorMsg(response.message || 'Não foi possível sincronizar com o banco de dados. Exibindo contas padrão.');
+        return;
+      }
+      databasePagesRef.current.set('first', response.data);
+      setUsersList(mergeDatabaseUserPages(defaultUsersRef.current, databasePagesRef.current));
+      setUsersCursor(response.cursor);
+      setHasMoreUsers(Boolean(response.hasMore));
       setIsLoading(false);
-    }
+      setErrorMsg('');
+    }, error => {
+      console.warn('Erro ao carregar usuários:', error);
+      setIsLoading(false);
+      setHasMoreUsers(false);
+      setErrorMsg('Não foi possível sincronizar com o banco de dados. Exibindo contas padrão.');
+    });
+    pageSubscriptionsRef.current.set('first', unsubscribe);
   }, []);
+
+  const loadMoreDatabaseUsers = useCallback(async () => {
+    if (loadingMoreRef.current || !hasMoreUsers || !usersCursor) return;
+    const pageKey = usersCursor;
+    if (pageSubscriptionsRef.current.has(pageKey)) return;
+    loadingMoreRef.current = true;
+    setIsLoadingMoreUsers(true);
+    const unsubscribe = api.watchUsersPage({ limit: 50, cursor: pageKey }, response => {
+      if (!response.success || !Array.isArray(response.data)) {
+        setHasMoreUsers(false);
+        setIsLoadingMoreUsers(false);
+        loadingMoreRef.current = false;
+        return;
+      }
+      databasePagesRef.current.set(pageKey, response.data);
+      setUsersList(mergeDatabaseUserPages(defaultUsersRef.current, databasePagesRef.current));
+      setUsersCursor(response.cursor);
+      setHasMoreUsers(Boolean(response.hasMore));
+      setIsLoadingMoreUsers(false);
+      loadingMoreRef.current = false;
+    }, error => {
+      console.warn('Erro ao acompanhar página de usuários:', error);
+      setHasMoreUsers(false);
+      setIsLoadingMoreUsers(false);
+      loadingMoreRef.current = false;
+    });
+    pageSubscriptionsRef.current.set(pageKey, unsubscribe);
+  }, [hasMoreUsers, usersCursor]);
 
   // Busca ao abrir
   useEffect(() => {
     if (isAdminUsersOpen) {
       fetchDatabaseUsers();
     }
+    return () => {
+      pageSubscriptionsRef.current.forEach(unsubscribe => unsubscribe());
+      pageSubscriptionsRef.current.clear();
+      databasePagesRef.current.clear();
+    };
   }, [isAdminUsersOpen, fetchDatabaseUsers]);
+
+  useEffect(() => {
+    if (!isAdminUsersOpen || !hasMoreUsers || isLoading || isLoadingMoreUsers) return;
+    const root = pageScrollRef.current;
+    const sentinel = pageSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadMoreDatabaseUsers();
+    }, { root, rootMargin: '200px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreUsers, isAdminUsersOpen, isLoading, isLoadingMoreUsers, loadMoreDatabaseUsers]);
 
   if (!isAdminUsersOpen || currentRole === 'motorista') return null;
 
   const handleOpenDetail = (userItem: SystemUserRecord) => {
     setSelectedUser(userItem);
     setEditName(userItem.name);
+    setEditFullName(userItem.fullName || '');
     setEditPhone(userItem.phone);
     setEditAccessLevel(userItem.accessLevel);
     setEditCity(userItem.city || '');
@@ -252,6 +317,7 @@ export const AdminUsersPage: React.FC = () => {
   const handleStartEdit = () => {
     if (!selectedUser) return;
     setEditName(selectedUser.name);
+    setEditFullName(selectedUser.fullName || '');
     setEditPhone(selectedUser.phone);
     setEditAccessLevel(selectedUser.accessLevel);
     setEditCity(selectedUser.city || '');
@@ -276,6 +342,8 @@ export const AdminUsersPage: React.FC = () => {
         await api.saveUser({
           id: targetNumericId,
           name: editName.trim() || selectedUser.name,
+          full_name: editFullName.trim() || editName.trim() || selectedUser.name,
+          name_completo: editFullName.trim() || editName.trim() || selectedUser.name,
           phone: editPhone.trim() || selectedUser.phone,
           access_level: editAccessLevel,
           ...(editCity ? { cidade: editCity.trim() } : {}),
@@ -287,6 +355,7 @@ export const AdminUsersPage: React.FC = () => {
       const updated: SystemUserRecord = {
         ...selectedUser,
         name: editName.trim() || selectedUser.name,
+        fullName: editFullName.trim() || selectedUser.fullName,
         phone: editPhone.trim() || selectedUser.phone,
         accessLevel: editAccessLevel,
         roleLabel: ROLE_CONFIGS[editAccessLevel].label,
@@ -349,7 +418,16 @@ export const AdminUsersPage: React.FC = () => {
   });
 
   return (
-    <div className="fixed inset-0 z-[100] bg-slate-100 flex flex-col overflow-y-auto animate-in fade-in duration-200">
+    <div
+      ref={pageScrollRef}
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        if (element.scrollHeight - element.scrollTop - element.clientHeight < 180) {
+          void loadMoreDatabaseUsers();
+        }
+      }}
+      className="fixed inset-0 z-[100] bg-slate-100 flex flex-col overflow-y-auto animate-in fade-in duration-200"
+    >
       
       {/* Header Superior da Página Inteira de Usuários */}
       <header className="sticky top-0 z-20 bg-gradient-to-r from-[#0B5187] via-[#09436E] to-[#072F4E] text-white px-4 sm:px-8 py-3.5 shadow-md flex items-center justify-between">
@@ -510,7 +588,7 @@ export const AdminUsersPage: React.FC = () => {
             <RefreshCw className="w-8 h-8 animate-spin text-[#0B5187]" />
             <p className="text-sm font-bold">Carregando usuários do banco de dados...</p>
           </div>
-        ) : filteredUsers.length === 0 ? (
+        ) : filteredUsers.length === 0 && !hasMoreUsers ? (
           <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center gap-2 bg-white rounded-3xl border border-slate-200">
             <Users className="w-10 h-10 text-slate-300" />
             <p className="text-sm font-bold">Nenhum usuário encontrado para os filtros selecionados.</p>
@@ -657,6 +735,14 @@ export const AdminUsersPage: React.FC = () => {
             })}
           </div>
         )}
+
+        {isLoadingMoreUsers && (
+          <div className="flex items-center justify-center gap-2 py-5 text-xs font-semibold text-slate-500">
+            <RefreshCw className="h-4 w-4 animate-spin text-[#0B5187]" />
+            Carregando mais usuários...
+          </div>
+        )}
+        <div ref={pageSentinelRef} className={hasMoreUsers ? 'h-4' : 'h-0'} aria-hidden="true" />
       </div>
 
       {/* Modal / Gaveta de Detalhes e Configurações do Usuário Clicado */}
@@ -873,7 +959,7 @@ export const AdminUsersPage: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-black uppercase tracking-wider text-slate-700 mb-1">
-                        Nome Completo
+                        Nome de Contato (agenda)
                       </label>
                       <input
                         type="text"
@@ -881,6 +967,18 @@ export const AdminUsersPage: React.FC = () => {
                         onChange={(e) => setEditName(e.target.value)}
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:border-[#0B5187]"
                         required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-black uppercase tracking-wider text-slate-700 mb-1">
+                        Nome Completo
+                      </label>
+                      <input
+                        type="text"
+                        value={editFullName}
+                        onChange={(e) => setEditFullName(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:border-[#0B5187]"
                       />
                     </div>
 
@@ -960,10 +1058,19 @@ export const AdminUsersPage: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                        Nome Cadastrado
+                        Nome de Contato (agenda)
                       </span>
                       <p className="text-xs font-black text-slate-800 mt-0.5">
                         {selectedUser.name}
+                      </p>
+                    </div>
+
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                        Nome Completo
+                      </span>
+                      <p className="text-xs font-black text-slate-800 mt-0.5">
+                        {selectedUser.fullName || 'Não informado'}
                       </p>
                     </div>
 

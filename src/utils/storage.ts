@@ -1,6 +1,7 @@
 import { LocationCoordinates, OperationsFilterState, VehicleFilterType } from '../types/map';
 
 const STORAGE_KEY_LOCATION = 'encomendaszap_last_location_gyn_v1';
+const SESSION_KEY_LOCATION = 'encomendaszap_last_location_gyn_session_v1';
 const STORAGE_KEY_OPERATIONS = 'encomendaszap_operations_filter_v1';
 const STORAGE_KEY_VEHICLE = 'encomendaszap_vehicle_filter_v1';
 
@@ -20,9 +21,14 @@ export const DEFAULT_ZOOM = 12;
  * Retrieves the last saved map position and zoom from localStorage.
  */
 export const getSavedLocation = (): SavedMapState => {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_LOCATION);
-    if (raw) {
+  for (const storage of [
+    typeof localStorage !== 'undefined' ? localStorage : null,
+    typeof sessionStorage !== 'undefined' ? sessionStorage : null
+  ]) {
+    if (!storage) continue;
+    try {
+      const raw = storage.getItem(STORAGE_KEY_LOCATION) || storage.getItem(SESSION_KEY_LOCATION);
+      if (!raw) continue;
       const parsed = JSON.parse(raw);
       if (
         typeof parsed.lat === 'number' &&
@@ -31,18 +37,13 @@ export const getSavedLocation = (): SavedMapState => {
         !isNaN(parsed.lng)
       ) {
         return {
-          coords: {
-            lat: parsed.lat,
-            lng: parsed.lng
-          },
+          coords: { lat: parsed.lat, lng: parsed.lng },
           zoom: typeof parsed.zoom === 'number' && parsed.zoom >= 2 && parsed.zoom <= 19
             ? parsed.zoom
             : DEFAULT_ZOOM
         };
       }
-    }
-  } catch (error) {
-    console.warn('Could not read saved location from localStorage:', error);
+    } catch {}
   }
 
   return {
@@ -64,15 +65,26 @@ export const saveLocationToStorage = (coords: LocationCoordinates, zoom: number)
     ) {
       localStorage.setItem(
         STORAGE_KEY_LOCATION,
-        JSON.stringify({
-          lat: coords.lat,
-          lng: coords.lng,
-          zoom: Math.round(zoom * 10) / 10
-        })
+        JSON.stringify({ lat: coords.lat, lng: coords.lng, zoom: Math.round(zoom * 10) / 10 })
+      );
+      return;
+    }
+  } catch {}
+
+  try {
+    if (
+      typeof coords.lat === 'number' &&
+      typeof coords.lng === 'number' &&
+      !isNaN(coords.lat) &&
+      !isNaN(coords.lng)
+    ) {
+      sessionStorage.setItem(
+        SESSION_KEY_LOCATION,
+        JSON.stringify({ lat: coords.lat, lng: coords.lng, zoom: Math.round(zoom * 10) / 10 })
       );
     }
-  } catch (error) {
-    console.warn('Could not save location to localStorage:', error);
+  } catch {
+    // Keep map interaction working when both browser storage areas are full.
   }
 };
 

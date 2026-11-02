@@ -1,5 +1,5 @@
-import baseCounts from '../data/customerOrderCounts.json';
 import { Customer, AgendaContact } from '../types/customer';
+import { normalizeCustomerId, normalizeCustomerPhone } from '../utils/customerIdentity';
 
 /**
  * Normaliza texto para correspondência insensível a acentos e maiúsculas
@@ -16,19 +16,12 @@ function normalizeName(text: string = ''): string {
  * Limpa dígitos de telefone
  */
 function cleanPhoneDigits(phone?: string): string {
-  return (phone || '').replace(/\D/g, '');
+  return normalizeCustomerPhone(phone);
 }
 
 class CustomerOrderStatsService {
   private counts: Map<string, number> = new Map();
 
-  constructor() {
-    // Carrega a base inicial consolidada dos 2000+ pedidos importados
-    const entries = Object.entries(baseCounts as Record<string, number>);
-    for (const [key, val] of entries) {
-      this.counts.set(key, val);
-    }
-  }
 
   /**
    * Registra um pedido em tempo real incrementando o contador do cliente
@@ -45,7 +38,7 @@ class CustomerOrderStatsService {
 
     const nameNorm = normalizeName(customer.fullName || customer.name || '');
     const phone = cleanPhoneDigits(customer.phone);
-    const id = customer.id ? `id_${customer.id}` : '';
+    const id = customer.id ? `id_${normalizeCustomerId(customer.id)}` : '';
 
     if (nameNorm) this.counts.set(nameNorm, next);
     if (phone && phone.length >= 8) this.counts.set(phone, next);
@@ -69,7 +62,7 @@ class CustomerOrderStatsService {
     }
 
     // Busca rápida em O(1) por ID, Telefone ou Nome exato no hash map
-    const id = customer.id ? `id_${customer.id}` : '';
+    const id = customer.id ? `id_${normalizeCustomerId(customer.id)}` : '';
     if (id && this.counts.has(id)) {
       const val = this.counts.get(id)!;
       customer.orderCount = val;
@@ -111,7 +104,9 @@ class CustomerOrderStatsService {
 
       const nameA = a.fullName || a.name || '';
       const nameB = b.fullName || b.name || '';
-      return nameA.localeCompare(nameB);
+      return nameA.localeCompare(nameB)
+        || normalizeCustomerId(a.id).localeCompare(normalizeCustomerId(b.id), undefined, { numeric: true })
+        || normalizeCustomerPhone(a.phone).localeCompare(normalizeCustomerPhone(b.phone));
     });
   }
 

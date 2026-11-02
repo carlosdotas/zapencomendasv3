@@ -68,14 +68,18 @@ import {
 import { CustomerFormFullScreen } from '../customer/CustomerFormFullScreen';
 import { CustomerOrderHistoryFullScreen } from './CustomerOrderHistoryFullScreen';
 import { Customer, AgendaContact, CustomerAddress } from '../../types/customer';
-import { INITIAL_AGENDA_CONTACTS } from '../../data/mockCustomers';
-import { searchAddress } from '../../services/geocodingService';
+
+// Não há fonte de agenda no servidor; lista vazia (sem dados estáticos)
+const AGENDA_CONTACTS: AgendaContact[] = [];
+import { reverseGeocode, searchAddress } from '../../services/geocodingService';
 import { fetchRoute, RouteResult } from '../../services/routingService';
-import { searchDatabaseCustomers } from '../../services/customerSearchService';
+import { searchDatabaseCustomersPage } from '../../services/customerSearchService';
 import { checkUserCompleteness, formatTaxId } from '../../utils/userCompleteness';
 import { useBackButton } from '../../hooks/useBackButton';
-import { firebaseCompanyService } from '../../services/firebaseCompanyService';
+import { companyService } from '../../services/companyService';
 import { customerOrderStatsService } from '../../services/customerOrderStatsService';
+import { customersRepresentSamePerson, mergeCustomerLists, normalizeCustomerPhone } from '../../utils/customerIdentity';
+import { normalizeCityName, resolveCustomerCity } from '../../utils/addressUtils';
 
 // Mini mapa da rota usando Leaflet
 import L from 'leaflet';
@@ -134,6 +138,7 @@ export const NewOrderModal: React.FC = () => {
     user,
     currentRole,
     addCustomer,
+    persistCustomer,
     updateCustomer,
     allPlaces,
     openCustomerLocationModal,
@@ -784,8 +789,8 @@ export const NewOrderModal: React.FC = () => {
   }, [customers, cleanSearch, cleanDigits]);
 
   const filteredAgenda = useMemo(() => {
-    if (!cleanSearch && !cleanDigits) return INITIAL_AGENDA_CONTACTS;
-    return INITIAL_AGENDA_CONTACTS.filter(a => {
+    if (!cleanSearch && !cleanDigits) return AGENDA_CONTACTS;
+    return AGENDA_CONTACTS.filter(a => {
       const normName = normalize(a.name || '');
       const normAddr = normalize(a.address || '');
       const normCity = normalize(extractCityFromAddress(a.address) || '');
@@ -807,11 +812,23 @@ export const NewOrderModal: React.FC = () => {
   // Busca dinâmica e otimizada no banco de dados com debounce e cache instantâneo:
   const [dbCustomers, setDbCustomers] = useState<Customer[]>([]);
   const [isSearchingDb, setIsSearchingDb] = useState<boolean>(false);
+  const [dbCustomersCursor, setDbCustomersCursor] = useState<string | undefined>();
+  const [hasMoreDbCustomers, setHasMoreDbCustomers] = useState(false);
+  const [isLoadingMoreDbCustomers, setIsLoadingMoreDbCustomers] = useState(false);
+  const databaseScrollRef = useRef<HTMLDivElement>(null);
+  const databaseSentinelRef = useRef<HTMLDivElement>(null);
+  const databaseLoadingRef = useRef(false);
+  const databaseSearchSequenceRef = useRef(0);
+  const customersRef = useRef(customers);
+  customersRef.current = customers;
 
   useEffect(() => {
     const term = clientSearchTerm.trim();
+    const requestSequence = ++databaseSearchSequenceRef.current;
     if (!term || term.length < 2) {
       setDbCustomers([]);
+      setDbCustomersCursor(undefined);
+      setHasMoreDbCustomers(false);
       setIsSearchingDb(false);
       return;
     }
@@ -819,23 +836,64 @@ export const NewOrderModal: React.FC = () => {
     setIsSearchingDb(true);
     const timer = setTimeout(async () => {
       try {
-        const results = await searchDatabaseCustomers(term);
-        // Exclui clientes que já existem na lista local do app para evitar duplicidade
-        const existingPhones = new Set(customers.map(c => c.phone.replace(/\D/g, '')).filter(Boolean));
-        const filteredDb = results.filter(c => {
-          const digits = c.phone.replace(/\D/g, '');
-          return !digits || !existingPhones.has(digits);
-        });
+        const page = await searchDatabaseCustomersPage(term, undefined, 30);
+        if (requestSequence !== databaseSearchSequenceRef.current) return;
+        const filteredDb = page.customers.filter(customer =>
+          !customersRef.current.some(local => customersRepresentSamePerson(local, customer))
+        );
         setDbCustomers(customerOrderStatsService.sortCustomersByOrderCount(filteredDb));
+        setDbCustomersCursor(page.cursor);
+        setHasMoreDbCustomers(page.hasMore);
       } catch (err) {
         console.warn('Erro ao consultar banco de dados:', err);
       } finally {
-        setIsSearchingDb(false);
+        if (requestSequence === databaseSearchSequenceRef.current) setIsSearchingDb(false);
       }
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [clientSearchTerm, customers]);
+  }, [clientSearchTerm]);
+
+  const loadMoreDatabaseCustomers = useCallback(async () => {
+    const term = clientSearchTerm.trim();
+    const cursor = dbCustomersCursor;
+    if (!term || !cursor || !hasMoreDbCustomers || databaseLoadingRef.current || isLoadingMoreDbCustomers) return;
+
+    const requestSequence = databaseSearchSequenceRef.current;
+    databaseLoadingRef.current = true;
+    setIsLoadingMoreDbCustomers(true);
+    try {
+      const page = await searchDatabaseCustomersPage(term, cursor, 30);
+      if (requestSequence !== databaseSearchSequenceRef.current) return;
+      const filteredDb = page.customers.filter(customer =>
+        !customersRef.current.some(local => customersRepresentSamePerson(local, customer))
+      );
+      setDbCustomers(prev => customerOrderStatsService.sortCustomersByOrderCount(
+        mergeCustomerLists(prev, filteredDb)
+      ));
+      setDbCustomersCursor(page.cursor);
+      setHasMoreDbCustomers(page.hasMore);
+    } catch (error) {
+      console.warn('Erro ao carregar mais clientes do banco:', error);
+      setHasMoreDbCustomers(false);
+    } finally {
+      databaseLoadingRef.current = false;
+      if (requestSequence === databaseSearchSequenceRef.current) setIsLoadingMoreDbCustomers(false);
+    }
+  }, [clientSearchTerm, dbCustomersCursor, hasMoreDbCustomers, isLoadingMoreDbCustomers]);
+
+  useEffect(() => {
+    if (currentStep !== 1 || !hasMoreDbCustomers || isSearchingDb || isLoadingMoreDbCustomers) return;
+    const root = databaseScrollRef.current;
+    const sentinel = databaseSentinelRef.current;
+    if (!root || !sentinel || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) void loadMoreDatabaseCustomers();
+    }, { root, rootMargin: '180px' });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [currentStep, hasMoreDbCustomers, isLoadingMoreDbCustomers, isSearchingDb, loadMoreDatabaseCustomers]);
 
   // Validação estrita do cliente selecionado:
   // "Se o cliente não tiver o nome completo salvo no sistema, CPF e localização, não passa para frente."
@@ -1481,14 +1539,20 @@ export const NewOrderModal: React.FC = () => {
 
   // Múltiplas Localizações do Usuário: Salvar nova localização e usar imediatamente
   // "No endereço, na localização do usuário, vamos colocar mais de uma, tá? Pode aceitar a principal, mas pode aceitar várias. Se ele quiser colocar outras localizações, está certo."
-  const handleSaveAdditionalLocation = (targetField: 'coleta' | 'entrega' | 'troca') => {
+  const handleSaveAdditionalLocation = async (targetField: 'coleta' | 'entrega' | 'troca') => {
     if (!selectedCustomer || !newLocAddress.trim()) return;
 
-    const coordsFallback = selectedCustomer.coordinates || DEFAULT_PICKUP_COORDS;
+    const geocodingResults = await searchAddress(newLocAddress.trim()).catch(() => []);
+    const geocodedPlace = geocodingResults.find(result => result.coordinates);
+    const coordsFallback = geocodedPlace?.coordinates || selectedCustomer.coordinates || DEFAULT_PICKUP_COORDS;
+    const city = resolveCustomerCity({ ...geocodedPlace, address: newLocAddress.trim() }) ||
+      resolveCustomerCity({ address: newLocAddress.trim() }) ||
+      normalizeCityName(selectedCustomer.city || selectedCustomer.cidade);
     const newAddrObj: CustomerAddress = {
       id: `addr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       label: newLocLabel.trim() || 'Outro',
       address: newLocAddress.trim(),
+      ...(city ? { city, cidade: city } : {}),
       coordinates: coordsFallback
     };
 
@@ -1505,6 +1569,7 @@ export const NewOrderModal: React.FC = () => {
         ...selectedCustomer,
         address: newLocAddress.trim(),
         coordinates: coordsFallback,
+        ...(city ? { city, cidade: city } : {}),
         additionalAddresses: [...prevPrimary, ...(selectedCustomer.additionalAddresses || [])]
       };
     } else {
@@ -1529,16 +1594,6 @@ export const NewOrderModal: React.FC = () => {
       setExchangeCoords(coordsFallback);
     }
 
-    // Tenta geocodificar para obter coordenadas exatas
-    searchAddress(newLocAddress.trim()).then(results => {
-      if (results && results.length > 0 && results[0].coordinates) {
-        const realCoords = results[0].coordinates;
-        if (targetField === 'coleta') setPickupCoords(realCoords);
-        else if (targetField === 'entrega') setDeliveryCoords(realCoords);
-        else if (targetField === 'troca') setExchangeCoords(realCoords);
-      }
-    }).catch(err => console.warn('Geocoding additional address:', err));
-
     // Reseta estado inline
     setAddingLocationTarget(null);
     setNewLocAddress('');
@@ -1547,8 +1602,12 @@ export const NewOrderModal: React.FC = () => {
   };
 
   // Salva cliente a partir do formulário de cadastro em tela cheia
-  const handleSaveCustomerFromRegistration = (newCust: Customer) => {
-    addCustomer(newCust);
+  const handleSaveCustomerFromRegistration = async (newCust: Customer) => {
+    const saved = await persistCustomer(newCust);
+    if (!saved) {
+      window.alert('Não foi possível salvar o endereço do cliente no banco de dados.');
+      return;
+    }
     if (selectorTargetField === 'client') {
       setSelectedCustomer(newCust);
       if (newCust.address) {
@@ -2103,7 +2162,7 @@ export const NewOrderModal: React.FC = () => {
       initialName = `Coleta: ${pickupContact || custFullName}`;
     }
 
-    const userCompany = firebaseCompanyService.getUserCompany(user?.phone);
+    const userCompany = companyService.getUserCompany(user?.phone);
 
     const newPlace: Place = {
       id: `pedido-${Date.now()}-${initialOp}`,
@@ -2319,7 +2378,16 @@ export const NewOrderModal: React.FC = () => {
         {/* ========================================================
             CORPO DO FORMULÁRIO: APROVEITA O ESPAÇO TOTAL (NA ETAPA 2 MAPA OCUPA 100% SEM BORDAS)
             ======================================================== */}
-        <div className={`flex-1 min-h-0 ${currentStep === 2 ? 'overflow-hidden p-0 relative flex flex-col' : 'overflow-y-auto p-3 sm:p-4 md:p-5'}`}>
+        <div
+          ref={currentStep === 1 ? databaseScrollRef : null}
+          onScroll={currentStep === 1 ? (event) => {
+            const element = event.currentTarget;
+            if (element.scrollHeight - element.scrollTop - element.clientHeight < 180) {
+              void loadMoreDatabaseCustomers();
+            }
+          } : undefined}
+          className={`flex-1 min-h-0 ${currentStep === 2 ? 'overflow-hidden p-0 relative flex flex-col' : 'overflow-y-auto p-3 sm:p-4 md:p-5'}`}
+        >
           
           {/* ====================================================
               ETAPA 1: LISTA CHEIA DE CLIENTES (GRID MULTI-COLUNA)
@@ -2410,11 +2478,12 @@ export const NewOrderModal: React.FC = () => {
                               address: selectedCustomer.address,
                               coordinates: selectedCustomer.coordinates
                             } as Place : undefined,
-                            onLocationSelected: (newAddr, newCoords) => {
+                            onLocationSelected: (newAddr, newCoords, newCity) => {
                               const updated: Customer = {
                                 ...selectedCustomer,
                                 address: newAddr,
-                                coordinates: newCoords
+                                coordinates: newCoords,
+                                ...(newCity ? { city: newCity, cidade: newCity } : {})
                               };
                               setSelectedCustomer(updated);
                               updateCustomer(selectedCustomer.id, updated);
@@ -2629,16 +2698,6 @@ export const NewOrderModal: React.FC = () => {
                             key={cust.id}
                             onClick={() => {
                               handleSelectClientFromList(cust);
-                              if (!customers.some(c => c.phone.replace(/\D/g, '') === cust.phone.replace(/\D/g, ''))) {
-                                addCustomer({
-                                  fullName: cust.fullName,
-                                  phone: cust.phone,
-                                  cpf: cust.cpf || '',
-                                  address: cust.address,
-                                  coordinates: cust.coordinates,
-                                  notes: cust.notes
-                                });
-                              }
                             }}
                             title={`${cust.fullName} • Clique para selecionar este cliente do banco de dados`}
                             className={`px-3 py-2 rounded-xl border transition-all flex items-center justify-between gap-2.5 shadow-2xs group cursor-pointer ${
@@ -2730,7 +2789,7 @@ export const NewOrderModal: React.FC = () => {
                   </div>
                 )}
 
-                {filteredCustomers.length === 0 && dbCustomers.length === 0 && !isSearchingDb && (
+                {filteredCustomers.length === 0 && dbCustomers.length === 0 && !isSearchingDb && !hasMoreDbCustomers && (
                   <div className="py-12 text-center text-slate-400">
                     <User className="w-10 h-10 mx-auto mb-2 opacity-30" />
                     <p className="font-bold text-sm text-slate-600">Nenhum cliente cadastrado encontrado com esse termo.</p>
@@ -2752,6 +2811,14 @@ export const NewOrderModal: React.FC = () => {
                     </button>
                   </div>
                 )}
+
+                {isLoadingMoreDbCustomers && (
+                  <div className="flex items-center justify-center gap-2 py-2 text-xs font-semibold text-amber-800">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Carregando mais clientes do banco...
+                  </div>
+                )}
+                <div ref={databaseSentinelRef} className={hasMoreDbCustomers ? 'h-3' : 'h-0'} aria-hidden="true" />
 
               </div>
 
@@ -2848,12 +2915,20 @@ export const NewOrderModal: React.FC = () => {
                 }
               }}
               onChangeCustomer={() => setCurrentStep(1)}
-              onUpdateCustomerLocation={(address, coords) => {
+              onUpdateCustomerLocation={async (address, coords) => {
                 if (selectedCustomer) {
+                  let city = resolveCustomerCity({ address });
+                  if (!city) {
+                    try {
+                      city = resolveCustomerCity(await reverseGeocode(coords));
+                    } catch {}
+                  }
+                  city = city || normalizeCityName(selectedCustomer.city || selectedCustomer.cidade);
                   const updatedCust: Customer = {
                     ...selectedCustomer,
                     address,
-                    coordinates: coords
+                    coordinates: coords,
+                    ...(city ? { city, cidade: city } : {})
                   };
                   setSelectedCustomer(updatedCust);
                   updateCustomer(selectedCustomer.id, updatedCust);
@@ -4074,13 +4149,21 @@ export const NewOrderModal: React.FC = () => {
               ? exchangeCoords
               : selectedCustomer?.coordinates || DEFAULT_PICKUP_COORDS
           }
-          onConfirm={({ address, coordinates }) => {
+          onConfirm={async ({ address, coordinates }) => {
             if (mapPickerTarget === 'cliente') {
               if (selectedCustomer) {
+                let city = resolveCustomerCity({ address });
+                if (!city) {
+                  try {
+                    city = resolveCustomerCity(await reverseGeocode(coordinates));
+                  } catch {}
+                }
+                city = city || normalizeCityName(selectedCustomer.city || selectedCustomer.cidade);
                 const updatedCust: Customer = {
                   ...selectedCustomer,
                   address,
-                  coordinates
+                  coordinates,
+                  ...(city ? { city, cidade: city } : {})
                 };
                 setSelectedCustomer(updatedCust);
                 updateCustomer(selectedCustomer.id, updatedCust);

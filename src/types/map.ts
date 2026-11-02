@@ -60,6 +60,7 @@ export interface Place {
   packageType?: PackageItemType;
   assignedDriverId?: string;
   assignedDriverPhone?: string;
+  driverEnRoute?: boolean;
   assignedDriverName?: string;
   companyId?: string;
   companyName?: string;
@@ -84,6 +85,8 @@ export interface Place {
   isExchangeOrder?: boolean;
   orderStage?: 'coleta' | 'troca' | 'entrega' | 'retorno' | 'concluido';
   price?: number;
+  paymentStatus?: 'pago' | 'pendente';
+  isPaid?: boolean;
   priceItems?: Array<{
     id: string;
     name: string;
@@ -132,6 +135,7 @@ export interface CompletedWaypointMark {
   status?: 'success' | 'failed';
   isFinal?: boolean;
   driverName?: string;
+  driverId?: string;
   driverPhone?: string;
   driverPhoto?: string;
   photos?: string[];

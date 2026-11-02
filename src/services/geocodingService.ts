@@ -1,7 +1,7 @@
 import { Place, LocationCoordinates } from '../types/map';
 import { getCustomerPlaceName, isUnnamedOrGenericPlace } from '../utils/customerLocationUtils';
 import { isStreetOrAddress, resolveCommercialClosingTime } from '../utils/placeUtils';
-import { firebasePlaceService } from './firebasePlaceService';
+import { placeService } from './placeService';
 
 export const GOOGLE_MAPS_API_KEY = 'AIzaSyATwFNGYw-Y0TGH3SrjwQelQD4EorVjlg4';
 
@@ -262,9 +262,6 @@ export async function resolveGoogleMapsUrl(input: string, customerName?: string)
         linkMemoryCache.set(cacheKey, { timestamp: Date.now(), data: resolvedPlace });
         persistLinkCache();
 
-        // Salva também no Firebase para que futuras buscas encontrem imediatamente
-        firebasePlaceService.saveSearchedPlace(resolvedPlace).catch(() => {});
-
         return resolvedPlace;
       }
     }
@@ -340,11 +337,11 @@ export async function searchAddress(query: string, customerName?: string): Promi
     }
   } catch {}
 
-  // 3. BUSCA NO FIREBASE PRIMEIRO (ECONOMIZA CHAMADAS DE API GOOGLE MAPS)
+  // 3. BUSCA NOS LOCAIS CADASTRADOS PRIMEIRO (ECONOMIZA CHAMADAS DE API GOOGLE MAPS)
   try {
-    const fbResults = await firebasePlaceService.searchPlaces(trimmed, 8);
+    const fbResults = await placeService.searchPlaces(trimmed, 8);
     if (fbResults.length > 0) {
-      console.log(`[Firebase Search HIT] "${trimmed}" encontrado no Firebase (${fbResults.length} locais). Economizou chamada de API do Google!`);
+      console.log(`[Local Search HIT] "${trimmed}" encontrado nos locais cadastrados (${fbResults.length} locais). Economizou chamada de API do Google!`);
       const combined = [...localMatches];
       for (const item of fbResults) {
         const exists = combined.some(
@@ -360,10 +357,10 @@ export async function searchAddress(query: string, customerName?: string): Promi
       return combined;
     }
   } catch (err) {
-    console.warn('[Firebase Places Search Error]:', err);
+    console.warn('[Places Search Error]:', err);
   }
 
-  // 4. Se não encontrar no Firebase, busca no Google Maps (Servidor Proxy ou API Direta do Google com chave)
+  // 4. Se não encontrar nos locais cadastrados, busca no Google Maps (via servidor)
   let googleResults: Place[] = [];
   try {
     const controller = new AbortController();
@@ -428,11 +425,6 @@ export async function searchAddress(query: string, customerName?: string): Promi
       // Salva no cache local do cliente para economizar requisições futuras
       searchMemoryCache.set(normKey, { timestamp: Date.now(), data: allResults });
       persistSearchCache();
-
-      // Salva os locais encontrados no Firebase para economizar futuras buscas
-      for (const item of googleResults) {
-        firebasePlaceService.saveSearchedPlace(item).catch(() => {});
-      }
 
       return allResults;
     }
@@ -522,9 +514,9 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
     return cachedRev.data;
   }
 
-  // 0.1 SNAPPING DE LOCAL REGISTRADO NO FIREBASE (se clicou perto de algum local cadastrado <= 45m)
+  // 0.1 SNAPPING DE LOCAL REGISTRADO (se clicou perto de algum local cadastrado <= 45m)
   try {
-    const nearbyFb = firebasePlaceService.getClosestLocalSync(coords.lat, coords.lng, 45);
+    const nearbyFb = placeService.getClosestLocalSync(coords.lat, coords.lng, 45);
     if (nearbyFb && nearbyFb.local) {
       const l = nearbyFb.local;
       const fullAddr = l.endereco || [l.rua, l.numero, l.setor, l.cidade].filter(Boolean).join(', ') || l.name;
@@ -536,7 +528,7 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
         horario: l.horario
       });
 
-      console.log(`[Firebase Reverse Snap HIT] Ponto próximo a "${l.name}" (${Math.round(nearbyFb.distMeters)}m) adotado.`);
+      console.log(`[Reverse Snap HIT] Ponto próximo a "${l.name}" (${Math.round(nearbyFb.distMeters)}m) adotado.`);
       const resPlace: Place = {
         id: `pin-fb-${l.id}`,
         name: l.name,
@@ -568,7 +560,7 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
       return resPlace;
     }
   } catch (err) {
-    console.warn('[Firebase Reverse Snap] Erro ao buscar local próximo:', err);
+    console.warn('[Reverse Snap] Erro ao buscar local próximo:', err);
   }
 
   const sampleNames = [

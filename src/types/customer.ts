@@ -2,6 +2,8 @@ export interface CustomerAddress {
   id: string;
   label?: string; // Ex: 'Principal', 'Casa', 'Trabalho', 'Filial', 'Depósito', 'Outro'
   address: string;
+  city?: string;
+  cidade?: string;
   coordinates?: {
     lat: number;
     lng: number;
@@ -11,6 +13,8 @@ export interface CustomerAddress {
 export interface Customer {
   id: string;
   fullName: string;
+  /** Nome de contato, como salvo na agenda do telefone (campo `name` do banco) */
+  contactName?: string;
   phone: string;
   cpf: string;
   cnpj?: string;

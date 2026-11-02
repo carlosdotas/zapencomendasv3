@@ -14,7 +14,7 @@ import {
   CheckCircle2, 
   AlertCircle
 } from 'lucide-react';
-import { AuthAccount } from '../../data/authAccounts';
+import { AuthAccount } from '../../types/auth';
 import { api, setAuthToken } from '../../services/api';
 
 interface RegisterModalProps {
@@ -81,7 +81,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
     const cleanPassword = password.trim();
 
     if (!cleanName) {
-      setErrorMsg('Informe seu nome completo para o cadastro.');
+      setErrorMsg('Informe o nome completo do contato para o cadastro.');
       return;
     }
 
@@ -118,6 +118,8 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
     try {
       const regRes = await api.registerUser({
         name: cleanName,
+        full_name: cleanName,
+        name_completo: cleanName,
         phone: cleanPhone,
         password: cleanPassword,
         access_level: 'motorista'
@@ -289,10 +291,10 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
               </div>
             )}
 
-            {/* Nome Completo */}
+            {/* Nome do Contato (obrigatório) */}
             <div>
               <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
-                Nome Completo
+                Nome do Contato <span className="text-red-500">*</span>
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -304,7 +306,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
                   autoFocus
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Seu nome completo"
+                  placeholder="Nome e sobrenome do contato"
                   className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-slate-900 font-bold text-sm focus:outline-none focus:border-[#FF5E00] focus:bg-white transition-all placeholder-slate-400"
                 />
               </div>

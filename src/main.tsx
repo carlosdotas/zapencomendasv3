@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css';
 import './index.css';
 import App from './App.tsx';
 import { initPWAUpdateService } from './services/pwaUpdateService';
+import { initializeImageServerConfig } from './services/api';
 
 // Suprime alertas de conexão WebSocket do HMR e recupera automaticamente de falhas de carregamento de CSS/chunks
 if (typeof window !== 'undefined') {
@@ -58,6 +59,7 @@ if (typeof window !== 'undefined') {
 
 // Inicializa o serviço inteligente de PWA com detecção contínua e atualização automática
 initPWAUpdateService();
+void initializeImageServerConfig();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

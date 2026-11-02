@@ -14,7 +14,6 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { AgendaContact } from '../../types/customer';
-import { INITIAL_AGENDA_CONTACTS } from '../../data/mockCustomers';
 import { useBackButton } from '../../hooks/useBackButton';
 
 interface PhoneAgendaModalProps {
@@ -64,7 +63,7 @@ export const PhoneAgendaModal: React.FC<PhoneAgendaModalProps> = ({
     } catch {
       // fallback
     }
-    return INITIAL_AGENDA_CONTACTS;
+    return [];
   });
 
   const [searchTerm, setSearchTerm] = useState('');

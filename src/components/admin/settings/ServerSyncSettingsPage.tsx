@@ -1,18 +1,12 @@
 import React, { useState } from 'react';
 import { 
   ArrowLeft, 
-  Server, 
   Database, 
-  Cloud, 
-  Wifi, 
   CheckCircle2, 
   RefreshCw, 
-  Save, 
-  ShieldCheck, 
-  Layers 
+  Save
 } from 'lucide-react';
-import { firebaseSettingsService } from '../../../services/firebaseSettingsService';
-import { realtimeAssignmentService } from '../../../services/realtimeAssignmentService';
+import { settingsService } from '../../../services/settingsService';
 
 interface ServerSyncSettingsPageProps {
   onBack: () => void;
@@ -36,19 +30,18 @@ export const ServerSyncSettingsPage: React.FC<ServerSyncSettingsPageProps> = ({
   isSyncingServer
 }) => {
   const [tempApiUrl, setTempApiUrl] = useState(apiBaseUrl);
-  const [firebaseRtdbUrl, setFirebaseRtdbUrl] = useState(() => realtimeAssignmentService.getFirebaseRtdbUrl());
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  const isOnline = serverStatus === 'connected' || serverStatus === 'online';
 
   const handleSave = async () => {
     setIsSaving(true);
     onUpdateApiBaseUrl(tempApiUrl);
-    realtimeAssignmentService.setFirebaseRtdbUrl(firebaseRtdbUrl);
 
-    await firebaseSettingsService.saveSettings({
+    await settingsService.saveSettings({
       server: {
-        apiBaseUrl: tempApiUrl,
-        firebaseRtdbUrl
+        apiBaseUrl: tempApiUrl
       }
     });
 
@@ -72,10 +65,10 @@ export const ServerSyncSettingsPage: React.FC<ServerSyncSettingsPageProps> = ({
           </button>
           <div>
             <h1 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight leading-tight">
-              Servidores & Nuvem
+              Servidor & Banco de Dados
             </h1>
             <p className="text-[11px] text-slate-500 font-semibold">
-              Conexão com Firebase Firestore, Realtime Database e API
+              Status da conexão com a API e o banco de dados
             </p>
           </div>
         </div>
@@ -89,19 +82,19 @@ export const ServerSyncSettingsPage: React.FC<ServerSyncSettingsPageProps> = ({
           {savedSuccess ? (
             <>
               <CheckCircle2 className="w-4 h-4 text-emerald-400 stroke-[3]" />
-              <span>Salvo na Nuvem!</span>
+              <span>Salvo!</span>
             </>
           ) : (
             <>
               <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Salvando...' : 'Salvar no Firebase'}</span>
+              <span>{isSaving ? 'Salvando...' : 'Salvar'}</span>
             </>
           )}
         </button>
       </div>
 
       <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-6">
-        {/* Card 1: Status do Firebase Firestore */}
+        {/* Card 1: Status do servidor e banco de dados */}
         <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/90 shadow-xs space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -110,22 +103,22 @@ export const ServerSyncSettingsPage: React.FC<ServerSyncSettingsPageProps> = ({
               </div>
               <div>
                 <h2 className="text-sm font-black text-slate-900">
-                  Firebase Firestore (Banco Oficial)
+                  Banco de Dados MySQL
                 </h2>
                 <span className="text-[11px] text-slate-500 font-medium">
-                  Projeto: <code>zapencomendas-507212</code> • Banco: <code>(default)</code>
+                  Acessado pelo backend via Prisma
                 </span>
               </div>
             </div>
 
-            <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Ativo em Tempo Real</span>
+            <span className={`text-[10px] font-black px-2.5 py-1 rounded-full flex items-center gap-1 border ${isOnline ? 'text-emerald-700 bg-emerald-50 border-emerald-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+              <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+              <span>{isOnline ? 'Conectado' : serverStatus === 'checking' ? 'Verificando...' : 'Indisponível'}</span>
             </span>
           </div>
 
           <p className="text-xs text-slate-600 font-medium leading-relaxed">
-            Todos os 3.636 locais e histórico de pedidos são mantidos com sincronização bi-direcional contínua na nuvem com suporte a funcionamento offline automático via IndexedDB.
+            {serverMessage || 'Pedidos, usuários, locais e configurações são lidos e gravados diretamente pela API. Os dados são atualizados periodicamente.'}
           </p>
 
           <div className="pt-2 flex items-center gap-3">
@@ -136,7 +129,7 @@ export const ServerSyncSettingsPage: React.FC<ServerSyncSettingsPageProps> = ({
               className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-800 font-bold text-xs rounded-xl border border-slate-300 transition-all cursor-pointer"
             >
               <RefreshCw className={`w-4 h-4 ${isSyncingServer ? 'animate-spin' : ''}`} />
-              <span>{isSyncingServer ? 'Sincronizando...' : 'Forçar Sincronização Geral'}</span>
+              <span>{isSyncingServer ? 'Atualizando...' : 'Atualizar Dados do Servidor'}</span>
             </button>
             {serverLatencyMs !== null && (
               <span className="text-xs text-slate-400 font-semibold">
@@ -146,41 +139,26 @@ export const ServerSyncSettingsPage: React.FC<ServerSyncSettingsPageProps> = ({
           </div>
         </div>
 
-        {/* Card 2: Parâmetros da API e RTDB */}
+        {/* Card 2: Parâmetros da API */}
         <div className="bg-white rounded-3xl p-5 sm:p-6 border border-slate-200/90 shadow-xs space-y-4">
           <h2 className="text-sm font-black text-slate-900 uppercase tracking-wider">
-            Endpoints de Conexão
+            Endpoint de Conexão
           </h2>
 
-          <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                URL Base da API Backend (Node.js / Express)
-              </label>
-              <input
-                type="url"
-                value={tempApiUrl}
-                onChange={(e) => setTempApiUrl(e.target.value)}
-                placeholder="http://localhost:3000"
-                className="w-full text-xs font-bold bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0B5187] rounded-xl px-3.5 py-2.5 focus:outline-none transition-colors"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                URL do Firebase Realtime Database (RTDB)
-              </label>
-              <input
-                type="url"
-                value={firebaseRtdbUrl}
-                onChange={(e) => setFirebaseRtdbUrl(e.target.value)}
-                placeholder="https://zapencomendas-507212-default-rtdb.firebaseio.com"
-                className="w-full text-xs font-bold bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0B5187] rounded-xl px-3.5 py-2.5 focus:outline-none transition-colors"
-              />
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                Utilizado para o streaming instantâneo de atribuição de motoristas e telemetria de GPS.
-              </span>
-            </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">
+              URL Base da API Backend (Node.js / Express)
+            </label>
+            <input
+              type="url"
+              value={tempApiUrl}
+              onChange={(e) => setTempApiUrl(e.target.value)}
+              placeholder="http://localhost:3000"
+              className="w-full text-xs font-bold bg-slate-50 focus:bg-white border border-slate-200 focus:border-[#0B5187] rounded-xl px-3.5 py-2.5 focus:outline-none transition-colors"
+            />
+            <span className="text-[10px] text-slate-400 mt-1 block">
+              Deixe em branco para usar a mesma origem do aplicativo.
+            </span>
           </div>
         </div>
       </div>

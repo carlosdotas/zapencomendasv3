@@ -31,6 +31,7 @@ import { useMapStore } from '../../context/MapContext';
 import { api, uploadProfilePhoto } from '../../services/api';
 import { formatPhotoUrl } from '../../services/apiAdapters';
 import { useBackButton } from '../../hooks/useBackButton';
+import { UserAvatar } from '../common/UserAvatar';
 
 type TabType = 'overview' | 'settings';
 
@@ -79,14 +80,14 @@ export const UserProfilePage: React.FC = () => {
       // Exibe prévia imediata no estado da interface
       updateUser({ avatarUrl: dataUrl });
 
-      // Sincroniza com servidor PHP de fotos e Firebase
+      // Sincroniza com servidor PHP de fotos
       const cleanPhone = (user.phone || '').replace(/\D/g, '');
       const numericUserId = user.id && !String(user.id).includes('usr-') ? String(user.id).replace(/\D/g, '') : '';
       try {
         // 1. Envia a foto em base64 diretamente para o Servidor de Fotos PHP (images.php com tipo perfil)
         const uploadedUrl = await uploadProfilePhoto(dataUrl, numericUserId || undefined, cleanPhone || user.phone);
 
-        // 2. Salva o usuário no backend e no Firebase usando a URL do servidor PHP
+        // 2. Salva o usuário no backend usando a URL do servidor PHP
         const saveResult = await api.saveUser({
           id: numericUserId || undefined,
           phone: cleanPhone || user.phone,
@@ -260,24 +261,13 @@ export const UserProfilePage: React.FC = () => {
                   className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-white p-1 shadow-2xl ring-4 ring-white/20 overflow-hidden cursor-pointer relative group-hover:ring-[#FF5E00] transition-all"
                   title="Clique para alterar foto"
                 >
-                  {user.avatarUrl ? (
-                    <img
-                      src={user.avatarUrl}
-                      alt={user.name || 'Usuário'}
-                      onError={(e) => {
-                        e.currentTarget.style.display = 'none';
-                        const fallback = e.currentTarget.parentElement?.querySelector('.profile-avatar-fallback') as HTMLElement;
-                        if (fallback) fallback.style.display = 'flex';
-                      }}
-                      className="w-full h-full rounded-full object-cover"
-                    />
-                  ) : null}
-                  <div 
-                    className="profile-avatar-fallback w-full h-full rounded-full bg-[#0B5187]/15 items-center justify-center text-[#0B5187] font-black text-2xl"
-                    style={{ display: user.avatarUrl ? 'none' : 'flex' }}
-                  >
-                    {user.name ? user.name.slice(0, 2).toUpperCase() : 'EZ'}
-                  </div>
+                  <UserAvatar
+                    src={user.avatarUrl}
+                    name={user.name}
+                    className="h-full w-full rounded-full"
+                    imageClassName="h-full w-full rounded-full object-cover"
+                    fallbackClassName="flex h-full w-full items-center justify-center rounded-full bg-[#0B5187]/15 text-2xl font-black text-[#0B5187]"
+                  />
 
                   {/* Overlay ao passar o mouse */}
                   <div className="absolute inset-0 bg-black/45 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">

@@ -8,7 +8,7 @@ import {
   AlertCircle,
   X
 } from 'lucide-react';
-import { ACCOUNTS, AuthAccount, UserRole } from '../../data/authAccounts';
+import { AuthAccount, UserRole } from '../../types/auth';
 import { api } from '../../services/api';
 import { formatPhotoUrl } from '../../services/apiAdapters';
 import { useMapStore } from '../../context/MapContext';
@@ -35,19 +35,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  // Contas salvas dinamicamente pelo usuário no navegador
-  const [customAccounts, setCustomAccounts] = useState<Record<string, AuthAccount>>(() => {
-    try {
-      const saved = localStorage.getItem('encomendaszap_custom_accounts');
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return {};
-  });
-
-  const allAccounts: Record<string, AuthAccount> = {
-    ...ACCOUNTS,
-    ...customAccounts
-  };
 
   useEffect(() => {
     if (isOpen) {
@@ -88,6 +75,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
           : u.access_level === 'terminal' ? 'terminal'
           : 'atendente';
 
+        const rawPhoto = u.foto || u.avatarUrl || u.photo;
+        const serverPhoto = rawPhoto ? (formatPhotoUrl(rawPhoto) || rawPhoto) : undefined;
         const serverAccount: AuthAccount = {
           id: String(u.user_id),
           phone: u.phone,
@@ -98,71 +87,27 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
           name: u.name,
           description: `Usuário autenticado no Servidor Central`,
           badgeColor: mappedRole === 'admin_geral' ? '#0B5187' : mappedRole === 'motorista' ? '#FF5E00' : '#10B981',
-          avatarUrl: (u.foto ? (formatPhotoUrl(u.foto) || u.foto) : null) || (mappedRole === 'motorista'
-            ? 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?auto=format&fit=crop&w=256&h=256&q=80'
-            : 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&w=256&h=256&q=80'),
+          avatarUrl: serverPhoto || '',
           status: 'ativo'
         };
 
         setIsLoading(false);
         onLoginSuccess(serverAccount);
         return;
-      } else if (res.message && typeof res.message === 'string' && res.message.toLowerCase().includes('senha')) {
+      } else {
         setIsLoading(false);
-        setErrorMsg('Senha incorreta para este usuário no servidor.');
+        setErrorMsg(
+          typeof res.message === 'string' && res.message.trim()
+            ? res.message
+            : 'Telefone ou senha incorretos.'
+        );
         return;
       }
     } catch {
-      // Continua para o fallback de contas locais
+      setIsLoading(false);
+      setErrorMsg('Erro de conexão com o servidor. Tente novamente.');
+      return;
     }
-
-    // 2. Fallback para contas cadastradas localmente ou pré-definidas
-    const matchedAccount = allAccounts[cleanPhone];
-    if (matchedAccount) {
-      const isCorrectPassword = 
-        cleanPassword === matchedAccount.code || 
-        (cleanPhone === '62996157340' && cleanPassword === '821332') ||
-        cleanPassword === '1332';
-
-      if (isCorrectPassword) {
-        setIsLoading(false);
-        // Garantir que 62996157340 é sempre admin_geral
-        if (cleanPhone === '62996157340') {
-          matchedAccount.role = 'admin_geral';
-          matchedAccount.roleLabel = 'Administrador Geral';
-        }
-        // Prioriza foto de perfil personalizada salva
-        const savedAvatar = localStorage.getItem('encomendaszap_user_avatar');
-        if (savedAvatar) {
-          matchedAccount.avatarUrl = savedAvatar;
-        }
-        onLoginSuccess(matchedAccount);
-        return;
-      }
-    } else if (cleanPhone) {
-      // Se for um novo número digitado e a senha for 1332 (ou 1234), cadastra de forma transparente e entra
-      if (cleanPassword === '1332' || cleanPassword === '1234') {
-        const newAcc: AuthAccount = {
-          id: `usr-auto-${cleanPhone}`,
-          phone: formatPhone(cleanPhone),
-          cleanPhone: cleanPhone,
-          code: cleanPassword,
-          role: cleanPhone === '62996157340' ? 'admin_geral' : 'atendente',
-          roleLabel: cleanPhone === '62996157340' ? 'Administrador Geral' : 'Atendente de Operações',
-          name: cleanPhone === '62996157340' ? 'Administrador Geral' : `Usuário (${formatPhone(cleanPhone)})`,
-          description: cleanPhone === '62996157340' ? 'Gestão completa do sistema' : 'Acesso via telefone no sistema',
-          badgeColor: cleanPhone === '62996157340' ? '#0B5187' : '#10B981',
-          avatarUrl: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&w=256&h=256&q=80',
-          status: 'ativo'
-        };
-        setIsLoading(false);
-        onLoginSuccess(newAcc);
-        return;
-      }
-    }
-
-    setIsLoading(false);
-    setErrorMsg('Telefone ou senha incorretos. Por favor, verifique os dados digitados.');
   };
 
   const handleOpenRegister = () => {

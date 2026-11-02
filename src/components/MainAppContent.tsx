@@ -2,6 +2,8 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useMapStore } from '../context/MapContext';
 import { FullscreenMap } from './map/FullscreenMap';
 import { TopControls } from './navigation/TopControls';
+import { DriverEarningsBar } from './driver/DriverEarningsBar';
+import { RouteDispatchManager } from './driver/RouteDispatchManager';
 import { BottomSearchBar } from './navigation/BottomSearchBar';
 import { LocationButton } from './navigation/LocationButton';
 import { SideMenuDrawer } from './sidebar/SideMenuDrawer';
@@ -55,10 +57,8 @@ export const MainAppContent: React.FC = () => {
     isCustomerListOpen,
     setIsCustomerListOpen,
     closeCustomerList,
-    openCustomerLocationModal,
+    persistCustomer,
     mapInstance,
-    savedPlaces,
-    allPlaces,
     isCalendarModalOpen,
     closeCalendarModal,
     isOrdersModalOpen,
@@ -68,58 +68,19 @@ export const MainAppContent: React.FC = () => {
   const [isCustomerRegOpen, setIsCustomerRegOpen] = useState(false);
   const [customerRegInitialData, setCustomerRegInitialData] = useState<Partial<Customer> | AgendaContact | null>(null);
 
-  const handleSelectCustomerFromList = useCallback((customer: Customer) => {
-    closeCustomerList();
-    if (
-      customer.coordinates &&
-      typeof customer.coordinates.lat === 'number' &&
-      typeof customer.coordinates.lng === 'number' &&
-      (customer.coordinates.lat !== 0 || customer.coordinates.lng !== 0)
-    ) {
-      if (mapInstance) {
-        mapInstance.flyTo([customer.coordinates.lat, customer.coordinates.lng], 17, { animate: true, duration: 1.2 });
-      }
-
-      const existingPlace = [...savedPlaces, ...allPlaces].find(p => 
-        (p.customerId && p.customerId === customer.id) ||
-        (customer.phone && p.customerPhone && p.customerPhone.replace(/\D/g, '') === customer.phone.replace(/\D/g, ''))
-      );
-
-      if (existingPlace) {
-        setSelectedPlace(existingPlace);
-      } else {
-        const rawName = customer.fullName || 'Cliente';
-        const placeName = rawName.toLowerCase().startsWith('local de ') ? rawName : `Local de ${rawName}`;
-        const newPlace: Place = {
-          id: `cliente-${customer.id}`,
-          name: placeName,
-          address: customer.address || 'Goiânia - GO',
-          category: 'Cliente',
-          coordinates: customer.coordinates,
-          customerName: customer.fullName,
-          customerPhone: customer.phone,
-          customerId: customer.id,
-          customerAddress: customer.address,
-          customerCoordinates: customer.coordinates
-        };
-        setSelectedPlace(newPlace);
-      }
-    } else {
-      openCustomerLocationModal({
-        customerId: customer.id,
-        customerName: customer.fullName,
-        customerPhone: customer.phone
-      });
-    }
-  }, [closeCustomerList, mapInstance, savedPlaces, allPlaces, setSelectedPlace, openCustomerLocationModal]);
-
   const handleOpenRegistrationFromList = useCallback((initialData?: Partial<Customer> | AgendaContact) => {
     closeCustomerList();
     setCustomerRegInitialData(initialData || null);
     setIsCustomerRegOpen(true);
   }, [closeCustomerList]);
 
-  const handleSaveCustomerFromList = useCallback((newCust: Customer) => {
+  const handleSaveCustomerFromList = useCallback(async (newCust: Customer) => {
+    const saved = await persistCustomer(newCust);
+    if (!saved) {
+      window.alert('Não foi possível salvar o endereço do cliente no banco de dados.');
+      return;
+    }
+
     setIsCustomerRegOpen(false);
     if (
       newCust.coordinates &&
@@ -148,7 +109,7 @@ export const MainAppContent: React.FC = () => {
     } else {
       setIsCustomerListOpen(true);
     }
-  }, [mapInstance, setSelectedPlace, setIsCustomerListOpen]);
+  }, [mapInstance, setSelectedPlace, setIsCustomerListOpen, persistCustomer]);
 
   // Garante que, caso o usuário não esteja autenticado, a tela de login ou cadastro esteja sempre ativa
   useEffect(() => {
@@ -245,6 +206,11 @@ export const MainAppContent: React.FC = () => {
         {/* Topo: Controles superiores (Menu, Notificações, Perfil) */}
         <TopControls />
 
+        {/* Resumo diário do motorista (aceitos, coletados e ganhos) */}
+        <DriverEarningsBar />
+
+        <RouteDispatchManager />
+
         {/* Botão Flutuante Inferior Direito para Filtros e Centralizar Localização */}
         <LocationButton />
 
@@ -298,8 +264,9 @@ export const MainAppContent: React.FC = () => {
             isOpen={isCustomerListOpen}
             onClose={closeCustomerList}
             targetField="customer"
-            onSelectCustomer={handleSelectCustomerFromList}
+            onSelectCustomer={handleOpenRegistrationFromList}
             onOpenRegistration={handleOpenRegistrationFromList}
+            canDeleteCustomer={currentRole !== 'motorista'}
           />
         )}
 

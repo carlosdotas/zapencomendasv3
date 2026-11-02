@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { CurrencyCentsInput } from '../../common/CurrencyCentsInput';
 import { PricingSettings, PricingModelType } from '../../../services/pricingSettingsService';
-import { firebaseSettingsService } from '../../../services/firebaseSettingsService';
+import { settingsService } from '../../../services/settingsService';
 
 interface PricingSettingsPageProps {
   onBack: () => void;
@@ -46,7 +46,7 @@ export const PricingSettingsPage: React.FC<PricingSettingsPageProps> = ({
     };
 
     onUpdate(updated);
-    await firebaseSettingsService.saveSettings({ pricing: updated });
+    await settingsService.saveSettings({ pricing: updated });
     setIsSaving(false);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 2500);
@@ -89,7 +89,7 @@ export const PricingSettingsPage: React.FC<PricingSettingsPageProps> = ({
           ) : (
             <>
               <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Salvando...' : 'Salvar no Firebase'}</span>
+              <span>{isSaving ? 'Salvando...' : 'Salvar'}</span>
             </>
           )}
         </button>
@@ -100,7 +100,7 @@ export const PricingSettingsPage: React.FC<PricingSettingsPageProps> = ({
         <div className="flex items-center gap-2.5 p-3 rounded-2xl bg-blue-50 border border-blue-200/70 text-blue-900 text-xs">
           <Cloud className="w-4 h-4 text-[#0B5187] shrink-0 stroke-[2.4]" />
           <span className="font-semibold">
-            As alterações são salvas no <strong>Firebase Firestore</strong> e sincronizadas automaticamente em todos os aparelhos conectados.
+            As alterações são salvas no <strong>servidor</strong> e sincronizadas automaticamente em todos os aparelhos conectados.
           </span>
         </div>
 

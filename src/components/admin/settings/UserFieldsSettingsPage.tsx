@@ -16,7 +16,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { UserRequiredFieldsConfig } from '../../../types/map';
-import { firebaseSettingsService } from '../../../services/firebaseSettingsService';
+import { settingsService } from '../../../services/settingsService';
 
 interface UserFieldsSettingsPageProps {
   onBack: () => void;
@@ -87,7 +87,7 @@ export const UserFieldsSettingsPage: React.FC<UserFieldsSettingsPageProps> = ({
   const handleSave = async () => {
     setIsSaving(true);
     onUpdate(config);
-    await firebaseSettingsService.saveSettings({ userRequiredFields: config });
+    await settingsService.saveSettings({ userRequiredFields: config });
     setIsSaving(false);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 2500);
@@ -130,7 +130,7 @@ export const UserFieldsSettingsPage: React.FC<UserFieldsSettingsPageProps> = ({
           ) : (
             <>
               <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Salvando...' : 'Salvar no Firebase'}</span>
+              <span>{isSaving ? 'Salvando...' : 'Salvar'}</span>
             </>
           )}
         </button>

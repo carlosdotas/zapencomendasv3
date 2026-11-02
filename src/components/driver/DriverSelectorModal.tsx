@@ -19,7 +19,6 @@ import {
 import { Place, Driver, VehicleCollectionType } from '../../types/map';
 import { api } from '../../services/api';
 import { BackendUser } from '../../services/apiTypes';
-import { ACCOUNTS } from '../../data/authAccounts';
 import { formatDriverLastSeen } from '../../services/driverTrackingClient';
 import { formatPhotoUrl } from '../../services/apiAdapters';
 
@@ -48,6 +47,7 @@ interface DriverSelectorModalProps {
   place: Place;
   onSelectDriver: (driver: DriverOption) => void;
   onRemoveDriver?: () => void;
+  multiCount?: number;
   activeTelemetryDrivers: Driver[];
 }
 
@@ -57,6 +57,7 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
   place,
   onSelectDriver,
   onRemoveDriver,
+  multiCount,
   activeTelemetryDrivers
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -210,29 +211,6 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
       }
     });
 
-    // 4. Se o banco não retornou nenhum motorista (ex: fallback offline), adiciona contas padrão
-    if (map.size === 0) {
-      Object.values(ACCOUNTS).forEach(acc => {
-        if (acc.role === 'motorista') {
-          const key = acc.cleanPhone || acc.id || '';
-          const vType: VehicleCollectionType = acc.vehicle?.toLowerCase().includes('carro') ? 'carro' : 'moto';
-          map.set(key, {
-            id: acc.id || `usr-mot-${acc.cleanPhone.slice(-2)}`,
-            name: acc.name,
-            phone: acc.phone,
-            cleanPhone: acc.cleanPhone,
-            vehicleType: vType,
-            vehicleModel: acc.vehicle,
-            vehiclePlate: acc.plate,
-            isOnline: true,
-            status: 'disponivel',
-            avatarUrl: acc.avatarUrl,
-            source: 'account'
-          });
-        }
-      });
-    }
-
     return Array.from(map.values());
   }, [databaseUsers, backendMotoristas, activeTelemetryDrivers]);
 
@@ -310,7 +288,7 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
                   </span>
                 </div>
                 <p className="text-[11px] text-blue-100 font-medium">
-                  {place.operationType === 'coleta' ? 'Ponto de Coleta' : 'Ponto de Entrega'} • {place.orderCode || 'Encomenda'}
+                  {multiCount ? `Passar rota • ${multiCount} ${multiCount === 1 ? 'local' : 'locais'}` : `${place.operationType === 'coleta' ? 'Ponto de Coleta' : 'Ponto de Entrega'} • ${place.orderCode || 'Encomenda'}`}
                 </p>
               </div>
             </div>
@@ -346,7 +324,7 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
           <div className="mt-3 p-2.5 rounded-xl bg-white/10 backdrop-blur-xs border border-white/15 flex items-center justify-between gap-2 text-xs">
             <div className="min-w-0">
               <span className="text-[10px] uppercase font-black tracking-wider text-orange-300 block">
-                Local de {place.operationType === 'coleta' ? 'Coleta' : 'Entrega'}
+                {multiCount ? 'Locais selecionados' : `Local de ${place.operationType === 'coleta' ? 'Coleta' : 'Entrega'}`}
               </span>
               <p className="font-bold truncate text-white">
                 {place.name}

@@ -2,7 +2,7 @@ import React from 'react';
 import { Menu } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
 import { NotificationMenu } from '../notifications/NotificationMenu';
-import { ACCOUNTS } from '../../data/authAccounts';
+import { UserAvatar } from '../common/UserAvatar';
 
 export const TopControls: React.FC = () => {
   const { 
@@ -15,7 +15,7 @@ export const TopControls: React.FC = () => {
     isDriverOnline
   } = useMapStore();
 
-  const currentAccount = Object.values(ACCOUNTS).find(a => a.role === currentRole) || ACCOUNTS['62996157341'];
+  const badgeColor = currentRole === 'admin_geral' ? '#0B5187' : currentRole === 'motorista' ? '#FF5E00' : '#10B981';
 
   return (
     <header 
@@ -45,29 +45,18 @@ export const TopControls: React.FC = () => {
             title={`Conta: ${user.name}`}
             className="relative flex items-center justify-center w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-white p-0.5 shadow-lg border-2 border-white/90 transition-all duration-150 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FF5E00] group cursor-pointer"
           >
-            {user.avatarUrl ? (
-              <img
-                src={user.avatarUrl}
-                alt={user.name || 'Usuário'}
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                  const fallback = e.currentTarget.parentElement?.querySelector('.top-avatar-fallback') as HTMLElement;
-                  if (fallback) fallback.style.display = 'flex';
-                }}
-                className="w-full h-full rounded-lg object-cover ring-2 ring-transparent group-hover:ring-[#0B5187] transition-all"
-              />
-            ) : null}
-            <div 
-              className="top-avatar-fallback w-full h-full rounded-lg bg-[#0B5187] items-center justify-center text-white font-black text-xs"
-              style={{ display: user.avatarUrl ? 'none' : 'flex' }}
-            >
-              {user.name ? user.name.slice(0, 2).toUpperCase() : 'EZ'}
-            </div>
+            <UserAvatar
+              src={user.avatarUrl}
+              name={user.name}
+              className="h-full w-full overflow-hidden rounded-lg"
+              imageClassName="h-full w-full rounded-lg object-cover ring-2 ring-transparent transition-all group-hover:ring-[#0B5187]"
+              fallbackClassName="flex h-full w-full items-center justify-center rounded-lg bg-[#0B5187] text-xs font-black text-white"
+            />
             {/* Indicador de status/perfil do usuário */}
             <span 
               className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 border-2 border-white rounded-full shadow-xs flex items-center justify-center"
               style={{ 
-                backgroundColor: currentRole === 'motorista' && isDriverOnline ? '#10B981' : currentAccount.badgeColor 
+                backgroundColor: currentRole === 'motorista' && isDriverOnline ? '#10B981' : badgeColor 
               }}
             >
               <span className={`w-1 h-1 rounded-full bg-white ${currentRole === 'motorista' && isDriverOnline ? 'animate-ping' : ''}`} />

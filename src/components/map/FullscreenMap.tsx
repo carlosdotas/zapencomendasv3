@@ -1,23 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { X, MapPin, User, Phone, ChevronRight, AlertTriangle, Zap, Check, LocateFixed, Package, Navigation, RefreshCw, Loader2 } from 'lucide-react';
+import { X, MapPin, User, Phone, ChevronRight, ChevronDown, Building2, AlertTriangle, Zap, Check, LocateFixed, Package, Navigation, RefreshCw, Loader2 } from 'lucide-react';
+import { GoogleMapsIcon, WazeIcon, openExternalNavigation } from './NavAppIcons';
 import { useMapStore } from '../../context/MapContext';
 import { reverseGeocode } from '../../services/geocodingService';
 import { MapLayerType, Place, OperationType, Driver, CompletedWaypointMark } from '../../types/map';
 import { Customer } from '../../types/customer';
 import { isCustomerMissingLocation, getCustomerPlaceName } from '../../utils/customerLocationUtils';
 import { isStreetOrAddress, calculateDistanceMeters, resolveCommercialClosingTime } from '../../utils/placeUtils';
-import { firebasePlaceService } from '../../services/firebasePlaceService';
+import { placeService } from '../../services/placeService';
+import { ClaimRouteMap } from './ClaimRouteMap';
 import { getSavedLocation, saveLocationToStorage } from '../../utils/storage';
 import { tileCache } from '../../services/tileCache';
 import { formatLastSeen } from '../../utils/driverUtils';
 import { formatDriverLastSeen, isDriverStale } from '../../services/driverTrackingClient';
 import { formatPhotoUrl } from '../../services/apiAdapters';
-import { UserRole } from '../../data/authAccounts';
+import { UserRole } from '../../types/auth';
 import { filterPlacesBySequence } from '../../utils/orderSequence';
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
+import { fetchMultiStopRoute } from '../../services/routingService';
 import { getPlaceCalendarDate, isDateInInterval } from '../../utils/dateFilterUtils';
-import { firebaseCompanyService } from '../../services/firebaseCompanyService';
+import { companyService } from '../../services/companyService';
 
 import { CachedTileLayer } from '../../services/tileCache';
 
@@ -277,17 +280,60 @@ const getVehicleInfo = (vehicleType?: string) => {
   };
 };
 
+const isCollectionCenterPlace = (place: Place): boolean =>
+  /central\s+de\s+coletas?/i.test(place.category || '') || Boolean((place as any).central_coletas);
+
+// Distância do motoboy até o local, em texto curto ("850 m" / "1,2 km")
+const formatClaimDistance = (
+  from: { lat: number; lng: number } | null | undefined,
+  to: { lat: number; lng: number } | null | undefined
+): string => {
+  if (!from || !to || !Number.isFinite(from.lat) || !Number.isFinite(to.lat)) return '';
+  const meters = calculateDistanceMeters(from, to);
+  if (!Number.isFinite(meters)) return '';
+  if (meters < 1000) return `${Math.max(10, Math.round(meters / 10) * 10)} m`;
+  return `${(meters / 1000).toFixed(1).replace('.', ',')} km`;
+};
+
+// Status do motorista exibido dentro da label da maker (admin/atendente/terminal): "Aceito por X" ou "X indo • distância"
+type DriverStatusInfo = { text: string; enRoute: boolean };
+const getDriverStatusInfo = (places: Place[], liveDrivers: Array<{ id: string; name?: string; coordinates: { lat: number; lng: number } }>): DriverStatusInfo | null => {
+  const assigned = places.filter(p => (p.assignedDriverId || p.assignedDriverName) && p.orderStage !== 'concluido' && !isCollectionCenterPlace(p));
+  if (assigned.length === 0) return null;
+  const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  if (assigned.length > 1) {
+    const going = assigned.filter(p => p.driverEnRoute).length;
+    return { text: `${assigned.length} aceitos${going ? ` • ${going} indo` : ''}`, enRoute: going > 0 };
+  }
+  const p = assigned[0];
+  const digits = (v?: string) => String(v || '').replace(/\D/g, '');
+  const live = liveDrivers.find(d => {
+    const a = digits(p.assignedDriverId);
+    return (a && digits(d.id) === a) || (p.assignedDriverName && d.name === p.assignedDriverName);
+  });
+  const name = escapeHtml(p.assignedDriverName || live?.name || 'Motorista');
+  if (p.driverEnRoute) {
+    const distance = live ? formatClaimDistance(live.coordinates, p.coordinates) : '';
+    return { text: `${name} indo${distance ? ` • ${distance}` : ''}`, enRoute: true };
+  }
+  return { text: `Aceito por ${name}`, enRoute: false };
+};
+
 // Place Marker com caixinha 3D ou Foto da Encomenda, risquinho fininho, xizinho na ponta e legenda translúcida
 export const createPlaceMarkerIcon = (
   place: Place, 
   isSelected: boolean = false, 
   placesAtLocation: Place[] = [place],
   customers: Customer[] = [],
-  isPublicForDriver: boolean = false
+  isPublicForDriver: boolean = false,
+  distanceLabel: string = '',
+  driverStatus: DriverStatusInfo | null = null,
+  hideLocationAlert: boolean = false
 ) => {
   const isMultiple = placesAtLocation.length > 1;
+  const isCollectionCenter = placesAtLocation.some(isCollectionCenterPlace);
   const opType: OperationType = place.operationType || 'entrega';
-  const isSingleMissing = !isMultiple && isCustomerMissingLocation(place, customers);
+  const isSingleMissing = !isMultiple && !isPublicForDriver && !hideLocationAlert && isCustomerMissingLocation(place, customers);
   
   let pinColor = '#FF5E00';
   let mainColor = '#FF5E00';
@@ -300,6 +346,43 @@ export const createPlaceMarkerIcon = (
   `;
   let opEmoji = '📦';
 
+  if (isPublicForDriver && !isCollectionCenter) {
+    const label = isMultiple ? `${placesAtLocation.length} pedidos` : 'Aceitar';
+    return L.divIcon({
+      className: 'public-claim-marker',
+      html: `
+        <style>
+          @keyframes claimArrowBounce { 0%,100% { transform: translateY(-4px); } 50% { transform: translateY(3px); } }
+          @keyframes claimPulse { 0% { transform: scale(1); opacity: .55; } 100% { transform: scale(1.4); opacity: 0; } }
+          @keyframes claimWiggle { 0%,100% { transform: rotate(0); } 25% { transform: rotate(-4deg); } 75% { transform: rotate(4deg); } }
+          @keyframes claimShadow { 0%,100% { transform: translateX(-50%) scale(0.7); opacity: .3; } 50% { transform: translateX(-50%) scale(1); opacity: .55; } }
+        </style>
+        <div style="position:relative;width:84px;height:92px;display:flex;flex-direction:column;align-items:center;cursor:pointer;">
+          <div style="position:absolute;left:50%;bottom:-4px;width:28px;height:9px;border-radius:50%;background:radial-gradient(ellipse at center,rgba(0,0,0,0.65) 0%,rgba(0,0,0,0.3) 55%,rgba(0,0,0,0) 100%);animation:claimShadow 0.9s ease-in-out infinite;pointer-events:none;"></div>
+          <div style="min-width:64px;max-width:84px;padding:3px 8px 4px;border-radius:9px;background:#FFFFFF;border:2px solid #DC2626;box-shadow:0 2px 6px rgba(0,0,0,0.35);text-align:center;line-height:1;">
+            <div style="font-size:9px;font-weight:900;letter-spacing:0.05em;text-transform:uppercase;color:#DC2626;white-space:nowrap;">${label}</div>
+            <div style="margin-top:2px;font-size:12px;font-weight:900;color:#0F172A;white-space:nowrap;">${distanceLabel || '🛵'}</div>
+          </div>
+          <div style="position:relative;width:46px;height:44px;margin-top:2px;animation:claimWiggle 2.4s ease-in-out infinite;">
+            <div style="position:absolute;inset:3px;border-radius:10px;background:#EF4444;animation:claimPulse 1.8s ease-out infinite;"></div>
+            <svg width="46" height="44" viewBox="0 0 64 62" style="position:absolute;inset:0;filter:drop-shadow(0 3px 4px rgba(127,29,29,0.55))${isSelected ? ' drop-shadow(0 0 4px rgba(254,202,202,0.95))' : ''};">
+              <path d="M32 3 L59 16 V44 L32 58 L5 44 V16 Z" fill="#DC2626" stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round" />
+              <path d="M5 16 L32 29 L59 16" fill="#EF4444" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" />
+              <path d="M32 29 V58" stroke="#FFFFFF" stroke-width="2" />
+              <path d="M18.5 9.5 L45.5 22.5" stroke="#FECACA" stroke-width="3.5" stroke-linecap="round" />
+            </svg>
+          </div>
+          <svg width="20" height="15" viewBox="0 0 34 26" style="margin-top:1px;animation:claimArrowBounce 0.9s ease-in-out infinite;filter:drop-shadow(0 3px 3px rgba(0,0,0,0.35));">
+            <path d="M4 3 L17 22 L30 3" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M4 3 L17 22 L30 3" fill="none" stroke="#DC2626" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
+      `,
+      iconSize: [84, 92],
+      iconAnchor: [42, 92],
+      popupAnchor: [0, -92]
+    });
+  }
   if (isPublicForDriver) {
     // Pedido Público Aberto visto por Motorista: Cor Dourada/Âmbar Chamativa com Raio ⚡
     pinColor = isSelected ? '#F59E0B' : '#D97706';
@@ -311,6 +394,17 @@ export const createPlaceMarkerIcon = (
       <!-- Símbolo de Raio Dourado para Pedido Público Disponível -->
       <circle cx="25" cy="18" r="5" fill="#FFFFFF" stroke="#B45309" stroke-width="0.9" />
       <path d="M 25.5 14.5 L 23.2 18 L 25.5 18 L 24.5 21.5 L 27.2 17.5 L 25 17.5 Z" fill="#D97706" stroke="#92400E" stroke-width="0.6" stroke-linejoin="round" />
+    `;
+  } else if (isCollectionCenter) {
+    pinColor = isSelected ? '#0F766E' : '#0D9488';
+    mainColor = isSelected ? '#2DD4BF' : '#14B8A6';
+    topLightColor = isSelected ? '#CCFBF1' : '#99F6E4';
+    darkColor = isSelected ? '#0F766E' : '#115E59';
+    opEmoji = '🏬';
+    symbolSvg = `
+      <circle cx="25" cy="18" r="5" fill="#FFFFFF" stroke="#115E59" stroke-width="0.9" />
+      <path d="M21.5 18 L25 15.5 L28.5 18 V21 H21.5 Z" fill="#0F766E" stroke="#115E59" stroke-width="0.7" stroke-linejoin="round" />
+      <path d="M23 19 H24.2 V21 H23 Z M25.8 19 H27 V20.2 H25.8 Z" fill="#FFFFFF" />
     `;
   } else if (isMultiple) {
     // Quando tiver mais de uma no lugar só: cor cinza, uma cor mais clara, cinza
@@ -412,7 +506,7 @@ export const createPlaceMarkerIcon = (
           opBorder = '#FDE68A';
         }
 
-        const isLineMissing = isCustomerMissingLocation(p, customers);
+        const isLineMissing = !isPublicForDriver && !hideLocationAlert && isCustomerMissingLocation(p, customers);
 
         return `
           <div 
@@ -534,14 +628,16 @@ export const createPlaceMarkerIcon = (
         </div>
 
         <!-- Etiqueta com Fundo Translúcido: NOME DO LOCAL EM CIMA, NOME DO CLIENTE EMBAIXO -->
-        <div class="place-marker-label ${isMultiple ? 'type-multiple is-multiple' : `type-${opType}`} ${placePhoto ? 'has-photo' : 'no-photo'}">
+        <div class="place-marker-label ${isMultiple ? 'type-multiple is-multiple' : `type-${opType}`} ${placePhoto && !driverStatus ? 'has-photo' : 'no-photo'}">
+          ${driverStatus ? '' : `
           <!-- BADGE FLUTUANTE NO CANTO SUPERIOR DIREITO -->
           <span class="place-marker-date-badge badge-${dateBadge.type}">
             ${dateBadge.iconSvg}
             <span>${dateBadge.label}</span>
           </span>
+          `}
 
-          ${placePhoto ? `
+          ${driverStatus ? '' : placePhoto ? `
             <!-- FOTO NO LUGAR DO ÍCONE DA LABEL: TOQUE PARA ABRIR CHEIA NA TELA -->
             <div class="place-marker-label-photo-thumb place-marker-photo-trigger" data-photo-url="${placePhoto}" title="Clique para abrir foto cheia na tela">
               <img src="${placePhoto}" alt="Foto da encomenda" class="place-marker-thumb-img" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=120&auto=format&fit=crop&q=70';" />
@@ -555,31 +651,42 @@ export const createPlaceMarkerIcon = (
 
           <div class="place-marker-text-group">
             <!-- 1. NOME DO LOCAL EM CIMA (EM DESTAQUE) -->
-            <div class="place-marker-header-row">
+            ${driverStatus ? '' : `<div class="place-marker-header-row">
               <span class="place-marker-place">${cleanPlaceName}</span>
-              ${isPublicForDriver
-                ? `<span class="place-marker-op-badge" style="background: linear-gradient(135deg, #F59E0B, #D97706); border: 1.2px solid #FDE68A; color: #FFFFFF; font-size: 9px; font-weight: 900; padding: 1.5px 5px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.02em;">⚡ DISPONÍVEL</span>`
+              ${isCollectionCenter
+                ? `<span class="place-marker-op-badge" style="background: linear-gradient(135deg, #0F766E, #115E59); border: 1.2px solid #99F6E4; color: #FFFFFF; font-size: 9px; font-weight: 900; padding: 1.5px 5px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.02em;">CENTRAL DE COLETA</span>`
+                : isPublicForDriver
+                ? `<span class="place-marker-op-badge" style="background: linear-gradient(135deg, #F59E0B, #D97706); border: 1.2px solid #FDE68A; color: #FFFFFF; font-size: 9px; font-weight: 900; padding: 1.5px 5px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.02em;">⚡ ${isMultiple ? `${placesAtLocation.length} PEDIDOS` : 'DISPONÍVEL'}</span>`
                 : isMultiple 
                 ? `<span class="place-marker-count-pill" style="background: #475569; border: 1px solid #CBD5E1; color: #ffffff; font-size: 9px; font-weight: 900; padding: 1px 6px; border-radius: 9999px;">${placesAtLocation.length} no local</span>` 
                 : `<span class="place-marker-op-badge" style="background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.45); border-radius: 4px; padding: 1px 4px; font-size: 9px; font-weight: 900; text-transform: uppercase;">${opType === 'coleta' ? 'Coleta' : opType === 'troca' ? 'Troca' : place.orderStage === 'retorno' ? 'Retorno' : 'Entrega'}</span>`
               }
             </div>
             <!-- 2. NOME DO CLIENTE EMBAIXO COM VEÍCULO NA FRENTE OU LISTAGEM COM FUNDO E BORDA -->
-            ${customerContentHtml}
+            ${customerContentHtml}`}
+            ${driverStatus ? `
+              <!-- Marker já direcionado a um motorista: label compacta só com o motorista -->
+              <div
+                class="place-marker-driver-status"
+                style="background: ${driverStatus.enRoute ? 'linear-gradient(135deg, #2563EB, #1D4ED8)' : 'linear-gradient(135deg, #10B981, #059669)'}; color: #FFFFFF; font-size: 11px; font-weight: 900; padding: 4px 9px; border-radius: 6px; display: flex; align-items: center; gap: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1.2px solid ${driverStatus.enRoute ? '#93C5FD' : '#6EE7B7'}; letter-spacing: 0.02em; white-space: nowrap; width: fit-content; max-width: 230px; overflow: hidden; text-overflow: ellipsis;"
+              >
+                <span>${driverStatus.enRoute ? '🛵' : '✔'} ${driverStatus.text}</span>
+              </div>
+            ` : ''}
             ${isPublicForDriver ? `
               <!-- AVISO DE CONFIRMAÇÃO DO MOTORISTA -->
               <div 
                 class="place-marker-claim-prompt" 
                 style="background: linear-gradient(135deg, #10B981, #059669); color: #FFFFFF; font-size: 9.5px; font-weight: 900; padding: 2.5px 7px; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 4px; margin-top: 3.5px; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1.2px solid #6EE7B7; text-transform: uppercase; letter-spacing: 0.02em;"
               >
-                <span>⚡ TOQUE P/ CONFIRMAR E ASSUMIR</span>
+                <span>⚡ ${isMultiple ? 'TOQUE PARA ESCOLHER O PEDIDO' : 'TOQUE PARA ACEITAR O PEDIDO'}</span>
               </div>
             ` : ''}
           </div>
         </div>
       </div>
     `,
-    iconSize: [360, isMultiple ? (placesAtLocation.length > 2 ? 120 : 96) : (isPublicForDriver ? 104 : isSingleMissing ? 96 : 74)],
+    iconSize: [360, driverStatus ? 54 : (isMultiple ? (placesAtLocation.length > 2 ? 120 : 96) : (isPublicForDriver ? 104 : isSingleMissing ? 96 : 74))],
     iconAnchor: [19, 43],
     popupAnchor: [0, -43]
   });
@@ -767,29 +874,32 @@ export const get3DVehicleSvg = (
             <rect x="29.5" y="10" width="5" height="12" rx="2.5" fill="#0F172A" stroke="#CBD5E1" stroke-width="0.8" />
             <rect x="30.5" y="12" width="3" height="7" rx="1.5" fill="#64748B" />
 
-            <!-- Guidão e Retrovisores -->
-            <path d="M 20 22 L 44 22" stroke="#334155" stroke-width="2.5" stroke-linecap="round" />
-            <circle cx="19" cy="20" r="2.2" fill="#94A3B8" stroke="#1E293B" stroke-width="1" />
-            <circle cx="45" cy="20" r="2.2" fill="#94A3B8" stroke="#1E293B" stroke-width="1" />
+            <!-- Pneu traseiro aparecendo sob o baú -->
+            <rect x="29.5" y="52" width="5" height="11" rx="2.5" fill="#0F172A" stroke="#CBD5E1" stroke-width="0.8" />
+
+            <!-- Guidão, punhos e braços do piloto -->
+            <path d="M 20 22 L 44 22" stroke="#1E293B" stroke-width="3" stroke-linecap="round" />
+            <circle cx="19" cy="20" r="2.4" fill="#CBD5E1" stroke="#1E293B" stroke-width="1" />
+            <circle cx="45" cy="20" r="2.4" fill="#CBD5E1" stroke="#1E293B" stroke-width="1" />
+            <path d="M 25 29 L 20.5 22 M 39 29 L 43.5 22" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" />
+            <path d="M 25 29 L 20.5 22 M 39 29 L 43.5 22" stroke="#1E293B" stroke-width="1.8" stroke-linecap="round" />
             <!-- Farol Central -->
             <circle cx="32" cy="18" r="3" fill="#FEF08A" stroke="#F59E0B" stroke-width="1.2" />
 
             <!-- Chassi / Tanque -->
-            <path d="M 27 23 L 37 23 L 36 34 L 28 34 Z" fill="${safeColor}" stroke="#FFFFFF" stroke-width="1" />
+            <path d="M 27 23 L 37 23 L 36 34 L 28 34 Z" fill="#334155" stroke="#FFFFFF" stroke-width="1" />
 
-            <!-- Piloto (Ombros e Capacete 3D com Viseira) -->
-            <ellipse cx="32" cy="29" rx="8.5" ry="4" fill="#334155" stroke="#1E293B" stroke-width="1" />
-            <circle cx="32" cy="28" r="6" fill="url(#moto-helmet-${uid})" stroke="#FFFFFF" stroke-width="1.2" />
-            <path d="M 29 25.5 Q 32 24 35 25.5" stroke="#38BDF8" stroke-width="2" stroke-linecap="round" />
+            <!-- Piloto (Ombros, mochila e Capacete com viseira) -->
+            <ellipse cx="32" cy="30" rx="9" ry="4.5" fill="#1E293B" stroke="#FFFFFF" stroke-width="1.2" />
+            <circle cx="32" cy="28" r="6.2" fill="${safeColor}" stroke="#FFFFFF" stroke-width="1.6" />
+            <path d="M 32 21.8 L 32 34" stroke="#FFFFFF" stroke-width="1.6" opacity="0.9" />
+            <path d="M 28.6 25.2 Q 32 23.6 35.4 25.2" stroke="#0F172A" stroke-width="2.2" stroke-linecap="round" />
 
             <!-- Baú de Carga Traseiro (3D) -->
-            <rect x="21" y="37" width="22" height="18" rx="3.5" fill="url(#moto-box-${uid})" stroke="#FFFFFF" stroke-width="1.5" />
-            <line x1="21" y1="42" x2="43" y2="42" stroke="rgba(255,255,255,0.7)" stroke-width="1" />
-            <rect x="29" y="52" width="6" height="3" rx="1" fill="#FEF08A" stroke="#B45309" stroke-width="0.8" />
-            <text x="32" y="49" font-size="7.5" font-weight="900" text-anchor="middle" fill="#FFFFFF" font-family="system-ui, -apple-system, sans-serif">EZ</text>
-
-            <!-- Lanterna Traseira Vermelha -->
-            <rect x="30" y="55.5" width="4" height="2" rx="1" fill="#EF4444" />
+            <rect x="21" y="37" width="22" height="16" rx="3.5" fill="url(#moto-box-${uid})" stroke="#FFFFFF" stroke-width="1.8" />
+            <line x1="21" y1="41.5" x2="43" y2="41.5" stroke="rgba(255,255,255,0.7)" stroke-width="1" />
+            <text x="32" y="50" font-size="8.5" font-weight="900" text-anchor="middle" fill="#FFFFFF" font-family="system-ui, -apple-system, sans-serif">EZ</text>
+            <rect x="29" y="52.4" width="6" height="2" rx="1" fill="#EF4444" />
           </g>
         </svg>
       </div>
@@ -1164,6 +1274,7 @@ export const FullscreenMap: React.FC = () => {
   const [markerSelectionModal, setMarkerSelectionModal] = useState<{
     placeName: string;
     places: Place[];
+    driverClaimMode?: boolean;
   } | null>(null);
   const [showDriverFocusHint, setShowDriverFocusHint] = useState(false);
 
@@ -1205,8 +1316,25 @@ export const FullscreenMap: React.FC = () => {
     customers,
     openCustomerLocationModal,
     dateRangeFilter,
-    claimPublicOrder
+    claimPublicOrder,
+    defaultNavApp,
+    setDefaultNavApp,
+    routeSelectMode,
+    routeSelectedIds,
+    toggleRouteSelection
   } = useMapStore();
+
+  const routeSelectModeRef = useRef(routeSelectMode);
+  routeSelectModeRef.current = routeSelectMode;
+  const toggleRouteSelectionRef = useRef(toggleRouteSelection);
+  toggleRouteSelectionRef.current = toggleRouteSelection;
+  const routeRingLayerRef = useRef<L.LayerGroup | null>(null);
+
+  // Diálogo de navegação ao tocar em uma Central de Coletas
+  const driversRef = useRef(drivers);
+  driversRef.current = drivers;
+  const [hubToNavigate, setHubToNavigate] = useState<{ name: string; address: string; lat: number; lng: number } | null>(null);
+  const [showHubNavChooser, setShowHubNavChooser] = useState(false);
 
   // Estados para confirmação do motorista ao assumir pedido público
   const [publicOrderToClaim, setPublicOrderToClaim] = useState<Place | null>(null);
@@ -1250,19 +1378,17 @@ export const FullscreenMap: React.FC = () => {
     if (!publicOrderToClaim) return;
     setIsClaiming(true);
     try {
-      await claimPublicOrder(publicOrderToClaim.id);
+      const won = await claimPublicOrder(publicOrderToClaim.id);
+      if (!won) {
+        setClaimToast('Este pedido já foi aceito por outro motorista.');
+        setTimeout(() => setClaimToast(null), 3500);
+        setPublicOrderToClaim(null);
+        return;
+      }
       setClaimToast(`Pedido aceito! Você é o responsável.`);
       setTimeout(() => setClaimToast(null), 3500);
 
-      const updatedPlace: Place = {
-        ...publicOrderToClaim,
-        assignedDriverId: user.id || 'usr-mot-04',
-        assignedDriverName: user.name || 'Motorista Parceiro',
-        assignedDriverPhone: user.phone,
-        orderVisibility: 'privado'
-      };
-
-      setSelectedPlace(updatedPlace);
+      // Ao aceitar, apenas fecha o diálogo: não abre os detalhes do pedido
       setPublicOrderToClaim(null);
 
       if (typeof window !== 'undefined' && (window as any).AndroidApp) {
@@ -1361,9 +1487,9 @@ export const FullscreenMap: React.FC = () => {
       const curOps = operationsFilterRef.current;
       const initialOp: OperationType = curOps.coleta ? 'coleta' : curOps.entrega ? 'entrega' : curOps.troca ? 'troca' : 'coleta';
 
-      // 1. SNAPPING INTELIGENTE EM LOCAL CADASTRADO NO FIREBASE (<= 45 metros)
+      // 1. SNAPPING INTELIGENTE EM LOCAL CADASTRADO (<= 45 metros)
       try {
-        const nearbyFb = firebasePlaceService.getClosestLocalSync(coords.lat, coords.lng, 45);
+        const nearbyFb = placeService.getClosestLocalSync(coords.lat, coords.lng, 45);
         if (nearbyFb && nearbyFb.local) {
           const l = nearbyFb.local;
           const fullAddr = l.endereco || [l.rua, l.numero, l.setor, l.cidade].filter(Boolean).join(', ') || l.name;
@@ -1413,7 +1539,7 @@ export const FullscreenMap: React.FC = () => {
           return;
         }
       } catch (err) {
-        console.warn('Erro ao verificar local próximo no Firebase:', err);
+        console.warn('Erro ao verificar local próximo:', err);
       }
 
       // 2. SNAPPING INTELIGENTE EM CLIENTE COM LOCALIZAÇÃO CADASTRADA (<= 45 metros)
@@ -1694,7 +1820,7 @@ export const FullscreenMap: React.FC = () => {
     // - Pedidos e encomendas são filtrados por empresa (Master Admin 62996157340 vê tudo).
     // - Motoboys vêem apenas os pedidos das empresas que os autorizarem.
     const companyFilteredPlaces = Array.from(rawPlacesMap.values()).filter(p => 
-      firebaseCompanyService.canUserAccessPlace(p, user?.phone, currentRole)
+      companyService.canUserAccessPlace(p, user?.phone, currentRole)
     );
 
     // Regra Estrita de Sequência EncomendasZap:
@@ -1718,12 +1844,11 @@ export const FullscreenMap: React.FC = () => {
       }
     });
 
-    // Agrupamento por localização (mesmas coordenadas exatas e mesmo nome de local)
+    // Agrupa pedidos no mesmo ponto mesmo quando o nome do local varia entre registros.
     const getGroupKey = (p: Place): string => {
       const latRounded = Math.round(p.coordinates.lat * 10000) / 10000;
       const lngRounded = Math.round(p.coordinates.lng * 10000) / 10000;
-      const cleanName = (p.name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-      return `${latRounded}_${lngRounded}_${cleanName}`;
+      return `${latRounded}_${lngRounded}`;
     };
 
     const locationGroupsMap = new Map<string, Place[]>();
@@ -1809,12 +1934,16 @@ export const FullscreenMap: React.FC = () => {
       }
 
       const isSelected = placesAtLocation.some(p => p.id === selectedPlace?.id);
-      const isPublicForDriver = isDriverRole && realtimeAssignmentService.isPublicOrder(place);
-      const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customers, isPublicForDriver);
+          const isPublicForDriver = isDriverRole && placesAtLocation.some(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
+      const distanceLabel = isPublicForDriver ? formatClaimDistance(userLocationRef.current, place.coordinates) : '';
+      const driverStatus = isDriverRole ? null : getDriverStatusInfo(placesAtLocation, driversRef.current);
+      const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customers, isPublicForDriver, distanceLabel, driverStatus, isDriverRole);
 
       if (placeMarkersRef.current.has(place.id)) {
         const marker = placeMarkersRef.current.get(place.id)!;
         marker.setIcon(icon);
+        (marker as any)._driverStatusText = driverStatus?.text || '';
+        (marker as any)._distanceLabel = distanceLabel;
         marker.setLatLng([place.coordinates.lat, place.coordinates.lng]);
         marker.setZIndexOffset(isPublicForDriver ? 600 : isSelected ? 500 : 100);
         (marker as any)._customPlaceData = place;
@@ -1829,6 +1958,8 @@ export const FullscreenMap: React.FC = () => {
         (marker as any)._customPlaceData = place;
         (marker as any)._customPlacesAtLocation = placesAtLocation;
         (marker as any)._isPublicForDriver = isPublicForDriver;
+        (marker as any)._distanceLabel = distanceLabel;
+        (marker as any)._driverStatusText = driverStatus?.text || '';
 
         marker.on('click', (e) => {
           L.DomEvent.stopPropagation(e);
@@ -1839,6 +1970,13 @@ export const FullscreenMap: React.FC = () => {
 
           const currentPlace = (marker as any)._customPlaceData || place;
           const currentGroup: Place[] = (marker as any)._customPlacesAtLocation || [currentPlace];
+
+          // Modo "Passar rota": o clique apenas marca/desmarca os locais deste marcador
+          if (routeSelectModeRef.current) {
+            const ids = currentGroup.filter(p => !isCollectionCenterPlace(p)).map(p => p.id);
+            if (ids.length > 0) toggleRouteSelectionRef.current(ids);
+            return;
+          }
 
           // Se clicou no botão de alerta para cadastrar localização do cliente
           const alertTarget = (e.originalEvent?.target as HTMLElement)?.closest('[data-action="set-customer-location"]');
@@ -1855,10 +1993,21 @@ export const FullscreenMap: React.FC = () => {
             return;
           }
 
-          // Se for motorista e a corrida for pública/aberta, solicita confirmação para assumir o pedido!
-          if (isDriverRole && realtimeAssignmentService.isPublicOrder(currentPlace)) {
-            setPublicOrderToClaim(currentPlace);
-            return;
+          // Em locais compartilhados, o motorista escolhe qual pedido público deseja aceitar.
+          if (isDriverRole) {
+            const availablePublicPlaces = currentGroup.filter(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
+            if (availablePublicPlaces.length > 0) {
+              if (currentGroup.length > 1) {
+                setMarkerSelectionModal({
+                  placeName: currentPlace.name || 'Local',
+                  places: currentGroup,
+                  driverClaimMode: true
+                });
+              } else {
+                setPublicOrderToClaim(availablePublicPlaces[0]);
+              }
+              return;
+            }
           }
 
           // Quando tiver mais de uma encomenda no mesmo local (onmaker):
@@ -1900,11 +2049,60 @@ export const FullscreenMap: React.FC = () => {
     });
   }, [mapInstance, savedPlaces, allPlaces, selectedPlace, operationsFilter, flyToLocation, setSelectedPlace, openPhotoViewer, currentRole, completedWaypointMarks, customers, openCustomerLocationModal, dateRangeFilter]);
 
+  // Atualiza o status do motorista (aceito/indo + distância) dentro da label quando ele se move
+  useEffect(() => {
+    if (currentRole === 'motorista') return;
+    placeMarkersRef.current.forEach((marker) => {
+      const m = marker as any;
+      if (!m._customPlaceData || m._isPublicForDriver) return;
+      const status = getDriverStatusInfo(m._customPlacesAtLocation || [m._customPlaceData], drivers);
+      const text = status?.text || '';
+      if (text === (m._driverStatusText || '')) return;
+      m._driverStatusText = text;
+      marker.setIcon(createPlaceMarkerIcon(
+        m._customPlaceData,
+        selectedPlace?.id === m._customPlaceData.id,
+        m._customPlacesAtLocation || [m._customPlaceData],
+        customers,
+        false,
+        '',
+        status
+      ));
+    });
+  }, [drivers, currentRole, customers, selectedPlace?.id]);
+
+  // Atualiza a distância mostrada no botão "Aceitar" quando o GPS do motoboy muda
+  useEffect(() => {
+    placeMarkersRef.current.forEach((marker) => {
+      const m = marker as any;
+      if (!m._isPublicForDriver || !m._customPlaceData) return;
+      const label = formatClaimDistance(userLocation, m._customPlaceData.coordinates);
+      if (label === m._distanceLabel) return;
+      m._distanceLabel = label;
+      marker.setIcon(createPlaceMarkerIcon(
+        m._customPlaceData,
+        false,
+        m._customPlacesAtLocation || [m._customPlaceData],
+        customers,
+        true,
+        label
+      ));
+    });
+  }, [userLocation, customers]);
+
   // Sincroniza Marcadores de Baixa no Solo (Apenas um 'X' - e ao clicar abre label com detalhes, fotos, motorista e horário)
   useEffect(() => {
     if (!mapInstance) return;
 
-    const currentMarkIds = new Set(completedWaypointMarks.map(m => m.id));
+    // Só mostra as baixas feitas pelo próprio usuário logado (nunca as de outros usuários)
+    const myId = user?.id ? String(user.id).replace(/\D/g, '') : '';
+    const myName = (user?.name || '').trim().toLowerCase();
+    const ownMarks = currentRole === 'admin_geral' ? completedWaypointMarks : completedWaypointMarks.filter(m => {
+      if (m.driverId) return Boolean(myId) && String(m.driverId).replace(/\D/g, '') === myId;
+      return Boolean(myName) && (m.driverName || '').trim().toLowerCase() === myName;
+    });
+
+    const currentMarkIds = new Set(ownMarks.map(m => m.id));
 
     // Remove marcadores antigos excluídos
     completedMarkersRef.current.forEach((marker, id) => {
@@ -1919,7 +2117,7 @@ export const FullscreenMap: React.FC = () => {
     const hasDateFilter = Boolean(dateRangeFilter.startDate || dateRangeFilter.endDate);
 
     // Renderiza cada marcação com APENAS UM 'X' no chão
-    completedWaypointMarks.forEach((mark) => {
+    ownMarks.forEach((mark) => {
       const markDate = (mark.completedDate || '').slice(0, 10);
 
       // Regra EncomendasZap estrita:
@@ -1953,16 +2151,21 @@ export const FullscreenMap: React.FC = () => {
         const completedIcon = L.divIcon({
           className: 'completed-waypoint-x-marker',
           html: `
-            <div class="completed-x-marker-wrap" style="position: relative; display: flex; align-items: center; justify-content: center; width: 20px; height: 20px; cursor: pointer; transition: transform 0.15s ease;" title="${opLabel} às ${mark.timeStr || ''} • Clique para ver detalhes e fotos">
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" style="filter: drop-shadow(0 1.5px 3px rgba(0,0,0,0.35));">
-                <ellipse cx="10" cy="11.5" rx="6" ry="2" fill="rgba(0, 0, 0, 0.2)" />
-                <circle cx="10" cy="10" r="7.5" fill="#FFFFFF" stroke="${opColor}" stroke-width="2" />
-                <path d="M 6.8 6.8 L 13.2 13.2 M 6.8 13.2 L 13.2 6.8" stroke="${opColor}" stroke-width="2.2" stroke-linecap="round" />
+            <div class="completed-x-marker-wrap" style="position: relative; display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; cursor: pointer; transition: transform 0.15s ease;" title="${opLabel} às ${mark.timeStr || ''} • Clique para ver detalhes e fotos">
+              <svg width="34" height="34" viewBox="0 0 34 34" fill="none" style="filter: drop-shadow(0 2px 4px rgba(0,0,0,0.45));">
+                <ellipse cx="17" cy="30" rx="9" ry="2.6" fill="rgba(0, 0, 0, 0.25)" />
+                <path d="M17 4 L28 9.5 V21.5 L17 27 L6 21.5 V9.5 Z" fill="${opColor}" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" />
+                <path d="M6 9.5 L17 15 L28 9.5 M17 15 V27" stroke="#FFFFFF" stroke-opacity="0.75" stroke-width="1.4" stroke-linejoin="round" />
+                <path d="M11.5 7 L22.5 12.5" stroke="#FFFFFF" stroke-opacity="0.75" stroke-width="1.4" />
+                <circle cx="26" cy="9" r="6" fill="#FFFFFF" stroke="${opColor}" stroke-width="1.6" />
+                ${isFailed
+                  ? `<path d="M23.4 6.4 L28.6 11.6 M23.4 11.6 L28.6 6.4" stroke="${opColor}" stroke-width="2" stroke-linecap="round" />`
+                  : `<path d="M23.2 9.2 L25.3 11.2 L28.9 6.9" stroke="${opColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />`}
               </svg>
             </div>
           `,
-          iconSize: [20, 20],
-          iconAnchor: [10, 10]
+          iconSize: [34, 34],
+          iconAnchor: [17, 24]
         });
 
         // 2. FOTOS DA COLETA / BAIXA
@@ -2045,8 +2248,14 @@ export const FullscreenMap: React.FC = () => {
 
         const marker = L.marker([mark.coordinates.lat, mark.coordinates.lng], {
           icon: completedIcon,
-          zIndexOffset: 60
+          zIndexOffset: 60,
+          opacity: 0.55
         }).addTo(mapInstance);
+
+        marker.on('mouseover', () => marker.setOpacity(1));
+        marker.on('mouseout', () => marker.setOpacity(0.55));
+        marker.on('popupopen', () => marker.setOpacity(1));
+        marker.on('popupclose', () => marker.setOpacity(0.55));
 
         marker.bindPopup(popupContent, {
           className: 'completed-coleta-popup',
@@ -2063,7 +2272,65 @@ export const FullscreenMap: React.FC = () => {
         completedMarkersRef.current.set(mark.id, marker);
       }
     });
-  }, [mapInstance, completedWaypointMarks, dateRangeFilter]);
+  }, [mapInstance, completedWaypointMarks, dateRangeFilter, user?.id, user?.name, currentRole]);
+
+  // Marcadores fixos de galpão para todas as Centrais de Coletas (uma só por local, mesmo se várias cidades usarem a mesma)
+  useEffect(() => {
+    if (!mapInstance) return;
+    const layer = L.layerGroup().addTo(mapInstance);
+    let cancelled = false;
+
+    const loadCentrals = async () => {
+      try {
+        const res = await placeService.getLocais({ central_coletas: true, limit: 1000 });
+        if (cancelled || !res.success || !Array.isArray(res.data)) return;
+        layer.clearLayers();
+        const seen = new Set<string>();
+        res.data.forEach((local: any) => {
+          const lat = Number(local.lat);
+          const lng = Number(local.lng);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng) || (lat === 0 && lng === 0)) return;
+          const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          const name = String(local.name || 'Central de Coletas').replace(/[<>&"]/g, '');
+          const icon = L.divIcon({
+            className: 'collection-hub-marker',
+            iconSize: [140, 78],
+            iconAnchor: [70, 76],
+            html: `
+              <div style="display:flex;flex-direction:column;align-items:center;width:140px;pointer-events:auto;">
+                <div style="max-width:140px;background:#0F766E;color:#FFFFFF;padding:2px 7px;border-radius:6px;border:1px solid #99F6E4;box-shadow:0 1px 3px rgba(0,0,0,0.3);text-align:center;line-height:1.15;">
+                  <div style="font-size:8.5px;font-weight:900;text-transform:uppercase;letter-spacing:0.03em;white-space:nowrap;opacity:0.9;">Central de Coletas</div>
+                  <div style="font-size:10px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
+                </div>
+                <div style="margin-top:3px;width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,#14B8A6,#0F766E);border:2px solid #FFFFFF;box-shadow:0 2px 6px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;">
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-5 9 5v12"/><path d="M7 21v-8h10v8"/><path d="M7 16h10M7 18.5h10"/></svg>
+                </div>
+                <div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid #0F766E;margin-top:-1px;filter:drop-shadow(0 1px 1px rgba(0,0,0,0.3));"></div>
+              </div>
+            `
+          });
+          L.marker([lat, lng], { icon, zIndexOffset: 40 })
+            .on('click', () => {
+              setShowHubNavChooser(false);
+              setHubToNavigate({ name, address: String(local.endereco || ''), lat, lng });
+            })
+            .addTo(layer);
+        });
+      } catch (err) {
+        console.warn('Erro ao carregar centrais de coleta:', err);
+      }
+    };
+
+    loadCentrals();
+    const interval = window.setInterval(loadCentrals, 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      mapInstance.removeLayer(layer);
+    };
+  }, [mapInstance]);
 
   // Sincroniza Marcadores dos Motoristas (com mascotes em moto e carro, cores exclusivas e tag com nome)
   useEffect(() => {
@@ -2155,6 +2422,109 @@ export const FullscreenMap: React.FC = () => {
     });
   }, [mapInstance, drivers, selectedDriver, vehicleFilter, flyToLocation, setSelectedDriver, currentRole]);
 
+  // Selo "Aceito por" nas makers para admin/atendente/terminal; com "Indo" + distância quando o motorista clicou no GPS
+  const claimBadgeLayerRef = useRef<L.LayerGroup | null>(null);
+  const enRouteLinesRef = useRef<Map<string, { line: L.Polyline; lat: number; lng: number; at: number }>>(new Map());
+
+  useEffect(() => {
+    if (!mapInstance) return;
+    const layer = L.layerGroup().addTo(mapInstance);
+    claimBadgeLayerRef.current = layer;
+    const lines = enRouteLinesRef.current;
+    return () => {
+      mapInstance.removeLayer(layer);
+      lines.forEach(entry => mapInstance.removeLayer(entry.line));
+      lines.clear();
+      claimBadgeLayerRef.current = null;
+    };
+  }, [mapInstance]);
+
+  // Anéis laranjas nos marcadores selecionados no modo "Passar rota"
+  useEffect(() => {
+    if (!mapInstance) return;
+    if (!routeRingLayerRef.current) routeRingLayerRef.current = L.layerGroup().addTo(mapInstance);
+    const layer = routeRingLayerRef.current;
+    layer.clearLayers();
+    if (!routeSelectMode) return;
+    const byId = new Map<string, Place>();
+    [...(allPlaces || []), ...(savedPlaces || [])].forEach(p => byId.set(p.id, p));
+    const seen = new Set<string>();
+    routeSelectedIds.forEach(id => {
+      const p = byId.get(id);
+      if (!p?.coordinates) return;
+      const key = `${p.coordinates.lat.toFixed(5)},${p.coordinates.lng.toFixed(5)}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      L.circleMarker([p.coordinates.lat, p.coordinates.lng], {
+        radius: 30,
+        color: '#FF5E00',
+        weight: 4,
+        fillColor: '#FF5E00',
+        fillOpacity: 0.18,
+        interactive: false
+      }).addTo(layer);
+    });
+  }, [mapInstance, routeSelectMode, routeSelectedIds, allPlaces, savedPlaces]);
+
+  useEffect(() => {
+    const layer = claimBadgeLayerRef.current;
+    if (!mapInstance || !layer) return;
+    layer.clearLayers();
+
+    const lines = enRouteLinesRef.current;
+    if (currentRole === 'motorista') {
+      lines.forEach(entry => mapInstance.removeLayer(entry.line));
+      lines.clear();
+      return;
+    }
+
+    const digits = (v?: string) => String(v || '').replace(/\D/g, '');
+    const activeLineIds = new Set<string>();
+
+    allPlaces.forEach((place) => {
+      if (!place.assignedDriverId && !place.assignedDriverName) return;
+      if (place.orderStage === 'concluido' || isCollectionCenterPlace(place)) return;
+
+      const live = drivers.find(d => {
+        const a = digits(place.assignedDriverId);
+        return (a && digits(d.id) === a) || (place.assignedDriverName && d.name === place.assignedDriverName);
+      });
+      const enRoute = Boolean(place.driverEnRoute);
+
+      // Rota do motorista até o local: só depois que ele clicou no GPS
+      if (enRoute && live) {
+        activeLineIds.add(place.id);
+        const cached = lines.get(place.id);
+        const moved = cached ? calculateDistanceMeters({ lat: cached.lat, lng: cached.lng }, live.coordinates) : Infinity;
+        if (!cached || (moved > 120 && Date.now() - cached.at > 15000)) {
+          const from = { lat: live.coordinates.lat, lng: live.coordinates.lng };
+          const apply = (coords: Array<{ lat: number; lng: number }>) => {
+            const latlngs = coords.map(c => [c.lat, c.lng] as [number, number]);
+            const existing = enRouteLinesRef.current.get(place.id);
+            if (existing) existing.line.setLatLngs(latlngs);
+            else {
+              const line = L.polyline(latlngs, { color: '#2563EB', weight: 5, opacity: 0.85, dashArray: '1 9', lineCap: 'round' }).addTo(mapInstance);
+              enRouteLinesRef.current.set(place.id, { line, lat: from.lat, lng: from.lng, at: Date.now() });
+            }
+            const entry = enRouteLinesRef.current.get(place.id);
+            if (entry) { entry.lat = from.lat; entry.lng = from.lng; entry.at = Date.now(); }
+          };
+          apply([from, place.coordinates]);
+          fetchMultiStopRoute([from, place.coordinates]).then(res => {
+            if (res && res.coordinates.length > 1 && enRouteLinesRef.current.has(place.id)) apply(res.coordinates);
+          }).catch(() => {});
+        }
+      }
+    });
+
+    lines.forEach((entry, id) => {
+      if (!activeLineIds.has(id)) {
+        mapInstance.removeLayer(entry.line);
+        lines.delete(id);
+      }
+    });
+  }, [mapInstance, allPlaces, drivers, currentRole]);
+
   // Sync selectedPlace marker position (for arbitrary clicks on map)
   useEffect(() => {
     if (!mapInstance) return;
@@ -2177,7 +2547,7 @@ export const FullscreenMap: React.FC = () => {
     }
 
     const { lat, lng } = selectedPlace.coordinates;
-    const markerIcon = createPlaceMarkerIcon(selectedPlace, true, [selectedPlace], customers);
+    const markerIcon = createPlaceMarkerIcon(selectedPlace, true, [selectedPlace], customers, false, '', null, currentRole === 'motorista');
 
     if (markerRef.current) {
       markerRef.current.setLatLng([lat, lng]);
@@ -2217,7 +2587,7 @@ export const FullscreenMap: React.FC = () => {
         }
       });
     }
-  }, [selectedPlace, mapInstance, customers, openCustomerLocationModal]);
+  }, [selectedPlace, mapInstance, customers, openCustomerLocationModal, currentRole]);
 
   // Sync Street Route Highlighting (Vivid Royal & Navy Blue Street Polyline with Uber-style Animated Flow)
   useEffect(() => {
@@ -2462,10 +2832,12 @@ export const FullscreenMap: React.FC = () => {
                     <span className="truncate">{markerSelectionModal.placeName}</span>
                   </div>
                   <h3 className="text-base sm:text-lg font-black tracking-tight leading-snug">
-                    Qual encomenda você deseja acessar?
+                    {markerSelectionModal.driverClaimMode ? 'Escolha o pedido para aceitar' : 'Qual encomenda você deseja acessar?'}
                   </h3>
                   <p className="text-xs text-slate-300 font-medium mt-0.5">
-                    Encomendas registradas neste mesmo local. Toque para abrir:
+                    {markerSelectionModal.driverClaimMode
+                      ? 'Há mais de um pedido neste ponto. Confira o cliente e a operação antes de aceitar.'
+                      : 'Encomendas registradas neste mesmo local. Toque para abrir:'}
                   </p>
                 </div>
 
@@ -2485,6 +2857,8 @@ export const FullscreenMap: React.FC = () => {
               {markerSelectionModal.places.map((p, idx) => {
                 const pVeh = getVehicleInfo(p.vehicleType);
                 const op = p.operationType || 'entrega';
+                const isCollectionCenter = isCollectionCenterPlace(p);
+                const isPublicForDriver = Boolean(markerSelectionModal.driverClaimMode && !isCollectionCenter && realtimeAssignmentService.isPublicOrder(p));
                 const isColeta = op === 'coleta';
                 const isTroca = op === 'troca';
                 const isRetorno = p.orderStage === 'retorno';
@@ -2504,6 +2878,10 @@ export const FullscreenMap: React.FC = () => {
                     key={p.id || idx}
                     onClick={() => {
                       setMarkerSelectionModal(null);
+                      if (isPublicForDriver) {
+                        setPublicOrderToClaim(p);
+                        return;
+                      }
                       setSelectedPlace(p);
                     }}
                     className="p-3 sm:p-3.5 bg-white hover:bg-sky-50/50 rounded-2xl border-2 border-slate-200 hover:border-[#0B5187] shadow-xs hover:shadow-md transition-all cursor-pointer group active:scale-[0.98] flex flex-col gap-2"
@@ -2526,6 +2904,12 @@ export const FullscreenMap: React.FC = () => {
                       {p.orderCode && (
                         <span className="text-[10px] font-mono font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
                           {p.orderCode}
+                        </span>
+                      )}
+                      {isPublicForDriver && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-black uppercase text-amber-800 ring-1 ring-amber-200">
+                          <Zap className="h-3 w-3 fill-current" />
+                          Público
                         </span>
                       )}
                     </div>
@@ -2567,7 +2951,7 @@ export const FullscreenMap: React.FC = () => {
                     </div>
 
                     {/* Alerta: Cliente sem localização cadastrada */}
-                    {isCustomerMissingLocation(p, customers) && (
+                    {!isPublicForDriver && isCustomerMissingLocation(p, customers) && (
                       <div 
                         onClick={(e) => {
                           e.stopPropagation();
@@ -2596,11 +2980,11 @@ export const FullscreenMap: React.FC = () => {
                     {/* Barra de ação dentro do card */}
                     <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
                       <span className="text-[10px] font-bold text-slate-400">
-                        Toque para abrir detalhes
+                        {isPublicForDriver ? 'Disponível para você' : isCollectionCenter ? 'Ponto de operação' : 'Toque para abrir detalhes'}
                       </span>
-                      <span className="inline-flex items-center gap-1 text-xs font-black text-[#0B5187] group-hover:translate-x-0.5 transition-transform">
-                        <span>Acessar</span>
-                        <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <span className={`inline-flex items-center gap-1 text-xs font-black transition-transform group-hover:translate-x-0.5 ${isPublicForDriver ? 'text-emerald-700' : 'text-[#0B5187]'}`}>
+                        <span>{isPublicForDriver ? 'Aceitar pedido' : 'Acessar'}</span>
+                        {isPublicForDriver ? <Check className="h-3.5 w-3.5 stroke-[3]" /> : <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />}
                       </span>
                     </div>
                   </div>
@@ -2617,6 +3001,90 @@ export const FullscreenMap: React.FC = () => {
               >
                 Fechar
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DIÁLOGO DE NAVEGAÇÃO ATÉ A CENTRAL DE COLETAS */}
+      {hubToNavigate && (
+        <div
+          className="fixed inset-0 z-[140] bg-slate-950/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-5 animate-in fade-in duration-200"
+          onClick={() => { setHubToNavigate(null); setShowHubNavChooser(false); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-sm overflow-visible rounded-t-[28px] sm:rounded-[28px] bg-white shadow-2xl text-slate-900 p-5"
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-teal-400 to-teal-700 text-white flex items-center justify-center shrink-0">
+                <Building2 className="w-6 h-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-black uppercase tracking-wide text-teal-700">Central de Coletas</p>
+                <h3 className="text-base font-black leading-tight truncate">{hubToNavigate.name}</h3>
+                {hubToNavigate.address && <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{hubToNavigate.address}</p>}
+              </div>
+              <button
+                type="button"
+                onClick={() => { setHubToNavigate(null); setShowHubNavChooser(false); }}
+                className="w-7 h-7 rounded-full hover:bg-slate-100 text-slate-400 flex items-center justify-center cursor-pointer"
+                aria-label="Fechar"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="relative mt-4">
+              {showHubNavChooser && (
+                <div className="absolute bottom-14 right-0 z-10 w-full bg-white rounded-2xl shadow-2xl border border-slate-200 p-2.5 space-y-2 animate-in zoom-in-95 fade-in duration-150">
+                  {(['google_maps', 'waze'] as const).map((app) => (
+                    <button
+                      key={app}
+                      type="button"
+                      onClick={() => {
+                        setDefaultNavApp(app);
+                        setShowHubNavChooser(false);
+                      }}
+                      className={`w-full flex items-center gap-3 p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
+                        defaultNavApp === app ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-400' : 'bg-white border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {app === 'google_maps' ? <GoogleMapsIcon className="w-7 h-7 shrink-0" /> : <WazeIcon className="w-7 h-7 shrink-0" />}
+                      <span className="text-xs font-black flex-1">{app === 'google_maps' ? 'Google Maps' : 'Waze'}</span>
+                      {defaultNavApp === app && (
+                        <span className="text-[9px] font-black bg-blue-600 text-white px-1.5 py-0.5 rounded-md">Padrão</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-center h-12 rounded-2xl bg-[#1A73E8] text-white shadow-md border border-blue-400/30 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => {
+                    openExternalNavigation(defaultNavApp || 'google_maps', hubToNavigate.lat, hubToNavigate.lng);
+                    setHubToNavigate(null);
+                  }}
+                  className="flex-1 h-full px-4 hover:bg-[#1557b0] font-black text-sm flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {defaultNavApp === 'waze' ? <WazeIcon className="w-5 h-5" /> : <GoogleMapsIcon className="w-5 h-5" />}
+                  <span>Navegar</span>
+                </button>
+                <div className="w-[1px] h-6 bg-white/30" />
+                <button
+                  type="button"
+                  onClick={() => setShowHubNavChooser(prev => !prev)}
+                  className="h-full px-3 hover:bg-[#1557b0] flex items-center justify-center cursor-pointer"
+                  title="Mudar aplicativo de navegação GPS (Google Maps / Waze)"
+                  aria-label="Escolher aplicativo de GPS"
+                >
+                  <ChevronDown className="w-4 h-4 stroke-[2.5]" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2701,6 +3169,12 @@ export const FullscreenMap: React.FC = () => {
                       {publicOrderToClaim.orderCode}
                     </span>
                   )}
+                  {formatClaimDistance(userLocation, publicOrderToClaim.coordinates) && (
+                    <span className="ml-auto inline-flex items-center gap-1 rounded-lg bg-emerald-100 px-2.5 py-1 text-[11px] font-black text-emerald-800">
+                      <MapPin className="h-3 w-3" />
+                      {formatClaimDistance(userLocation, publicOrderToClaim.coordinates)} de você
+                    </span>
+                  )}
                 </div>
 
                 <h3 className="mt-3 break-words text-xl font-black leading-snug text-slate-950 sm:text-2xl">
@@ -2731,7 +3205,50 @@ export const FullscreenMap: React.FC = () => {
                     </a>
                   )}
                 </div>
-            </div>
+
+                {(() => {
+                  const o = publicOrderToClaim;
+                  const details = [
+                    o.scheduledTime ? { k: 'Horário', v: `${o.scheduledTimeMode === 'partir' ? 'a partir das' : 'até'} ${o.scheduledTime}` } : null,
+                    o.packageSize ? { k: 'Tamanho', v: o.packageSize } : null,
+                    o.volumesCount ? { k: 'Volumes', v: String(o.volumesCount) } : null,
+                    o.weightKg ? { k: 'Peso', v: `${o.weightKg} kg` } : null,
+                    o.vehicleType ? { k: 'Veículo', v: String(o.vehicleType) } : null,
+                    o.originCity || o.destinationCity ? { k: 'Cidades', v: [o.originCity, o.destinationCity].filter(Boolean).join(' → ') } : null
+                  ].filter(Boolean) as Array<{ k: string; v: string }>;
+                  const notes = o.observations || o.driverNotes || o.pickupNotes || o.deliveryNotes;
+                  return (
+                    <>
+                      <ClaimRouteMap order={o} driverLocation={userLocation} />
+
+                      {details.length > 0 && (
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          {details.map(d => (
+                            <div key={d.k} className="rounded-xl bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
+                              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">{d.k}</p>
+                              <p className="break-words text-sm font-bold text-slate-900">{d.v}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {o.isFragile && (
+                        <div className="mt-3 flex items-center gap-2 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-700 ring-1 ring-red-200">
+                          <AlertTriangle className="h-4 w-4 shrink-0" />
+                          Frágil: manuseie com cuidado
+                        </div>
+                      )}
+
+                      {notes && (
+                        <div className="mt-3 rounded-xl bg-amber-50 px-3.5 py-3 ring-1 ring-amber-200">
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Observações</p>
+                          <p className="mt-0.5 break-words text-sm text-amber-900">{notes}</p>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
 
               <p className="mt-4 text-xs leading-relaxed text-slate-500">
                 Ao aceitar, o pedido ficará vinculado a você e deixará de aparecer para os outros motoristas.

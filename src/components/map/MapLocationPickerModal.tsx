@@ -25,7 +25,11 @@ interface MapLocationPickerModalProps {
   targetType: 'coleta' | 'entrega' | 'troca' | 'cliente';
   initialAddress?: string;
   initialCoords?: LocationCoordinates;
-  onConfirm: (result: { address: string; coordinates: LocationCoordinates }) => void;
+  onConfirm: (result: { address: string; coordinates: LocationCoordinates; name?: string }) => void | Promise<void>;
+  /** Oculta o selo do tipo ("Coleta") da barra superior */
+  hideTypeBadge?: boolean;
+  /** Texto do botão de confirmação (padrão: "Confirmar <tipo>") */
+  confirmLabel?: string;
 }
 
 const DEFAULT_COORDS: LocationCoordinates = { lat: -16.6869, lng: -49.2648 }; // Centro de Goiânia
@@ -36,10 +40,14 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
   targetType,
   initialAddress = '',
   initialCoords,
-  onConfirm
+  onConfirm,
+  hideTypeBadge = false,
+  confirmLabel
 }) => {
   useBackButton('map-location-picker', isOpen, onClose, 100);
 
+  const [isConfirming, setIsConfirming] = useState<boolean>(false);
+  const [selectedPlaceName, setSelectedPlaceName] = useState<string>('');
   const [address, setAddress] = useState<string>(initialAddress);
   const [coords, setCoords] = useState<LocationCoordinates>(initialCoords || DEFAULT_COORDS);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -122,6 +130,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
 
   // Atualiza endereço via coordenadas (reverse geocoding)
   const updateAddressFromCoords = useCallback(async (newCoords: LocationCoordinates) => {
+    setSelectedPlaceName('');
     setIsGeocoding(true);
     try {
       const place = await reverseGeocode(newCoords);
@@ -317,6 +326,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
   // Seleciona um resultado da busca
   const handleSelectSearchResult = (place: Place) => {
     setAddress(place.address || place.name);
+    setSelectedPlaceName(place.name || '');
     setCoords(place.coordinates);
     setSearchResults([]);
     setSearchQuery('');
@@ -410,13 +420,21 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
   };
 
   // Confirmar localização selecionada
-  const handleConfirmLocation = () => {
-    if (!address.trim()) return;
-    onConfirm({
-      address: address.trim(),
-      coordinates: coords
-    });
-    onClose();
+  const handleConfirmLocation = async () => {
+    if (!address.trim() || isConfirming) return;
+    setIsConfirming(true);
+    try {
+      await onConfirm({
+        address: address.trim(),
+        coordinates: coords,
+        name: selectedPlaceName || undefined
+      });
+      onClose();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Não foi possível salvar o local.');
+    } finally {
+      setIsConfirming(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -504,9 +522,11 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
             </button>
 
             {/* Badge do Tipo de Local */}
-            <span className={`text-[10px] sm:text-xs font-black px-2 py-1 rounded-lg border shrink-0 ${themeConfig.badgeBg}`}>
-              {themeConfig.label}
-            </span>
+            {!hideTypeBadge && (
+              <span className={`text-[10px] sm:text-xs font-black px-2 py-1 rounded-lg border shrink-0 ${themeConfig.badgeBg}`}>
+                {themeConfig.label}
+              </span>
+            )}
 
             {/* Fechar */}
             <button
@@ -622,12 +642,12 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
 
               <button
                 type="button"
-                disabled={!address.trim()}
-                onClick={handleConfirmLocation}
+                disabled={!address.trim() || isConfirming}
+                onClick={() => void handleConfirmLocation()}
                 className={`flex-1 py-2 px-4 rounded-xl text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-md active:scale-[0.98] disabled:opacity-50 ${themeConfig.bgClass} ${themeConfig.hoverBg}`}
               >
-                <Check className="w-4 h-4" />
-                <span>Confirmar {themeConfig.label}</span>
+                {isConfirming ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                <span>{confirmLabel || `Confirmar ${themeConfig.label}`}</span>
               </button>
             </div>
 

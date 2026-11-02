@@ -21,7 +21,7 @@ import { CachedTileLayer, PRIMARY_TILE_CONFIG } from '../../services/tileCache';
 import { Place, LocationCoordinates } from '../../types/map';
 import { Customer } from '../../types/customer';
 import { getCustomerForPlace, isUnnamedOrGenericPlace, getCustomerPlaceName } from '../../utils/customerLocationUtils';
-import { extractCityFromAddress } from '../../utils/addressUtils';
+import { extractCityFromAddress, normalizeCityName, resolveCustomerCity } from '../../utils/addressUtils';
 import { useBackButton } from '../../hooks/useBackButton';
 import { FloatingSearchBar } from '../search/FloatingSearchBar';
 
@@ -33,7 +33,7 @@ export const SetCustomerLocationModal: React.FC = () => {
     closeCustomerLocationModal,
     customers,
     updateCustomer,
-    addCustomer,
+    persistCustomer,
     updatePlaceDetails,
     selectedPlace,
     setSelectedPlace
@@ -94,9 +94,7 @@ export const SetCustomerLocationModal: React.FC = () => {
       const place = await reverseGeocode(newCoords);
       if (place && place.address) {
         setAddress(place.address);
-        const detectedCity = place.destinationCity?.split('-')[0]?.trim() || 
-                             place.originCity?.split('-')[0]?.trim() || 
-                             extractCityFromAddress(place.address);
+        const detectedCity = resolveCustomerCity(place);
         if (detectedCity) {
           setCity(detectedCity);
         }
@@ -125,13 +123,13 @@ export const SetCustomerLocationModal: React.FC = () => {
     if (targetPlace?.coordinates && targetPlace.coordinates.lat) {
       initialCoords = targetPlace.coordinates;
       initialAddr = targetPlace.address || targetPlace.name || '';
-      initialCity = targetPlace.destinationCity?.split('-')[0]?.trim() || targetPlace.originCity?.split('-')[0]?.trim() || extractCityFromAddress(initialAddr);
+      initialCity = resolveCustomerCity(targetPlace) || extractCityFromAddress(initialAddr);
     } else if (customerLocationModalData.customerId) {
       const found = customers.find(c => c.id === customerLocationModalData.customerId);
       if (found?.coordinates && found.coordinates.lat) {
         initialCoords = found.coordinates;
         initialAddr = found.address || '';
-        initialCity = found.city || found.cidade || extractCityFromAddress(initialAddr);
+        initialCity = resolveCustomerCity(found) || extractCityFromAddress(initialAddr);
       }
     }
 
@@ -269,9 +267,7 @@ export const SetCustomerLocationModal: React.FC = () => {
   const handleSelectSearchResult = (place: Place) => {
     const newCoords = place.coordinates;
     const newAddr = place.address || place.name;
-    const detectedCity = place.destinationCity?.split('-')[0]?.trim() || 
-                         place.originCity?.split('-')[0]?.trim() || 
-                         extractCityFromAddress(newAddr);
+    const detectedCity = resolveCustomerCity(place) || extractCityFromAddress(newAddr);
 
     setCoords(newCoords);
     setAddress(newAddr);
@@ -355,18 +351,20 @@ export const SetCustomerLocationModal: React.FC = () => {
   };
 
   // Salvar localização do cliente
-  const handleSaveLocation = () => {
+  const handleSaveLocation = async () => {
     if (!coords || !customerLocationModalData) return;
 
     const { customerName, customerPhone, placeId, place, customerId } = customerLocationModalData;
     const currentPlace = place || (placeId && selectedPlace?.id === placeId ? selectedPlace : null);
     const finalAddress = address.trim() || `${coords.lat.toFixed(6)}, ${coords.lng.toFixed(6)}`;
-    const finalCity = city?.trim() || extractCityFromAddress(finalAddress) || 'Goiânia';
+    const addressCity = resolveCustomerCity({ address: finalAddress });
+    const selectedCity = normalizeCityName(city) || resolveCustomerCity(currentPlace || {});
 
     // 1. Identificar se o cliente já existe no cadastro (por ID, place vinculado, telefone ou nome)
     let existingCustomer: Customer | null = null;
     if (customerId) {
-      existingCustomer = customers.find(c => c.id === customerId) || null;
+      const normalizedCustomerId = customerId.replace(/^db-user-/, '');
+      existingCustomer = customers.find(c => c.id.replace(/^db-user-/, '') === normalizedCustomerId) || null;
     }
     if (!existingCustomer && currentPlace) {
       existingCustomer = getCustomerForPlace(currentPlace, customers);
@@ -387,26 +385,39 @@ export const SetCustomerLocationModal: React.FC = () => {
       }
     }
 
+    const finalCity = addressCity || selectedCity || resolveCustomerCity(existingCustomer || {}) || 'Goiânia - GO';
+
     let savedCustomerId = existingCustomer?.id;
 
     // Atualiza ou adiciona o cliente
     if (existingCustomer) {
-      updateCustomer(existingCustomer.id, {
+      const saved = await updateCustomer(existingCustomer.id, {
         address: finalAddress,
         coordinates: coords,
         city: finalCity,
         cidade: finalCity
       });
+      if (!saved) {
+        showFeedback('Não foi possível gravar o endereço no banco. Verifique a conexão e tente novamente.');
+        return;
+      }
     } else {
-      const newCust = addCustomer({
+      const newCust: Customer = {
+        id: customerId?.replace(/^db-user-/, '') || `cust-${Date.now()}`,
         fullName: customerName || 'Cliente',
         phone: customerPhone || '',
         cpf: '',
         address: finalAddress,
         coordinates: coords,
         city: finalCity,
-        cidade: finalCity
-      });
+        cidade: finalCity,
+        createdAt: Date.now()
+      };
+      const saved = await persistCustomer(newCust);
+      if (!saved) {
+        showFeedback('Não foi possível gravar o cliente no banco. Verifique o telefone e tente novamente.');
+        return;
+      }
       savedCustomerId = newCust.id;
     }
 
@@ -440,7 +451,7 @@ export const SetCustomerLocationModal: React.FC = () => {
     }
 
     if (customerLocationModalData.onLocationSelected) {
-      customerLocationModalData.onLocationSelected(finalAddress, coords);
+      customerLocationModalData.onLocationSelected(finalAddress, coords, finalCity);
     }
 
     setSaveSuccess(true);
@@ -573,7 +584,7 @@ export const SetCustomerLocationModal: React.FC = () => {
                 </span>
                 {address && (
                   <span className="text-[10.5px] font-bold text-slate-500 truncate hidden xs:inline">
-                    📍 {extractCityFromAddress(address)}
+                    📍 {normalizeCityName(city) || extractCityFromAddress(address)}
                   </span>
                 )}
               </div>
@@ -686,7 +697,7 @@ export const SetCustomerLocationModal: React.FC = () => {
               onGetLocation={handleGetLocation}
               isLocating={isLocating}
               placeholder="Cole o link do Google Maps ou busque endereço..."
-              autoFocus={true}
+              autoFocus={Boolean(customerLocationModalData.autoFocusSearch)}
             />
           </div>
 

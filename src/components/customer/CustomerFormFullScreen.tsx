@@ -21,7 +21,8 @@ import {
 import { useMapStore } from '../../context/MapContext';
 import { Customer, AgendaContact, CustomerAddress } from '../../types/customer';
 import { Place } from '../../types/map';
-import { searchAddress } from '../../services/geocodingService';
+import { reverseGeocode, searchAddress } from '../../services/geocodingService';
+import { normalizeCityName, resolveCustomerCity } from '../../utils/addressUtils';
 import { useBackButton } from '../../hooks/useBackButton';
 
 interface CustomerFormFullScreenProps {
@@ -45,10 +46,12 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
 
   const { openCustomerLocationModal } = useMapStore();
 
+  const [contactName, setContactName] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [cpf, setCpf] = useState('');
   const [address, setAddress] = useState('');
+  const [city, setCity] = useState('');
   const [coordinates, setCoordinates] = useState<{ lat: number; lng: number } | undefined>();
   const [email, setEmail] = useState('');
   const [notes, setNotes] = useState('');
@@ -95,11 +98,17 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
 
       if (initialData) {
         // Se veio de um contato da agenda ou dados parciais
+        const isAgenda = 'source' in initialData && initialData.source === 'agenda';
         const nameVal = 'fullName' in initialData ? initialData.fullName : 'name' in initialData ? initialData.name : '';
-        setFullName(nameVal || '');
+        const contactVal = isAgenda
+          ? ('name' in initialData ? initialData.name : '')
+          : ('contactName' in initialData ? initialData.contactName : '') || nameVal;
+        setContactName(contactVal || '');
+        setFullName(isAgenda ? '' : nameVal || '');
         setPhone(initialData.phone || '');
         setEmail(initialData.email || '');
         setNotes(initialData.notes || '');
+        setCity(resolveCustomerCity(initialData) || '');
 
         if ('additionalAddresses' in initialData && Array.isArray(initialData.additionalAddresses)) {
           setAdditionalAddresses(initialData.additionalAddresses);
@@ -109,12 +118,19 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
 
         if ('address' in initialData && initialData.address) {
           setAddress(initialData.address);
+          if ('coordinates' in initialData && initialData.coordinates) {
+            setCoordinates(initialData.coordinates);
+          } else {
+            setCoordinates(undefined);
+          }
         } else if (selectedPlace?.address) {
           setAddress(selectedPlace.address);
           setCoordinates(selectedPlace.coordinates);
+          setCity(resolveCustomerCity(selectedPlace) || '');
         } else {
           setAddress('');
           setCoordinates(undefined);
+          setCity('');
         }
 
         if ('cpf' in initialData && initialData.cpf) {
@@ -123,15 +139,18 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
           setCpf('');
         }
       } else {
+        setContactName('');
         setFullName('');
         setPhone('');
         setCpf('');
         setEmail('');
         setNotes('');
+        setCity('');
         setAdditionalAddresses([]);
         if (selectedPlace?.address) {
           setAddress(selectedPlace.address);
           setCoordinates(selectedPlace.coordinates);
+          setCity(resolveCustomerCity(selectedPlace) || '');
         } else {
           setAddress('');
           setCoordinates(undefined);
@@ -147,8 +166,8 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
       if (customEvent.detail) {
         const { name, phone: pickedPhone } = customEvent.detail;
         if (name) {
-          setFullName(name);
-          setErrors(prev => ({ ...prev, fullName: '' }));
+          setContactName(name);
+          setErrors(prev => ({ ...prev, contactName: '' }));
         }
         if (pickedPhone) {
           setPhone(formatPhoneMask(pickedPhone));
@@ -195,6 +214,7 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
     if (selectedPlace) {
       setAddress(selectedPlace.address);
       setCoordinates(selectedPlace.coordinates);
+      setCity(resolveCustomerCity(selectedPlace) || resolveCustomerCity({ address: selectedPlace.address }) || '');
       setErrors(prev => ({ ...prev, address: '' }));
     }
   };
@@ -214,9 +234,13 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
       try {
         const res = await searchAddress(`${coords.lat}, ${coords.lng}`);
         if (res && res.length > 0) {
-          setAddress(res[0].address || res[0].name);
+          const resultAddress = res[0].address || res[0].name;
+          setAddress(resultAddress);
+          setCity(resolveCustomerCity(res[0]) || resolveCustomerCity({ address: resultAddress }) || '');
         } else {
-          setAddress(`Coordenadas GPS: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`);
+          const reverseResult = await reverseGeocode(coords);
+          setAddress(reverseResult.address || `Coordenadas GPS: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`);
+          setCity(resolveCustomerCity(reverseResult) || '');
         }
       } catch {
         setAddress(`Coordenadas GPS: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`);
@@ -253,6 +277,8 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
   // Busca de endereço enquanto digita com delay (500ms) para não buscar a cada tecla
   const handleAddressChange = (val: string) => {
     setAddress(val);
+    const detectedCity = resolveCustomerCity({ address: val });
+    if (detectedCity) setCity(detectedCity);
     if (addressTimeoutRef.current) {
       clearTimeout(addressTimeoutRef.current);
     }
@@ -284,22 +310,36 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
     }, 500);
   };
 
-  const handleSelectSuggestion = (place: Place) => {
-    setAddress(place.address || place.name);
+  const handleSelectSuggestion = async (place: Place) => {
+    const selectedAddress = place.address || place.name;
+    let selectedCity = resolveCustomerCity(place) || resolveCustomerCity({ address: selectedAddress });
+    if (!selectedCity && place.coordinates) {
+      try {
+        selectedCity = resolveCustomerCity(await reverseGeocode(place.coordinates));
+      } catch {}
+    }
+
+    setAddress(selectedAddress);
     setCoordinates(place.coordinates);
+    setCity(selectedCity || '');
     setAddressSuggestions([]);
     setErrors(prev => ({ ...prev, address: '' }));
   };
 
   // Submissão do formulário com validações obrigatórias
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const newErrors: Record<string, string> = {};
+    const isExistingCustomer = Boolean(initialData && 'id' in initialData && initialData.id && !initialData.id.startsWith('agenda-'));
 
+    if (!contactName.trim()) {
+      newErrors.contactName = 'O nome de contato é obrigatório';
+    }
     if (!fullName.trim()) {
       newErrors.fullName = 'O nome completo é obrigatório';
-    } else if (fullName.trim().split(' ').length < 2) {
-      newErrors.fullName = 'Informe o nome e sobrenome completo';
+    } else if (fullName.trim().split(/\s+/).length < 2 && !isExistingCustomer) {
+      // Cadastros antigos só têm um nome no banco; não bloqueia a edição deles
+      newErrors.fullName = 'Informe nome e sobrenome';
     }
 
     const cleanPhone = phone.replace(/\D/g, '');
@@ -329,15 +369,26 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
       return;
     }
 
+    let resolvedCity = resolveCustomerCity({ address: address.trim() }) || normalizeCityName(city) ||
+      resolveCustomerCity(selectedPlace || {});
+    if (!resolvedCity && coordinates) {
+      try {
+        resolvedCity = resolveCustomerCity(await reverseGeocode(coordinates));
+      } catch {}
+    }
+
     const newCustomer: Customer = {
       id: (initialData && 'id' in initialData && initialData.id && !initialData.id.startsWith('agenda-'))
         ? initialData.id
         : `cust-${Date.now()}`,
       fullName: fullName.trim(),
+      contactName: contactName.trim(),
       phone: phone.trim(),
       cpf: cpf.trim(),
       address: address.trim(),
-      coordinates: coordinates || (selectedPlace ? selectedPlace.coordinates : { lat: -16.6869, lng: -49.2648 }),
+      city: resolvedCity,
+      cidade: resolvedCity,
+      coordinates: coordinates || selectedPlace?.coordinates,
       additionalAddresses: additionalAddresses.filter(a => a.address.trim().length > 0),
       email: email.trim() || undefined,
       notes: notes.trim() || undefined,
@@ -347,7 +398,7 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
     };
 
     if (window.AndroidApp && window.AndroidApp.saveContact) {
-      window.AndroidApp.saveContact(fullName.trim(), phone.trim());
+      window.AndroidApp.saveContact(contactName.trim(), phone.trim());
     }
 
     onSaveCustomer(newCustomer);
@@ -408,11 +459,11 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
         onSubmit={handleSubmit}
         className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 max-w-2xl mx-auto w-full flex flex-col gap-5"
       >
-        {/* CAMPO 1: NOME COMPLETO (OBRIGATÓRIO) */}
-        <div id="field-fullName" className="space-y-1.5">
+        {/* CAMPO 1: NOME DO CONTATO (OBRIGATÓRIO) */}
+        <div id="field-contactName" className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="block text-xs font-black text-slate-800 uppercase tracking-wider">
-              Nome Completo <span className="text-red-500 font-black">*</span>
+              Nome de Contato (agenda) <span className="text-red-500 font-black">*</span>
             </label>
             {typeof window !== 'undefined' && Boolean(window.AndroidApp?.pickContact) && (
               <button
@@ -436,6 +487,38 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
             </div>
             <input
               ref={nameInputRef}
+              type="text"
+              value={contactName}
+              onChange={(e) => {
+                setContactName(e.target.value);
+                if (errors.contactName) setErrors(prev => ({ ...prev, contactName: '' }));
+              }}
+              placeholder="Ex: Carlos Padaria"
+              className={`w-full pl-10 pr-4 py-3 bg-slate-50 border rounded-xl text-sm font-bold text-slate-900 placeholder:text-slate-400 focus:bg-white focus:outline-none transition-all ${
+                errors.contactName 
+                  ? 'border-red-400 ring-2 ring-red-100' 
+                  : 'border-slate-300 focus:border-[#0B5187] focus:ring-2 focus:ring-[#0B5187]/20'
+              }`}
+            />
+          </div>
+          {errors.contactName && (
+            <p className="text-xs font-bold text-red-600 flex items-center gap-1 mt-1">
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>{errors.contactName}</span>
+            </p>
+          )}
+        </div>
+
+        {/* CAMPO 1.1: NOME COMPLETO (OBRIGATÓRIO) */}
+        <div id="field-fullName" className="space-y-1.5">
+          <label className="block text-xs font-black text-slate-800 uppercase tracking-wider">
+            Nome Completo <span className="text-red-500 font-black">*</span>
+          </label>
+          <div className="relative">
+            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+              <User className="w-4 h-4" />
+            </div>
+            <input
               type="text"
               value={fullName}
               onChange={(e) => {
@@ -587,9 +670,10 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
                     address,
                     coordinates
                   } as Place : undefined,
-                  onLocationSelected: (newAddr, newCoords) => {
+                  onLocationSelected: (newAddr, newCoords, newCity) => {
                     setAddress(newAddr);
                     setCoordinates(newCoords);
+                    setCity(normalizeCityName(newCity) || resolveCustomerCity({ address: newAddr }) || '');
                     setErrors(prev => ({ ...prev, address: '' }));
                   }
                 });
@@ -646,6 +730,10 @@ export const CustomerFormFullScreen: React.FC<CustomerFormFullScreenProps> = ({
               <span>{errors.address}</span>
             </p>
           )}
+
+          <p className="text-[11px] font-medium text-slate-500">
+            Cidade detectada: <span className="font-bold text-slate-700">{city || 'selecione uma localização'}</span>
+          </p>
 
           {/* MÚLTIPLAS LOCALIZAÇÕES / OUTROS ENDEREÇOS DO CLIENTE */}
           <div className="mt-3 pt-3 border-t border-slate-200/80 space-y-2.5">

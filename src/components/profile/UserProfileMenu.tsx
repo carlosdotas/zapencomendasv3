@@ -13,6 +13,7 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
+import { UserAvatar } from '../common/UserAvatar';
 
 export const UserProfileMenu: React.FC = () => {
   const { 
@@ -74,24 +75,13 @@ export const UserProfileMenu: React.FC = () => {
         {/* User Card */}
         <div className="p-5 flex flex-col items-center text-center border-b border-[#0B5187]/10 bg-linear-to-b from-[#F0F6FB] to-white">
           <div className="relative mb-3">
-            {user.avatarUrl ? (
-              <img
-                src={user.avatarUrl}
-                alt={user.name || 'Usuário'}
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                  const fallback = e.currentTarget.parentElement?.querySelector('.menu-avatar-fallback') as HTMLElement;
-                  if (fallback) fallback.style.display = 'flex';
-                }}
-                className="w-20 h-20 rounded-lg object-cover ring-4 ring-[#0B5187]/30 shadow-md"
-              />
-            ) : null}
-            <div 
-              className="menu-avatar-fallback w-20 h-20 rounded-lg bg-[#0B5187]/15 items-center justify-center text-[#0B5187] font-black text-xl ring-4 ring-[#0B5187]/30 shadow-md"
-              style={{ display: user.avatarUrl ? 'none' : 'flex' }}
-            >
-              {user.name ? user.name.slice(0, 2).toUpperCase() : 'EZ'}
-            </div>
+            <UserAvatar
+              src={user.avatarUrl}
+              name={user.name}
+              className="h-20 w-20 overflow-hidden rounded-lg ring-4 ring-[#0B5187]/30 shadow-md"
+              imageClassName="h-full w-full rounded-lg object-cover"
+              fallbackClassName="flex h-full w-full items-center justify-center rounded-lg bg-[#0B5187]/15 text-xl font-black text-[#0B5187]"
+            />
             <div className="absolute bottom-0 right-0 w-6 h-6 rounded-md bg-[#0B5187] border-2 border-white flex items-center justify-center text-white" title="Online">
               <span className="w-2 h-2 rounded-xs bg-[#FF5E00] animate-pulse" />
             </div>

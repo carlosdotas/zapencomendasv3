@@ -6,7 +6,8 @@ import {
   Users,
   Package,
   Maximize2,
-  Calendar
+  Calendar,
+  Route
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
 import { Place } from '../../types/map';
@@ -28,8 +29,24 @@ export const LocationButton: React.FC = () => {
     dateRangeFilter,
     isCalendarModalOpen,
     openCalendarModal,
-    closeCalendarModal
+    closeCalendarModal,
+    routeSelectMode,
+    routeSelectedIds,
+    startRouteSelection,
+    cancelRouteSelection,
+    setIsRoutePickerOpen
   } = useMapStore();
+
+  const canDispatchRoute = currentRole === 'admin_geral' || currentRole === 'atendente';
+  const handleRouteButton = () => {
+    if (!routeSelectMode) {
+      startRouteSelection();
+    } else if (routeSelectedIds.length === 0) {
+      cancelRouteSelection();
+    } else {
+      setIsRoutePickerOpen(true);
+    }
+  };
 
   const isDateFilterActive = Boolean(dateRangeFilter.startDate || dateRangeFilter.endDate);
   const dateFilterLabel = getDateFilterDisplayLabel(dateRangeFilter);
@@ -102,6 +119,31 @@ export const LocationButton: React.FC = () => {
             Pedidos ({allPlaces.length})
           </span>
         </button>
+
+        {/* PASSAR ROTA: seleciona vários marcadores e envia para um motorista */}
+        {canDispatchRoute && (
+          <button
+            type="button"
+            onClick={handleRouteButton}
+            aria-label="Passar rota"
+            title={routeSelectMode ? 'Concluir seleção e escolher motorista' : 'Passar rota para um motorista'}
+            className={`group relative w-11 h-11 sm:w-12 sm:h-12 rounded-xl shadow-xl border transition-all duration-200 flex items-center justify-center cursor-pointer active:scale-95 shrink-0 ${
+              routeSelectMode
+                ? 'bg-[#FF5E00] text-white border-orange-300 ring-2 ring-[#FF5E00]/40'
+                : 'bg-white hover:bg-slate-50 text-[#FF5E00] border-slate-200/90'
+            }`}
+          >
+            <Route className="w-5 h-5 sm:w-5.5 sm:h-5.5 stroke-[2.4]" />
+            {routeSelectMode && routeSelectedIds.length > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-4.5 min-w-[18px] px-1 rounded-full bg-[#0B5187] text-white text-[9.5px] font-black items-center justify-center border-2 border-white shadow-xs">
+                {routeSelectedIds.length}
+              </span>
+            )}
+            <span className="absolute right-full mr-2.5 px-2.5 py-1 bg-slate-900/90 text-white text-[11px] font-black rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
+              {routeSelectMode ? 'Concluir e escolher motorista' : 'Passar rota'}
+            </span>
+          </button>
+        )}
 
         {/* 0.1 BOTÃO DE CALENDÁRIO ABAIXO DO BOTÃO DE CLIENTES (SEM TEXTO - APENAS ÍCONE) */}
         <button

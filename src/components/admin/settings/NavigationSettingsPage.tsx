@@ -9,7 +9,7 @@ import {
   Compass, 
   ExternalLink 
 } from 'lucide-react';
-import { firebaseSettingsService } from '../../../services/firebaseSettingsService';
+import { settingsService } from '../../../services/settingsService';
 
 interface NavigationSettingsPageProps {
   onBack: () => void;
@@ -29,7 +29,7 @@ export const NavigationSettingsPage: React.FC<NavigationSettingsPageProps> = ({
   const handleSave = async () => {
     setIsSaving(true);
     onUpdate(selectedApp);
-    await firebaseSettingsService.saveSettings({
+    await settingsService.saveSettings({
       navigation: {
         defaultNavApp: selectedApp,
         saveAsDefault: selectedApp !== null
@@ -77,7 +77,7 @@ export const NavigationSettingsPage: React.FC<NavigationSettingsPageProps> = ({
           ) : (
             <>
               <Save className="w-4 h-4" />
-              <span>{isSaving ? 'Salvando...' : 'Salvar no Firebase'}</span>
+              <span>{isSaving ? 'Salvando...' : 'Salvar'}</span>
             </>
           )}
         </button>
