@@ -363,6 +363,55 @@ class FirebaseOrderService {
     return { success: false, message: 'Pedido não encontrado no Firebase' };
   }
 
+  public async ensurePublicTrackingToken(id: string | number): Promise<ApiResponse<{ token: string }>> {
+    await this.init();
+    if (!this.firestore) {
+      try {
+        this.firestore = getFirebaseFirestore();
+      } catch {
+        return { success: false, message: 'Não foi possível conectar ao banco de pedidos.' };
+      }
+    }
+
+    const cleanId = String(id).replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim();
+    if (!cleanId) return { success: false, message: 'Pedido inválido.' };
+
+    try {
+      let collectionName = 'orders';
+      let snapshot = await getDoc(doc(this.firestore, collectionName, cleanId));
+      if (!snapshot.exists()) {
+        collectionName = 'pedidos';
+        snapshot = await getDoc(doc(this.firestore, collectionName, cleanId));
+      }
+
+      const order = snapshot.exists()
+        ? snapshot.data() as BackendPedido
+        : this.findOrder(cleanId);
+      if (!order) return { success: false, message: 'Pedido não encontrado.' };
+
+      const currentToken = order.public_tracking_token;
+      if (typeof currentToken === 'string' && /^[a-f0-9]{48}$/i.test(currentToken)) {
+        return { success: true, data: { token: currentToken.toLowerCase() } };
+      }
+
+      const randomBytes = new Uint8Array(24);
+      globalThis.crypto.getRandomValues(randomBytes);
+      const token = Array.from(randomBytes, byte => byte.toString(16).padStart(2, '0')).join('');
+      await setDoc(doc(this.firestore, collectionName, cleanId), { public_tracking_token: token }, { merge: true });
+      if (collectionName === 'orders') {
+        await setDoc(doc(this.firestore, 'pedidos', cleanId), { public_tracking_token: token }, { merge: true }).catch(() => {});
+      }
+
+      const cachedOrder = { ...order, id: order.id || cleanId, public_tracking_token: token };
+      this.orders.set(String(cachedOrder.id), cachedOrder);
+      this.persistCache();
+      return { success: true, data: { token } };
+    } catch (error) {
+      console.warn('[Firebase Orders] Falha ao criar link público de rastreio:', error);
+      return { success: false, message: 'Não foi possível criar o link público.' };
+    }
+  }
+
   /**
    * Salva ou atualiza um pedido no Firebase Firestore (default)
    */

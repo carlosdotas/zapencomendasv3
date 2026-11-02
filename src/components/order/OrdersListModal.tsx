@@ -28,12 +28,15 @@ import {
   RotateCcw,
   Check,
   Filter,
-  Zap
+  Zap,
+  Link2,
+  Loader2
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
 import { Place, OperationType } from '../../types/map';
 import { useBackButton } from '../../hooks/useBackButton';
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
+import { api } from '../../services/api';
 
 interface OrdersListModalProps {
   isOpen: boolean;
@@ -73,6 +76,7 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
   const [orderToDelete, setOrderToDelete] = useState<Place | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [trackingLinkOrderId, setTrackingLinkOrderId] = useState<string | null>(null);
 
   // Consolida todos os pedidos do mapa sem duplicidades (ativos + concluídos)
   const uniqueOrders = useMemo(() => {
@@ -274,6 +278,29 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
       (window as any).AndroidApp.openWhatsApp(clean, '');
     } else {
       window.open(`https://wa.me/${clean}`, '_blank');
+    }
+  };
+
+  const handleCopyTrackingLink = async (event: React.MouseEvent, order: Place) => {
+    event.stopPropagation();
+    setTrackingLinkOrderId(order.id);
+    try {
+      const result = await api.createPublicTrackingLink(order.orderId || order.id);
+      if (!result.success || !result.data?.token) {
+        throw new Error(result.message || 'Não foi possível criar o link.');
+      }
+      const link = `${window.location.origin}/rastreio/${result.data.token}`;
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        window.prompt('Copie o link público de rastreio:', link);
+      }
+      setToastMsg('Link público de rastreio copiado.');
+    } catch (error) {
+      setToastMsg(error instanceof Error ? error.message : 'Erro ao criar link de rastreio.');
+    } finally {
+      setTrackingLinkOrderId(null);
+      setTimeout(() => setToastMsg(null), 3000);
     }
   };
 
@@ -785,6 +812,20 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
                   </div>
 
                   <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    {currentRole !== 'motorista' && (
+                      <button
+                        type="button"
+                        onClick={(e) => handleCopyTrackingLink(e, order)}
+                        disabled={trackingLinkOrderId === order.id}
+                        className="w-7 h-7 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 flex items-center justify-center transition-colors active:scale-90 cursor-pointer disabled:opacity-50"
+                        title="Copiar link público de rastreio"
+                        aria-label="Copiar link público de rastreio"
+                      >
+                        {trackingLinkOrderId === order.id
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : <Link2 className="w-3.5 h-3.5" />}
+                      </button>
+                    )}
                     {currentRole === 'motorista' && isPublicOrder && (
                       <button
                         type="button"

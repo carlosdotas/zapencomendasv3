@@ -189,6 +189,7 @@ export interface BackendPedido {
 
   created_at?: string;
   updated_at?: string;
+  public_tracking_token?: string;
 }
 
 export interface BackendMotorista {

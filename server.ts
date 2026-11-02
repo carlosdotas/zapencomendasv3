@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { initializeApp as initFirebaseServerApp, getApps as getServerApps, getApp as getServerApp } from 'firebase/app';
-import { getFirestore as getServerFirestore, doc as serverDoc, setDoc as serverSetDoc } from 'firebase/firestore';
+import { getFirestore as getServerFirestore, doc as serverDoc, setDoc as serverSetDoc, collection as serverCollection, getDocs as serverGetDocs, query as serverQuery, where as serverWhere, limit as serverLimit } from 'firebase/firestore';
 import { sanitizeForFirestore } from './src/services/firestoreUtils';
 
 const serverFirebaseConfig = {
@@ -1899,6 +1899,59 @@ app.all(['/pedidos/get', '/api/pedidos/get'], (req: Request, res: Response) => {
     res.json({ success: true, data: pedido });
   } else {
     res.status(404).json({ success: false, message: 'Pedido não encontrado' });
+  }
+});
+
+app.get('/api/public/tracking/:token', async (req: Request, res: Response) => {
+  const token = String(req.params.token || '').toLowerCase();
+  res.setHeader('Cache-Control', 'no-store');
+  if (!/^[a-f0-9]{48}$/.test(token)) {
+    res.status(404).json({ success: false, message: 'Rastreio não encontrado.' });
+    return;
+  }
+
+  try {
+    let snapshot = await serverGetDocs(serverQuery(
+      serverCollection(serverFirestore, 'orders'),
+      serverWhere('public_tracking_token', '==', token),
+      serverLimit(1)
+    ));
+    if (snapshot.empty) {
+      snapshot = await serverGetDocs(serverQuery(
+        serverCollection(serverFirestore, 'pedidos'),
+        serverWhere('public_tracking_token', '==', token),
+        serverLimit(1)
+      ));
+    }
+    if (snapshot.empty) {
+      res.status(404).json({ success: false, message: 'Rastreio não encontrado.' });
+      return;
+    }
+
+    const order = snapshot.docs[0].data();
+    const events = [
+      { label: 'Pedido recebido', at: order.created_at || order.data },
+      { label: 'Coleta realizada', at: order.coleta_saida_at },
+      { label: 'Troca realizada', at: order.troca_saida_at },
+      { label: 'Entrega realizada', at: order.entrega_saida_at || order.entrega_at }
+    ].filter(event => event.at).map(event => ({ label: event.label, at: String(event.at) }));
+
+    res.json({
+      success: true,
+      data: {
+        code: String(order.orderCode || order.codigo || order.id || snapshot.docs[0].id),
+        stage: String(order.etapa || order.orderStage || 'pendente').toLowerCase(),
+        operation: String(order.tipo_encomenda || order.operationType || 'entrega').toLowerCase(),
+        scheduledDate: String(order.scheduledDate || order.data || ''),
+        updatedAt: String(order.updated_at || order.created_at || ''),
+        originCity: String(order.coleta_cidade || order.cidade || ''),
+        destinationCity: String(order.entrega_cidade || order.cidade || ''),
+        events
+      }
+    });
+  } catch (error) {
+    console.warn('[Public tracking] Falha ao consultar o pedido:', error);
+    res.status(503).json({ success: false, message: 'Rastreio temporariamente indisponível.' });
   }
 });
 

@@ -12,9 +12,6 @@ import {
   ArrowRight,
   Database,
   Loader2,
-  CheckCircle2,
-  AlertCircle,
-  AlertTriangle,
   Smartphone,
   ShieldCheck,
   CreditCard,
@@ -27,7 +24,7 @@ import { Customer, AgendaContact, TargetFieldType } from '../../types/customer';
 import { Place } from '../../types/map';
 import { INITIAL_AGENDA_CONTACTS } from '../../data/mockCustomers';
 import { searchDatabaseCustomers } from '../../services/customerSearchService';
-import { checkUserCompleteness, formatTaxId } from '../../utils/userCompleteness';
+import { checkUserCompleteness } from '../../utils/userCompleteness';
 import { api } from '../../services/api';
 import { useBackButton } from '../../hooks/useBackButton';
 import { PhoneAgendaModal } from './PhoneAgendaModal';
@@ -595,15 +592,12 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
               <div className="space-y-1">
                 {displayedDbUsers.map((userItem) => {
                   const locRecord = resolveCustomerLocationRecord(userItem);
-                  const city = locRecord?.city || locRecord?.cidade || (userItem as any).city || (userItem as any).cidade || extractCityFromAddress(locRecord?.address || userItem.address);
-                  const completeness = checkUserCompleteness({
-                    fullName: userItem.fullName,
-                    phone: userItem.phone,
-                    cpf: userItem.cpf,
-                    cnpj: (userItem as any).cnpj
-                  });
+                  const cityValue = locRecord?.city || locRecord?.cidade || (userItem as any).city || (userItem as any).cidade;
+                  const addressValue = locRecord?.address || userItem.address;
+                  const city = cityValue || (addressValue ? extractCityFromAddress(addressValue) : '');
                   const orderCount = typeof userItem.orderCount === 'number' ? userItem.orderCount : customerOrderStatsService.getOrderCount(userItem);
                   const hasLocation = Boolean(locRecord && hasCustomerLocation(locRecord));
+                  const locationLabel = locRecord?.address || userItem.address || 'Local cadastrado';
                   const finalCust: Customer = locRecord 
                     ? { ...userItem, address: locRecord.address || userItem.address, coordinates: locRecord.coordinates, city: city || locRecord.city, cidade: city || locRecord.cidade, orderCount } 
                     : { ...userItem, city: city || (userItem as any).city, cidade: city || (userItem as any).cidade, orderCount };
@@ -612,114 +606,73 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
                     <div
                       key={userItem.id}
                       onClick={() => onSelectCustomer(finalCust)}
-                      title={`${userItem.fullName} • Status: ${completeness.statusLabel} • ${orderCount} pedidos`}
-                      className={`w-full text-left px-2.5 py-1.5 sm:py-2 rounded-xl transition-all flex items-center justify-between gap-2 group cursor-pointer shadow-2xs border ${
-                        completeness.isComplete
-                          ? 'bg-white hover:bg-emerald-50/50 border-slate-200/90 hover:border-emerald-300'
-                          : 'bg-white hover:bg-amber-50/50 border-slate-200/90 hover:border-amber-300'
-                      }`}
+                      title={`${userItem.fullName} • ${orderCount} pedidos`}
+                      className="w-full text-left px-2.5 py-1.5 sm:py-2 rounded-xl transition-all flex items-center justify-between gap-2 group cursor-pointer shadow-2xs border bg-white hover:bg-sky-50/50 border-slate-200/90 hover:border-sky-300"
                     >
-                      {/* Lado Esquerdo: Avatar Compacto + Informações */}
+                      {/* Avatar compacto e informações essenciais */}
                       <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <div className={`relative w-7 h-7 sm:w-8 sm:h-8 rounded-lg font-black text-xs flex items-center justify-center shrink-0 shadow-2xs text-white ${
-                          completeness.isComplete ? 'bg-emerald-600' : 'bg-amber-600'
-                        }`}>
+                        <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-[#0B5187] font-black text-xs flex items-center justify-center shrink-0 shadow-2xs text-white">
                           {userItem.fullName.charAt(0).toUpperCase()}
-                          
-                          {/* Ponto indicador de status */}
-                          <span 
-                            className={`absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full border border-white ${
-                              completeness.isComplete ? 'bg-emerald-400' : 'bg-amber-400'
-                            }`}
-                            title={completeness.isComplete ? 'Cadastro Completo' : 'Cadastro Incompleto (Falta CPF)'}
-                          />
                         </div>
 
                         <div className="min-w-0 flex-1">
-                          {/* Linha 1: Nome + Badge + Cidade */}
+                          {/* Cidade e nome do contato */}
                           <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                            {city && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500 shrink-0" title={`Cidade: ${city}`}>
+                                <MapPin className="w-3 h-3 text-[#FF5E00]" />
+                                <span>{city}</span>
+                              </span>
+                            )}
                             <span className="font-extrabold text-xs sm:text-[13px] text-slate-900 group-hover:text-[#0B5187] truncate leading-tight">
                               {userItem.fullName}
                             </span>
-
-                            {completeness.isComplete ? (
-                              <span className="inline-flex items-center gap-0.5 text-[8.5px] font-black px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 shrink-0">
-                                <CheckCircle2 className="w-2.5 h-2.5" />
-                                <span>Completo</span>
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-0.5 text-[8.5px] font-black px-1.5 py-0.2 rounded bg-amber-100 text-amber-900 shrink-0">
-                                <AlertCircle className="w-2.5 h-2.5" />
-                                <span>Falta CPF</span>
-                              </span>
-                            )}
-
-                            {city && (
-                              <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.2 rounded bg-sky-50 text-sky-700 border border-sky-200/80 shrink-0" title={`Cidade: ${city}`}>
-                                📍 {city}
-                              </span>
-                            )}
                           </div>
 
-                          {/* Linha 2: Telefone, CPF e Localização */}
+                          {/* Telefone */}
                           <div className="flex items-center gap-1.5 text-[10.5px] font-semibold text-slate-600 mt-0.5 truncate">
                             {userItem.phone ? (
                               <span className="font-bold text-slate-800 shrink-0">{userItem.phone}</span>
                             ) : (
-                              <span className="text-rose-600 font-black text-[9.5px] bg-rose-50 px-1 rounded shrink-0">
-                                Sem Tel
-                              </span>
-                            )}
-
-                            {(() => {
-                              const docInfo = formatTaxId(userItem.cpf || (userItem as any).cnpj);
-                              if (!docInfo.clean) return null;
-                              return (
-                                <span className="font-mono text-[10px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.2 rounded border border-slate-200 shrink-0">
-                                  {docInfo.type}: {docInfo.formatted}
-                                </span>
-                              );
-                            })()}
-
-                            <span className="text-slate-300">•</span>
-
-                            {/* Localização Compacta */}
-                            {!hasLocation ? (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openCustomerLocationModal({
-                                    customerId: userItem.id,
-                                    customerName: userItem.fullName,
-                                    customerPhone: userItem.phone,
-                                    place: selectedPlace || undefined,
-                                    placeId: selectedPlace?.id || undefined
-                                  });
-                                }}
-                                className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-amber-100 hover:bg-amber-200 active:scale-95 border border-amber-300 text-amber-900 text-[9px] font-black shadow-2xs transition-all cursor-pointer shrink-0"
-                                title="Cliente sem localização! Clique para setar o local rápido."
-                              >
-                                <AlertTriangle className="w-2.5 h-2.5 text-amber-700 shrink-0" />
-                                <span>Sem Local • Setar</span>
-                              </button>
-                            ) : (
-                              <span 
-                                className="inline-flex items-center gap-0.5 text-[9.5px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200/80 px-1.5 py-0.2 rounded truncate max-w-[150px] sm:max-w-[200px]"
-                                title={locRecord?.address || userItem.address || 'Local Definido'}
-                              >
-                                <MapPin className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                                <span className="truncate">
-                                  {locRecord?.address || userItem.address || 'Local Definido'}
-                                </span>
+                              <span className="text-slate-400 font-medium text-[10px] shrink-0">
+                                Sem telefone
                               </span>
                             )}
                           </div>
                         </div>
                       </div>
 
-                      {/* Lado Direito: Botões Histórico + Editar + Selecionar */}
+                      {/* Local, histórico, edição e seleção */}
                       <div className="shrink-0 flex items-center gap-1 sm:gap-1.5">
+                        {hasLocation ? (
+                          <span
+                            className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center"
+                            title={locationLabel}
+                            aria-label={`Local cadastrado: ${locationLabel}`}
+                          >
+                            <MapPin className="w-3.5 h-3.5" />
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openCustomerLocationModal({
+                                customerId: userItem.id,
+                                customerName: userItem.fullName,
+                                customerPhone: userItem.phone,
+                                place: selectedPlace || undefined,
+                                placeId: selectedPlace?.id || undefined
+                              });
+                            }}
+                            className="w-7 h-7 rounded-lg bg-amber-50 hover:bg-amber-100 active:scale-95 border border-amber-200 text-amber-800 flex items-center justify-center transition-all cursor-pointer"
+                            title="Adicionar localização"
+                            aria-label="Adicionar localização do cliente"
+                          >
+                            <MapPin className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
                         {/* Botão HISTÓRICO (Com quantidade de pedidos) */}
                         <button
                           type="button"

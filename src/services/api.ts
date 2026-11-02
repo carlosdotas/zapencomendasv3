@@ -438,6 +438,10 @@ export const api = {
     return firebaseOrderService.getPedido(id);
   },
 
+  async createPublicTrackingLink(id: string | number): Promise<ApiResponse<{ token: string }>> {
+    return firebaseOrderService.ensurePublicTrackingToken(id);
+  },
+
   async savePedido(pedidoData: Partial<BackendPedido>): Promise<ApiResponse<{ id: number | string }>> {
     // Motoristas NÃO possuem permissão para adicionar ou editar pedidos
     const userRole = typeof window !== 'undefined' ? localStorage.getItem('encomendaszap_user_role') : null;
