@@ -45,6 +45,7 @@ public class MainActivity extends BridgeActivity {
     private static final String TAG = "EncomendasZapMain";
     private static final int FOREGROUND_PERMISSION_CODE = 1001;
     private static final int BACKGROUND_LOCATION_CODE = 1002;
+    private static final int MEDIA_PERMISSION_CODE = 1003;
     private static final int PICK_CONTACT_REQUEST = 2001;
 
     private String pendingSharedMapJson = null;
@@ -251,6 +252,28 @@ public class MainActivity extends BridgeActivity {
                     // Aceita sempre a permissão de geolocalização permanentemente (retain = true)
                     Log.d(TAG, "onGeolocationPermissionsShowPrompt auto-aceito para: " + origin);
                     callback.invoke(origin, true, true);
+                }
+
+                // getUserMedia (câmera/microfone no site): concede após garantir as permissões do Android
+                @Override
+                public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                    runOnUiThread(() -> {
+                        List<String> needed = new ArrayList<>();
+                        for (String res : request.getResources()) {
+                            if (android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)
+                                && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                                needed.add(Manifest.permission.CAMERA);
+                            }
+                            if (android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)
+                                && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                needed.add(Manifest.permission.RECORD_AUDIO);
+                            }
+                        }
+                        if (!needed.isEmpty()) {
+                            ActivityCompat.requestPermissions(MainActivity.this, needed.toArray(new String[0]), MEDIA_PERMISSION_CODE);
+                        }
+                        request.grant(request.getResources());
+                    });
                 }
             });
         }
@@ -490,6 +513,17 @@ public class MainActivity extends BridgeActivity {
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             permissions.add(Manifest.permission.READ_CONTACTS);
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.CAMERA);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.READ_MEDIA_IMAGES);
+            }
+        } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE);
         }
 
         if (!permissions.isEmpty()) {
