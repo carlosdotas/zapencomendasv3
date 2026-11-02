@@ -346,16 +346,20 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true, data: userToBackend(user, counts) });
   });
 
+  const storeProfilePhoto = async (dataUrl: string): Promise<string | null> => {
+    if (deps.imageServerConfigured()) {
+      const remote = await deps.uploadToPhpServer(dataUrl, 'perfil');
+      if (remote) return remote;
+    }
+    return deps.saveBase64Image(dataUrl, 'users');
+  };
+
   const resolvePhoto = async (body: any, res: Response): Promise<boolean> => {
     const image = [body.foto, body.avatarUrl].find(v => typeof v === 'string' && v.startsWith('data:image/'));
     if (image) {
-      if (!deps.imageServerConfigured()) {
-        res.status(503).json({ success: false, message: 'Configure IMAGE_SERVER_URL e IMAGE_SERVER_PASSWORD no .env do servidor.' });
-        return false;
-      }
-      const url = await deps.uploadToPhpServer(image, 'perfil');
+      const url = await storeProfilePhoto(image);
       if (!url) {
-        res.status(502).json({ success: false, message: 'Não foi possível enviar a foto ao servidor de imagens configurado.' });
+        res.status(502).json({ success: false, message: 'Não foi possível salvar a foto.' });
         return false;
       }
       body.foto = url;
@@ -408,13 +412,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     const base64Data = body.base64 || body.image || body.foto || body.avatarUrl;
     let photoPath = '';
     if (typeof base64Data === 'string' && base64Data.startsWith('data:image/')) {
-      if (!deps.imageServerConfigured()) {
-        res.status(503).json({ success: false, message: 'Configure IMAGE_SERVER_URL e IMAGE_SERVER_PASSWORD no .env do servidor.' });
-        return;
-      }
-      const url = await deps.uploadToPhpServer(base64Data, 'perfil');
+      const url = await storeProfilePhoto(base64Data);
       if (!url) {
-        res.status(502).json({ success: false, message: 'Não foi possível enviar a foto ao servidor de imagens configurado.' });
+        res.status(502).json({ success: false, message: 'Não foi possível salvar a foto.' });
         return;
       }
       photoPath = url;
