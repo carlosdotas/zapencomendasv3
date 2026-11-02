@@ -64,12 +64,50 @@ const orderIsFinished = (p: Place) =>
   (p as any).isCompleted ||
   ['concluido', 'finalizado', 'entregue'].includes((p as any).etapa);
 
-const orderPrice = (p: Place) => {
-  const raw = p.price !== undefined && p.price !== null
-    ? p.price
-    : ((p as any).total || (p as any).valor_total || (p as any).valor || 0);
-  return Number(raw) || 0;
+interface OrderPriceBreakdown {
+  finalPrice: number;
+  items: Array<{ name: string; value: number }>;
+  discount: number;
+  paymentCondition?: string;
+}
+
+const getOrderPriceBreakdown = (p: Place): OrderPriceBreakdown => {
+  let finalPrice = Number(p.price) || 0;
+  const items: Array<{ name: string; value: number }> = [];
+  let discount = 0;
+
+  if (p.priceItems && Array.isArray(p.priceItems) && p.priceItems.length > 0) {
+    p.priceItems.forEach(item => {
+      const val = Number(item.value) || 0;
+      if (val > 0) items.push({ name: item.name, value: val });
+    });
+  }
+
+  if (p.discountItems && Array.isArray(p.discountItems) && p.discountItems.length > 0) {
+    discount = p.discountItems.reduce((acc, d) => acc + (Number(d.value) || 0), 0);
+  } else if (p.totalDiscounts) {
+    discount = Number(p.totalDiscounts) || 0;
+  }
+
+  if (!finalPrice) {
+    const raw = (p as any).total ?? (p as any).valor_total ?? (p as any).valor;
+    if (raw !== undefined && raw !== null && !isNaN(Number(raw))) {
+      finalPrice = Number(raw);
+    } else if (items.length > 0) {
+      const sum = items.reduce((acc, it) => acc + it.value, 0);
+      finalPrice = Math.max(0, sum - discount);
+    }
+  }
+
+  return {
+    finalPrice,
+    items,
+    discount,
+    paymentCondition: p.paymentCondition
+  };
 };
+
+const orderPrice = (p: Place) => getOrderPriceBreakdown(p).finalPrice;
 
 const orderDateKey = (p: Place, todayStr: string) => {
   const raw = p.scheduledDate || (p as any).data || (p as any).orderDate || '';
@@ -443,7 +481,8 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
     const isFinished = orderIsFinished(order);
     const hasDriver = Boolean(order.assignedDriverId || order.assignedDriverName);
     const isPaid = orderIsPaid(order);
-    const price = orderPrice(order);
+    const breakdown = getOrderPriceBreakdown(order);
+    const price = breakdown.finalPrice;
     const photosCount = order.photos?.length || (order.imageUrl ? 1 : 0);
     const contact = order.deliveryContact || order.pickupContact || order.responsibleName || '';
 
@@ -549,6 +588,39 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
             <span className="truncate">{contact}</span>
           </div>
         )}
+
+        {/* Detalhamento de valores como na tela de detalhes */}
+        <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10.5px] font-semibold text-slate-600 bg-slate-50/90 p-1.5 rounded-xl border border-slate-200/80">
+          <span className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Valores:</span>
+          {breakdown.items.length > 0 ? (
+            breakdown.items.map((it, idx) => (
+              <span key={idx} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white text-slate-700 border border-slate-200 shadow-2xs font-bold">
+                <span>{it.name}:</span>
+                <span className="text-[#0B5187] font-black">{formatBRL(it.value)}</span>
+              </span>
+            ))
+          ) : (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-white text-slate-700 border border-slate-200 shadow-2xs font-bold">
+              <span>Frete:</span>
+              <span className="text-[#0B5187] font-black">{formatBRL(price)}</span>
+            </span>
+          )}
+          {breakdown.discount > 0 && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 font-bold">
+              <span>Desconto:</span>
+              <span className="font-black">-{formatBRL(breakdown.discount)}</span>
+            </span>
+          )}
+          {order.paymentCondition && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-sky-50 text-sky-800 border border-sky-200 font-bold">
+              <span>Condição:</span>
+              <span className="font-black">{order.paymentCondition}</span>
+            </span>
+          )}
+          <span className="ml-auto text-[11px] font-black text-[#FF5E00]">
+            Total Final: {formatBRL(price)}
+          </span>
+        </div>
 
         {/* Etiquetas e ações */}
         <div className="mt-1.5 flex items-end justify-between gap-2">
@@ -741,16 +813,24 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
           </div>
         ) : (
           <>
-            {groups.map(group => (
-              <section key={group.date} className="space-y-2">
-                <div className="flex items-center gap-2 px-1 pt-1">
-                  <LayoutGrid className="w-4 h-4 text-orange-500" />
-                  <h2 className="text-[17px] font-black text-slate-900">{group.date}</h2>
-                  <span className="px-2 py-0.5 rounded-lg bg-slate-200 text-slate-600 text-[11px] font-bold">{group.total} pedidos</span>
-                </div>
-                {group.orders.map(renderCard)}
-              </section>
-            ))}
+            {groups.map(group => {
+              const groupTotalValue = group.orders.reduce((sum, o) => sum + orderPrice(o), 0);
+              return (
+                <section key={group.date} className="space-y-2">
+                  <div className="flex items-center justify-between gap-2 px-1 pt-1 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <LayoutGrid className="w-4 h-4 text-orange-500" />
+                      <h2 className="text-[17px] font-black text-slate-900">{group.date}</h2>
+                      <span className="px-2 py-0.5 rounded-lg bg-slate-200 text-slate-600 text-[11px] font-bold">{group.total} pedidos</span>
+                    </div>
+                    <span className="px-2.5 py-0.5 rounded-lg bg-emerald-100 border border-emerald-300 text-emerald-900 text-[12px] font-black shadow-2xs">
+                      Total somado: {formatBRL(groupTotalValue)}
+                    </span>
+                  </div>
+                  {group.orders.map(renderCard)}
+                </section>
+              );
+            })}
             {visibleCount < filteredOrders.length && (
               <button
                 type="button"

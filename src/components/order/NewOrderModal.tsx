@@ -88,6 +88,7 @@ export interface PastOrderRecord {
   id: string;
   orderCode: string;
   dateStr: string;
+  placeName?: string;
   operationType: OperationType;
   pickupAddress: string;
   pickupCoords: LocationCoordinates;
@@ -100,6 +101,8 @@ export interface PastOrderRecord {
   volumesCount: string;
   responsibleName: string;
   responsiblePhone: string;
+  sellerName?: string;
+  sellerPhone?: string;
   observations: string;
   price: number;
   executionCount?: number;

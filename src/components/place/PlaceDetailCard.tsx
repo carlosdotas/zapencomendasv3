@@ -348,7 +348,8 @@ export const PlaceDetailCard: React.FC = () => {
     if (!selectedPlace) return false;
     if (selectedPlace.id && (selectedPlace.id.startsWith('draft-') || selectedPlace.id.startsWith('new-'))) return false;
 
-    // Está salva se já estiver presente na lista de locais ativos/salvos do mapa
+    // Está salva se já for um pedido persistido ou estiver presente na lista de locais ativos/salvos do mapa
+    if (selectedPlace.id && selectedPlace.id.startsWith('pedido-') && !selectedPlace.id.includes('draft') && !selectedPlace.id.includes('temp')) return true;
     if (allPlaces?.some(p => p.id === selectedPlace.id)) return true;
     if (savedPlaces?.some(p => p.id === selectedPlace.id)) return true;
 
@@ -377,7 +378,7 @@ export const PlaceDetailCard: React.FC = () => {
     if (isDriverRole) {
       setSaveSuccessToast('🔒 Motoristas não possuem permissão para adicionar ou editar pedidos.');
     } else {
-      setSaveSuccessToast('🔒 Clique no botão "Editar" para fazer alterações neste pedido.');
+      setIsEditingOrder(true);
     }
   }, [isDriverRole]);
 
@@ -545,9 +546,12 @@ export const PlaceDetailCard: React.FC = () => {
     setNewCustomPackageInput('');
   }, [newCustomPackageInput, selectedPlace, customPackageTypes, updatePlaceDetails]);
 
-  // Estado para editar observações
+  // Estado para editar observações por etapa (Coleta, Troca, Entrega)
   const [isEditingObservations, setIsEditingObservations] = useState(false);
   const [editedObservations, setEditedObservations] = useState('');
+  const [editedPickupNotes, setEditedPickupNotes] = useState('');
+  const [editedExchangeNotes, setEditedExchangeNotes] = useState('');
+  const [editedDeliveryNotes, setEditedDeliveryNotes] = useState('');
 
   // Modal da Etapa Final com Detalhes, Rota, Preços e Compartilhar no Zap
   const [isFinalDetailsOpen, setIsFinalDetailsOpen] = useState(false);
@@ -707,6 +711,9 @@ export const PlaceDetailCard: React.FC = () => {
       setShowPackagePicker(false);
       setIsEditingObservations(false);
       setEditedObservations(selectedPlace.observations || '');
+      setEditedPickupNotes(selectedPlace.pickupNotes || '');
+      setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
+      setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
       setNewCustomPackageInput('');
 
       // Inicializa dimensões a partir de selectedPlace.dimensions (ex: 30x20x15 cm)
@@ -1828,8 +1835,13 @@ ${horarioText}
       }
     }
 
-    addNewOrder(updated);
-    updatePlaceDetails(selectedPlace.id, updated);
+    if (isAlreadySaved) {
+      updatePlaceDetails(selectedPlace.id, updated);
+      setSelectedPlace(prev => (prev && prev.id === selectedPlace.id ? { ...prev, ...updated } : prev));
+    } else {
+      addNewOrder(updated);
+      updatePlaceDetails(selectedPlace.id, updated);
+    }
     if (isEditingObservations) {
       setIsEditingObservations(false);
     }
@@ -2633,6 +2645,12 @@ ${horarioText}
                   <span>Editar</span>
                 </button>
               )}
+              {isEditingOrder && (
+                <span className="px-2.5 py-1 rounded-full bg-[#DC2626] text-white text-[11px] font-black inline-flex items-center gap-1 shadow-2xs">
+                  <Edit3 className="w-3 h-3 stroke-[2.5]" />
+                  <span>Editando</span>
+                </span>
+              )}
 
               <button
                 onClick={triggerClose}
@@ -2645,19 +2663,28 @@ ${horarioText}
             </div>
           </div>
 
-          {/* BANNER DE MODO DE EDIÇÃO ATIVO */}
+          {/* BANNER DE MODO DE EDIÇÃO ATIVO - FUNDO VERMELHO, LETRA BRANCA, BEM DESTACADO E LEGÍVEL */}
           {isEditingOrder && (
-            <div className="bg-amber-500 text-white px-3.5 py-1.5 flex items-center justify-between text-xs font-black shadow-xs shrink-0">
-              <span className="flex items-center gap-1.5">
-                <Edit3 className="w-3.5 h-3.5" />
-                Modo de Edição Ativo
-              </span>
+            <div 
+              className="bg-[#DC2626] text-white px-3.5 py-2 flex items-center justify-between text-xs sm:text-sm font-black shadow-md shrink-0 border-y-2 border-red-700 animate-in fade-in duration-150"
+              title="Modo de edição ativo. Toque nos dados para alterar."
+            >
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-white animate-pulse shrink-0" />
+                <span className="flex items-center gap-1.5 uppercase tracking-wide font-black">
+                  <Edit3 className="w-4 h-4 stroke-[2.8]" />
+                  Modo de Edição Ativo
+                </span>
+                <span className="hidden sm:inline text-[11px] font-bold text-white/95">
+                  • Toque nos campos para alterar
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={() => setIsEditingOrder(false)}
-                className="text-[11px] font-extrabold text-white/90 hover:text-white underline cursor-pointer"
+                className="bg-white hover:bg-red-50 text-red-700 active:scale-95 px-3 py-1 rounded-lg text-xs font-black uppercase tracking-wider shadow-xs transition-all cursor-pointer"
               >
-                Cancelar Edição
+                Concluir
               </button>
             </div>
           )}
@@ -2696,7 +2723,21 @@ ${horarioText}
             )}
 
             {/* Nome do Local, Endereço, Foto da Encomenda & Distância */}
-            <div className="flex items-start gap-3">
+            <div 
+              onClick={() => {
+                if (!isEditingOrder && canEdit) {
+                  setIsEditingOrder(true);
+                }
+              }}
+              className={`flex items-start gap-3 p-1 rounded-2xl transition-all ${
+                !isEditingOrder && canEdit 
+                  ? 'cursor-pointer hover:bg-slate-50/80 hover:ring-1 hover:ring-blue-200' 
+                  : isEditingOrder 
+                  ? 'bg-red-50/40 border border-red-200 p-2 rounded-2xl' 
+                  : ''
+              }`}
+              title={!isEditingOrder && canEdit ? "Toque nesta área para editar os dados deste pedido" : undefined}
+            >
               {/* Foto da Encomenda (Proporcional à altura das linhas de título, endereço e status) */}
               <div 
                 onClick={(e) => {
@@ -2837,31 +2878,80 @@ ${horarioText}
             {/* CLIENTE E VENDEDOR (RESPONSÁVEL) - motorista só vê os cartões preenchidos */}
             {(!isDriverRole || hasCustomer || hasResponsible) && (
             <div className={`w-full grid ${isDriverRole && (hasCustomer !== hasResponsible) ? 'grid-cols-1' : 'grid-cols-2'} gap-1.5 sm:gap-2 shrink-0`}>
-              {/* CARD 1: CLIENTE - Tema Azul Corporativo #0B5187 */}
+              {/* CARD 1: CLIENTE */}
               {hasCustomer ? (
-                <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-blue-50/90 via-white to-sky-50/60 border border-blue-200/90 shadow-2xs hover:shadow-xs transition-all">
-                  {/* Cabeçalho do Card */}
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="inline-flex items-center gap-1 text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider text-[#0B5187] bg-blue-100/90 px-1.5 py-0.5 rounded-md leading-none">
-                      <User className="w-2.5 h-2.5" />
-                      Cliente
-                    </span>
-                    <div className="flex items-center gap-0.5">
-                      {canEdit && (
+                !isEditingOrder ? (
+                  /* MODO VISUALIZAÇÃO: O CARD INTEIRO É UM BOTÃO DE WHATSAPP DIRETO */
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (customerPhone) {
+                        handleWhatsApp(customerPhone, customerName);
+                      } else if (canEdit) {
+                        handleOpenCustomerSelector('customer');
+                      }
+                    }}
+                    className="relative flex flex-col justify-between p-2.5 rounded-xl bg-gradient-to-br from-emerald-50 via-white to-green-50 border-2 border-emerald-500/80 hover:border-emerald-600 hover:bg-emerald-50 active:scale-[0.98] shadow-xs hover:shadow-md transition-all cursor-pointer text-left w-full group min-h-[76px]"
+                    title={`Abrir WhatsApp para falar com ${customerName}`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-1">
+                      <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-emerald-800 bg-emerald-100/90 px-1.5 py-0.5 rounded-md leading-none">
+                        <MessageCircle className="w-2.5 h-2.5 fill-current text-emerald-600" />
+                        Cliente WhatsApp
+                      </span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    </div>
+
+                    <div className="flex items-center gap-2 w-full my-0.5 min-w-0">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                        {customerName ? customerName.charAt(0).toUpperCase() : <User className="w-3.5 h-3.5" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-black text-slate-900 truncate leading-tight group-hover:text-emerald-700 transition-colors">
+                          {customerName}
+                        </p>
+                        <p className="text-[10px] text-emerald-700 font-bold truncate leading-tight mt-0.5 flex items-center gap-0.5">
+                          {customerPhone ? (
+                            <>
+                              <Phone className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                              <span>{formatPhoneDisplay(customerPhone)}</span>
+                            </>
+                          ) : (
+                            <span className="text-slate-400 italic">Toque para cadastrar tel</span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="w-full mt-1 pt-1 border-t border-emerald-100/90 flex items-center justify-between text-[9.5px] font-black text-emerald-700">
+                      <span className="flex items-center gap-1">
+                        <MessageCircle className="w-3 h-3 fill-current text-emerald-600" />
+                        <span>Abrir WhatsApp</span>
+                      </span>
+                      <span className="text-emerald-600 text-[11px] group-hover:translate-x-0.5 transition-transform">➔</span>
+                    </div>
+                  </button>
+                ) : (
+                  /* MODO EDIÇÃO ATIVO: CAMPO EDITÁVEL COM BOTÃO TROCAR E REMOVER */
+                  <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-blue-50/90 via-white to-sky-50/60 border-2 border-red-300 shadow-2xs hover:shadow-xs transition-all">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="inline-flex items-center gap-1 text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider text-[#0B5187] bg-blue-100/90 px-1.5 py-0.5 rounded-md leading-none">
+                        <User className="w-2.5 h-2.5" />
+                        Cliente (Editando)
+                      </span>
+                      <div className="flex items-center gap-0.5">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             handleOpenCustomerSelector('customer');
                           }}
-                          className="text-[9px] font-bold text-[#0B5187] hover:text-blue-900 bg-white hover:bg-blue-100/80 border border-blue-200/90 px-1 py-0.2 rounded flex items-center gap-0.5 transition-colors cursor-pointer"
+                          className="text-[9px] font-bold text-[#0B5187] hover:text-blue-900 bg-white hover:bg-blue-100/80 border border-blue-200/90 px-1.5 py-0.5 rounded flex items-center gap-0.5 transition-colors cursor-pointer"
                           title="Trocar cliente"
                         >
-                          <Edit3 className="w-2 h-2" />
+                          <Edit3 className="w-2.5 h-2.5" />
                           Trocar
                         </button>
-                      )}
-                      {canEdit && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -2872,75 +2962,40 @@ ${horarioText}
                           className="text-slate-400 hover:text-rose-600 p-0.5 rounded transition-colors cursor-pointer"
                           title="Remover cliente"
                         >
-                          <X className="w-2.5 h-2.5" />
+                          <X className="w-3 h-3" />
                         </button>
-                      )}
+                      </div>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenCustomerSelector('customer')}
+                      className="flex items-center gap-1.5 text-left w-full my-0.5 group text-inherit min-w-0 cursor-pointer"
+                      title="Clique para alterar dados do cliente"
+                    >
+                      <div className="w-6 h-6 rounded-lg bg-[#0B5187] text-white flex items-center justify-center font-black text-[11px] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                        {customerName ? customerName.charAt(0).toUpperCase() : <User className="w-3 h-3" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11.5px] sm:text-xs font-black text-slate-900 truncate leading-tight group-hover:text-[#0B5187] transition-colors">
+                          {customerName}
+                        </p>
+                        <p className="text-[9.5px] text-slate-500 font-semibold truncate leading-tight mt-0.5 flex items-center gap-0.5">
+                          {customerPhone ? (
+                            <>
+                              <Phone className="w-2 h-2 text-slate-400 shrink-0" />
+                              <span>{formatPhoneDisplay(customerPhone)}</span>
+                            </>
+                          ) : (
+                            <span className="text-slate-400 italic">Sem telefone</span>
+                          )}
+                        </p>
+                      </div>
+                    </button>
                   </div>
-
-                  {/* Informações: Avatar + Nome + Telefone */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canEdit) {
-                        handleLockedEditAttempt();
-                        return;
-                      }
-                      handleOpenCustomerSelector('customer');
-                    }}
-                    className={`flex items-center gap-1.5 text-left w-full my-0.5 group text-inherit min-w-0 ${canEdit ? 'cursor-pointer' : 'cursor-default'}`}
-                    title={canEdit ? "Clique para gerenciar dados do cliente" : (customerName || 'Cliente')}
-                  >
-                    <div className="w-6 h-6 rounded-lg bg-[#0B5187] text-white flex items-center justify-center font-black text-[11px] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-                      {customerName ? customerName.charAt(0).toUpperCase() : <User className="w-3 h-3" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[11.5px] sm:text-xs font-black text-slate-900 truncate leading-tight group-hover:text-[#0B5187] transition-colors">
-                        {customerName}
-                      </p>
-                      <p className="text-[9.5px] text-slate-500 font-semibold truncate leading-tight mt-0.5 flex items-center gap-0.5">
-                        {customerPhone ? (
-                          <>
-                            <Phone className="w-2 h-2 text-slate-400 shrink-0" />
-                            <span>{formatPhoneDisplay(customerPhone)}</span>
-                          </>
-                        ) : (
-                          <span className="text-slate-400 italic">Sem telefone</span>
-                        )}
-                      </p>
-                    </div>
-                  </button>
-
-                  {/* Botão de Ação WhatsApp ou Adicionar Telefone */}
-                  {customerPhone ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleWhatsApp(customerPhone, customerName);
-                      }}
-                      className="mt-0.5 w-full py-1 px-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-black text-[10px] flex items-center justify-center gap-1 shadow-2xs transition-all cursor-pointer leading-none"
-                      title={`Conversar com ${customerName} no WhatsApp`}
-                    >
-                      <MessageCircle className="w-2.5 h-2.5 fill-current" />
-                      <span>WhatsApp</span>
-                    </button>
-                  ) : canEdit ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleOpenCustomerSelector('customer');
-                      }}
-                      className="mt-0.5 w-full py-1 px-1.5 rounded-lg bg-blue-100/70 hover:bg-blue-100 text-[#0B5187] font-bold text-[9px] flex items-center justify-center gap-0.5 transition-colors cursor-pointer leading-none"
-                    >
-                      <Plus className="w-2.5 h-2.5" />
-                      <span>Adicionar Tel</span>
-                    </button>
-                  ) : null}
-                </div>
+                )
               ) : isDriverRole ? null : (
-                /* Card Cliente Vazio - Compacto e convidativo */
+                /* Card Cliente Vazio - Campo para adicionar */
                 <button
                   type="button"
                   onClick={() => {
@@ -2964,31 +3019,80 @@ ${horarioText}
                 </button>
               )}
 
-              {/* CARD 2: VENDEDOR (RESPONSÁVEL) - Tema Laranja Vibrante #FF5E00 (Abre form direto com Agenda) */}
+              {/* CARD 2: VENDEDOR (RESPONSÁVEL) */}
               {hasResponsible ? (
-                <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-orange-50/90 via-white to-amber-50/60 border border-orange-200/90 shadow-2xs hover:shadow-xs transition-all">
-                  {/* Cabeçalho do Card */}
-                  <div className="flex items-center justify-between gap-1 mb-1">
-                    <span className="inline-flex items-center gap-1 text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider text-[#FF5E00] bg-orange-100/90 px-1.5 py-0.5 rounded-md leading-none">
-                      <UserCheck className="w-2.5 h-2.5" />
-                      Vendedor (Responsável)
-                    </span>
-                    <div className="flex items-center gap-0.5">
-                      {canEdit && (
+                !isEditingOrder ? (
+                  /* MODO VISUALIZAÇÃO: O CARD INTEIRO É UM BOTÃO DE WHATSAPP DIRETO */
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (responsiblePhone) {
+                        handleWhatsApp(responsiblePhone, responsibleName);
+                      } else if (canEdit) {
+                        setIsSellerModalOpen(true);
+                      }
+                    }}
+                    className="relative flex flex-col justify-between p-2.5 rounded-xl bg-gradient-to-br from-emerald-50 via-white to-teal-50 border-2 border-emerald-500/80 hover:border-emerald-600 hover:bg-emerald-50 active:scale-[0.98] shadow-xs hover:shadow-md transition-all cursor-pointer text-left w-full group min-h-[76px]"
+                    title={`Abrir WhatsApp para falar com ${responsibleName}`}
+                  >
+                    <div className="flex items-center justify-between w-full mb-1">
+                      <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-emerald-800 bg-emerald-100/90 px-1.5 py-0.5 rounded-md leading-none">
+                        <MessageCircle className="w-2.5 h-2.5 fill-current text-emerald-600" />
+                        Vendedor WhatsApp
+                      </span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    </div>
+
+                    <div className="flex items-center gap-2 w-full my-0.5 min-w-0">
+                      <div className="w-7 h-7 rounded-lg bg-[#FF5E00] text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                        {responsibleName ? responsibleName.charAt(0).toUpperCase() : <UserCheck className="w-3.5 h-3.5" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-black text-slate-900 truncate leading-tight group-hover:text-emerald-700 transition-colors">
+                          {responsibleName}
+                        </p>
+                        <p className="text-[10px] text-emerald-700 font-bold truncate leading-tight mt-0.5 flex items-center gap-0.5">
+                          {responsiblePhone ? (
+                            <>
+                              <Phone className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                              <span>{formatPhoneDisplay(responsiblePhone)}</span>
+                            </>
+                          ) : (
+                            <span className="text-slate-400 italic">Toque para cadastrar tel</span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="w-full mt-1 pt-1 border-t border-emerald-100/90 flex items-center justify-between text-[9.5px] font-black text-emerald-700">
+                      <span className="flex items-center gap-1">
+                        <MessageCircle className="w-3 h-3 fill-current text-emerald-600" />
+                        <span>Abrir WhatsApp</span>
+                      </span>
+                      <span className="text-emerald-600 text-[11px] group-hover:translate-x-0.5 transition-transform">➔</span>
+                    </div>
+                  </button>
+                ) : (
+                  /* MODO EDIÇÃO ATIVO: CAMPO EDITÁVEL COM BOTÃO EDITAR E REMOVER */
+                  <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-orange-50/90 via-white to-amber-50/60 border-2 border-red-300 shadow-2xs hover:shadow-xs transition-all">
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className="inline-flex items-center gap-1 text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider text-[#FF5E00] bg-orange-100/90 px-1.5 py-0.5 rounded-md leading-none">
+                        <UserCheck className="w-2.5 h-2.5" />
+                        Vendedor (Editando)
+                      </span>
+                      <div className="flex items-center gap-0.5">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             setIsSellerModalOpen(true);
                           }}
-                          className="text-[9px] font-bold text-[#FF5E00] hover:text-orange-900 bg-white hover:bg-orange-100/80 border border-orange-200/90 px-1 py-0.2 rounded flex items-center gap-0.5 transition-colors cursor-pointer"
+                          className="text-[9px] font-bold text-[#FF5E00] hover:text-orange-900 bg-white hover:bg-orange-100/80 border border-orange-200/90 px-1.5 py-0.5 rounded flex items-center gap-0.5 transition-colors cursor-pointer"
                           title="Trocar vendedor / responsável"
                         >
-                          <Edit3 className="w-2 h-2" />
+                          <Edit3 className="w-2.5 h-2.5" />
                           Trocar
                         </button>
-                      )}
-                      {canEdit && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -3006,75 +3110,40 @@ ${horarioText}
                           className="text-slate-400 hover:text-rose-600 p-0.5 rounded transition-colors cursor-pointer"
                           title="Remover vendedor / responsável"
                         >
-                          <X className="w-2.5 h-2.5" />
+                          <X className="w-3 h-3" />
                         </button>
-                      )}
+                      </div>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsSellerModalOpen(true)}
+                      className="flex items-center gap-1.5 text-left w-full my-0.5 group text-inherit min-w-0 cursor-pointer"
+                      title="Clique para editar vendedor / responsável ou buscar na agenda"
+                    >
+                      <div className="w-6 h-6 rounded-lg bg-[#FF5E00] text-white flex items-center justify-center font-black text-[11px] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                        {responsibleName ? responsibleName.charAt(0).toUpperCase() : <UserCheck className="w-3 h-3" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11.5px] sm:text-xs font-black text-slate-900 truncate leading-tight group-hover:text-[#FF5E00] transition-colors">
+                          {responsibleName}
+                        </p>
+                        <p className="text-[9.5px] text-slate-500 font-semibold truncate leading-tight mt-0.5 flex items-center gap-0.5">
+                          {responsiblePhone ? (
+                            <>
+                              <Phone className="w-2 h-2 text-slate-400 shrink-0" />
+                              <span>{formatPhoneDisplay(responsiblePhone)}</span>
+                            </>
+                          ) : (
+                            <span className="text-slate-400 italic">Sem telefone</span>
+                          )}
+                        </p>
+                      </div>
+                    </button>
                   </div>
-
-                  {/* Informações: Avatar + Nome + Telefone (Clique abre form com Nome, Telefone e Agenda) */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canEdit) {
-                        handleLockedEditAttempt();
-                        return;
-                      }
-                      setIsSellerModalOpen(true);
-                    }}
-                    className={`flex items-center gap-1.5 text-left w-full my-0.5 group text-inherit min-w-0 ${canEdit ? 'cursor-pointer' : 'cursor-default'}`}
-                    title={canEdit ? "Clique para editar vendedor / responsável ou buscar na agenda" : (responsibleName || 'Vendedor')}
-                  >
-                    <div className="w-6 h-6 rounded-lg bg-[#FF5E00] text-white flex items-center justify-center font-black text-[11px] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-                      {responsibleName ? responsibleName.charAt(0).toUpperCase() : <UserCheck className="w-3 h-3" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[11.5px] sm:text-xs font-black text-slate-900 truncate leading-tight group-hover:text-[#FF5E00] transition-colors">
-                        {responsibleName}
-                      </p>
-                      <p className="text-[9.5px] text-slate-500 font-semibold truncate leading-tight mt-0.5 flex items-center gap-0.5">
-                        {responsiblePhone ? (
-                          <>
-                            <Phone className="w-2 h-2 text-slate-400 shrink-0" />
-                            <span>{formatPhoneDisplay(responsiblePhone)}</span>
-                          </>
-                        ) : (
-                          <span className="text-slate-400 italic">Sem telefone</span>
-                        )}
-                      </p>
-                    </div>
-                  </button>
-
-                  {/* Botão de Ação WhatsApp ou Adicionar Telefone */}
-                  {responsiblePhone ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleWhatsApp(responsiblePhone, responsibleName);
-                      }}
-                      className="mt-0.5 w-full py-1 px-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] text-white font-black text-[10px] flex items-center justify-center gap-1 shadow-2xs transition-all cursor-pointer leading-none"
-                      title={`Conversar com ${responsibleName} no WhatsApp`}
-                    >
-                      <MessageCircle className="w-2.5 h-2.5 fill-current" />
-                      <span>WhatsApp</span>
-                    </button>
-                  ) : canEdit ? (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setIsSellerModalOpen(true);
-                      }}
-                      className="mt-0.5 w-full py-1 px-1.5 rounded-lg bg-orange-100/70 hover:bg-orange-100 text-[#FF5E00] font-bold text-[9px] flex items-center justify-center gap-0.5 transition-colors cursor-pointer leading-none"
-                    >
-                      <Plus className="w-2.5 h-2.5" />
-                      <span>Editar Dados</span>
-                    </button>
-                  ) : null}
-                </div>
+                )
               ) : isDriverRole ? null : (
-                /* Card Vendedor Vazio - Abre diretamente formulário com Nome, Telefone e Agenda */
+                /* Card Vendedor Vazio - Campo para adicionar */
                 <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-orange-50/50 via-white to-amber-50/30 border-2 border-dashed border-orange-200 hover:border-[#FF5E00] hover:bg-orange-50/60 transition-all min-h-[74px]">
                   <button
                     type="button"
@@ -3504,112 +3573,284 @@ ${horarioText}
               </div>
             )}
 
-            {/* AVISO DE MODO EDIÇÃO ATIVO */}
+            {/* AVISO DE MODO EDIÇÃO ATIVO - FUNDO VERMELHO, LETRA BRANCA */}
             {isEditingOrder && (
-              <div className="flex items-center justify-between px-3 py-1.5 rounded-xl bg-amber-100/90 border border-amber-300 text-amber-900 text-xs font-bold animate-in fade-in duration-150 shrink-0">
-                <div className="flex items-center gap-1.5">
-                  <Edit3 className="w-3.5 h-3.5 text-amber-700 stroke-[2.5]" />
-                  <span>Modo de Edição Ativo</span>
+              <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-[#DC2626] border-2 border-red-700 text-white text-xs sm:text-sm font-black animate-in fade-in duration-150 shrink-0 shadow-md">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full bg-white animate-pulse" />
+                  <span className="uppercase tracking-wide">Modo de Edição Ativo</span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setIsEditingOrder(false)}
-                  className="text-[11px] underline font-bold hover:text-amber-950 cursor-pointer"
+                  className="bg-white hover:bg-red-50 text-red-700 px-3 py-1 rounded-lg text-xs font-black uppercase tracking-wider transition-colors cursor-pointer shadow-xs active:scale-95"
                 >
-                  Cancelar
+                  Concluir Edição
                 </button>
               </div>
             )}
 
-            {/* OBSERVAÇÕES COM BOTÃO DE EDITAR E SUGESTÕES RÁPIDAS (motorista só vê se houver observação) */}
-            {(!isDriverRole || observations) && (
-            <div className="bg-amber-50/90 rounded-2xl p-3 border border-amber-200/90 shadow-2xs space-y-2 shrink-0">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <FileText className="w-3.5 h-3.5 text-amber-700 stroke-[2.4]" />
-                  <span className="text-[10px] font-black uppercase tracking-wider text-amber-900">
-                    Observações da Encomenda
-                  </span>
+            {/* COMENTÁRIOS E OBSERVAÇÕES POR ETAPA (COLETA, ENTREGA E TROCA) */}
+            {(!isDriverRole || observations || selectedPlace.pickupNotes || selectedPlace.deliveryNotes || selectedPlace.exchangeNotes) && (
+              <div className="bg-gradient-to-br from-amber-50/90 via-white to-orange-50/40 rounded-2xl p-3 border border-amber-200/90 shadow-2xs space-y-2.5 shrink-0">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <FileText className="w-4 h-4 text-amber-700 stroke-[2.4]" />
+                    <span className="text-[11px] font-black uppercase tracking-wider text-amber-950">
+                      Comentários por Etapa {Boolean(operationType === 'troca' || selectedPlace.isExchangeOrder) ? '(Coleta, Troca, Entrega)' : '(Coleta e Entrega)'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!canEdit) {
+                        handleLockedEditAttempt();
+                        return;
+                      }
+                      setIsEditingObservations(prev => {
+                        const next = !prev;
+                        if (next) {
+                          setEditedPickupNotes(selectedPlace.pickupNotes || '');
+                          setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
+                          setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
+                          setEditedObservations(observations || '');
+                        }
+                        return next;
+                      });
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-100 text-amber-950 border border-amber-300 rounded-lg text-[10px] font-black transition-all cursor-pointer shadow-2xs active:scale-95"
+                  >
+                    <Edit3 className="w-3 h-3 stroke-[2.5]" />
+                    <span>{isEditingObservations ? 'Fechar' : 'Editar Comentários'}</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!canEdit) {
-                      handleLockedEditAttempt();
-                      return;
-                    }
-                    setIsEditingObservations(prev => !prev);
-                    setEditedObservations(observations);
-                  }}
-                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-[10px] font-black transition-all cursor-pointer shadow-2xs active:scale-95"
-                >
-                  <Edit3 className="w-3 h-3 stroke-[2.5]" />
-                  <span>{isEditingObservations ? 'Cancelar' : 'Editar'}</span>
-                </button>
-              </div>
 
-              {isEditingObservations ? (
-                <div className="space-y-2 pt-1 animate-in fade-in duration-100">
-                  <textarea
-                    value={editedObservations}
-                    onChange={(e) => setEditedObservations(e.target.value)}
-                    placeholder="Instruções de portaria, interfone, cuidados ou referências..."
-                    rows={3}
-                    className="w-full text-xs font-semibold text-slate-800 bg-white border border-amber-300 rounded-xl p-2.5 focus:border-[#0B5187] focus:outline-none focus:ring-1 focus:ring-[#0B5187]"
-                  />
+                {isEditingObservations ? (
+                  <div className="space-y-3 pt-1 animate-in fade-in duration-150">
+                    {/* 1. Comentário da Coleta */}
+                    <div className="space-y-1.5 p-2.5 rounded-xl bg-blue-50/80 border border-blue-200">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-black uppercase text-[#0B5187] flex items-center gap-1">
+                          <ArrowDownToLine className="w-3.5 h-3.5 stroke-[2.8]" />
+                          <span>1. Comentário da Coleta</span>
+                        </label>
+                        <span className="text-[10px] text-blue-700 font-bold">Origem</span>
+                      </div>
+                      <textarea
+                        value={editedPickupNotes}
+                        onChange={(e) => setEditedPickupNotes(e.target.value)}
+                        placeholder="Ex: Pegar na recepção, procurar por Maria, exigir nota fiscal..."
+                        rows={2}
+                        className="w-full text-xs font-semibold text-slate-800 bg-white border border-blue-300 rounded-xl p-2 focus:border-[#0B5187] focus:outline-none focus:ring-1 focus:ring-[#0B5187]"
+                      />
+                      <div className="flex flex-wrap gap-1">
+                        {[
+                          '🏢 Portaria social',
+                          '🔔 Tocar interfone',
+                          '📞 Ligar antes de chegar',
+                          '📦 Retirar no balcão',
+                          '📄 Pegar nota fiscal'
+                        ].map((chip) => (
+                          <button
+                            key={chip}
+                            type="button"
+                            onClick={() => {
+                              setEditedPickupNotes(prev => prev ? `${prev} • ${chip}` : chip);
+                            }}
+                            className="px-2 py-0.5 bg-white hover:bg-blue-100 border border-blue-200 rounded-md text-[9.5px] font-bold text-[#0B5187] transition-colors cursor-pointer"
+                          >
+                            {chip}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-                  {/* Chips Rápidos */}
-                  <div className="flex flex-wrap gap-1">
-                    {[
-                      '🏢 Portaria social',
-                      '🔔 Tocar interfone',
-                      '📞 Ligar antes de chegar',
-                      '🚪 Deixar na portaria',
-                      '🐕 Cuidado cão bravo',
-                      '👥 Deixar com vizinho'
-                    ].map((chip) => (
+                    {/* 2. Comentário da Troca (exibido sempre que for pedido de Troca) */}
+                    {(operationType === 'troca' || selectedPlace.isExchangeOrder) && (
+                      <div className="space-y-1.5 p-2.5 rounded-xl bg-purple-50/80 border border-purple-200">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-black uppercase text-purple-900 flex items-center gap-1">
+                            <Repeat className="w-3.5 h-3.5 stroke-[2.8]" />
+                            <span>2. Comentário da Troca</span>
+                          </label>
+                          <span className="text-[10px] text-purple-700 font-bold">Local da Troca</span>
+                        </div>
+                        <textarea
+                          value={editedExchangeNotes}
+                          onChange={(e) => setEditedExchangeNotes(e.target.value)}
+                          placeholder="Ex: Conferir tamanho do calçado, receber peça antiga na caixa original..."
+                          rows={2}
+                          className="w-full text-xs font-semibold text-slate-800 bg-white border border-purple-300 rounded-xl p-2 focus:border-purple-600 focus:outline-none focus:ring-1 focus:ring-purple-600"
+                        />
+                        <div className="flex flex-wrap gap-1">
+                          {[
+                            '🔄 Conferir peça/tamanho',
+                            '📦 Receber produto antigo',
+                            '🏷️ Conferir etiqueta',
+                            '📞 Chamar cliente no portão'
+                          ].map((chip) => (
+                            <button
+                              key={chip}
+                              type="button"
+                              onClick={() => {
+                                setEditedExchangeNotes(prev => prev ? `${prev} • ${chip}` : chip);
+                              }}
+                              className="px-2 py-0.5 bg-white hover:bg-purple-100 border border-purple-200 rounded-md text-[9.5px] font-bold text-purple-900 transition-colors cursor-pointer"
+                            >
+                              {chip}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 3. Comentário da Entrega (Destino final / Retorno na troca) */}
+                    <div className="space-y-1.5 p-2.5 rounded-xl bg-orange-50/80 border border-orange-200">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[11px] font-black uppercase text-[#FF5E00] flex items-center gap-1">
+                          <Package className="w-3.5 h-3.5 stroke-[2.8]" />
+                          <span>{Boolean(operationType === 'troca' || selectedPlace.isExchangeOrder) ? '3. Comentário da Entrega / Retorno' : '2. Comentário da Entrega'}</span>
+                        </label>
+                        <span className="text-[10px] text-orange-700 font-bold">Destino</span>
+                      </div>
+                      <textarea
+                        value={editedDeliveryNotes}
+                        onChange={(e) => setEditedDeliveryNotes(e.target.value)}
+                        placeholder="Ex: Deixar na portaria com o porteiro, ligar antes, cuidado com cão..."
+                        rows={2}
+                        className="w-full text-xs font-semibold text-slate-800 bg-white border border-orange-300 rounded-xl p-2 focus:border-[#FF5E00] focus:outline-none focus:ring-1 focus:ring-[#FF5E00]"
+                      />
+                      <div className="flex flex-wrap gap-1">
+                        {[
+                          '🚪 Deixar na portaria',
+                          '👥 Deixar com vizinho',
+                          '🔔 Tocar interfone/campainha',
+                          '🐕 Cuidado cão bravo',
+                          '✍️ Colher assinatura'
+                        ].map((chip) => (
+                          <button
+                            key={chip}
+                            type="button"
+                            onClick={() => {
+                              setEditedDeliveryNotes(prev => prev ? `${prev} • ${chip}` : chip);
+                            }}
+                            className="px-2 py-0.5 bg-white hover:bg-orange-100 border border-orange-200 rounded-md text-[9.5px] font-bold text-orange-950 transition-colors cursor-pointer"
+                          >
+                            {chip}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-1">
                       <button
-                        key={chip}
+                        type="button"
+                        onClick={() => setIsEditingObservations(false)}
+                        className="px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200 transition-colors cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
                         type="button"
                         onClick={() => {
-                          setEditedObservations(prev => prev ? `${prev} • ${chip}` : chip);
-                        }}
-                        className="px-2 py-0.5 bg-white hover:bg-amber-100 border border-amber-200 rounded-lg text-[10px] font-bold text-amber-950 transition-colors cursor-pointer"
-                      >
-                        {chip}
-                      </button>
-                    ))}
-                  </div>
+                          const isExchangeOrderActive = operationType === 'troca' || Boolean(selectedPlace.isExchangeOrder);
+                          const combined = [
+                            editedPickupNotes ? `[Coleta] ${editedPickupNotes}` : null,
+                            isExchangeOrderActive && editedExchangeNotes ? `[Troca] ${editedExchangeNotes}` : null,
+                            editedDeliveryNotes ? `[Entrega] ${editedDeliveryNotes}` : null
+                          ].filter(Boolean).join(' • ');
 
-                  <div className="flex justify-end gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setIsEditingObservations(false)}
-                      className="px-2.5 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200 transition-colors cursor-pointer"
-                    >
-                      Cancelar
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        updatePlaceDetails(selectedPlace.id, { observations: editedObservations });
-                        setIsEditingObservations(false);
-                      }}
-                      className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black shadow-xs transition-colors flex items-center gap-1 cursor-pointer"
-                    >
-                      <Check className="w-3.5 h-3.5 stroke-[3]" />
-                      <span>Salvar Obs</span>
-                    </button>
+                          const updatedDetails: Partial<Place> = {
+                            pickupNotes: editedPickupNotes,
+                            exchangeNotes: isExchangeOrderActive ? editedExchangeNotes : undefined,
+                            deliveryNotes: editedDeliveryNotes,
+                            observations: combined || editedObservations
+                          };
+
+                          updatePlaceDetails(selectedPlace.id, updatedDetails);
+                          setSelectedPlace(prev => (prev ? { ...prev, ...updatedDetails } : null));
+                          setIsEditingObservations(false);
+                          setSaveSuccessToast('✅ Comentários atualizados com sucesso!');
+                          setTimeout(() => setSaveSuccessToast(null), 3000);
+                        }}
+                        className="px-3.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer active:scale-95"
+                      >
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                        <span>Salvar Comentários</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <p className="text-xs text-slate-800 leading-snug font-semibold whitespace-pre-line pl-1">
-                  {observations ? observations : (
-                    <span className="text-slate-400 italic font-normal">Nenhuma observação informada. Toque em Editar para adicionar.</span>
-                  )}
-                </p>
-              )}
-            </div>
+                ) : (
+                  /* MODO DE VISUALIZAÇÃO DOS COMENTÁRIOS DAS ETAPAS */
+                  <div 
+                    onClick={() => {
+                      if (!isEditingObservations && canEdit) {
+                        setEditedPickupNotes(selectedPlace.pickupNotes || '');
+                        setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
+                        setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
+                        setEditedObservations(observations || '');
+                        setIsEditingObservations(true);
+                      }
+                    }}
+                    className={`space-y-2 text-xs text-slate-800 ${canEdit ? 'cursor-pointer hover:opacity-95' : ''}`}
+                    title={canEdit ? "Toque para editar os comentários das etapas" : undefined}
+                  >
+                    {/* Linha Coleta */}
+                    <div className="flex items-start gap-2 p-2 rounded-xl bg-blue-50/60 border border-blue-200/80">
+                      <span className="px-1.5 py-0.5 rounded-md bg-[#0B5187] text-white font-black text-[9px] uppercase shrink-0 flex items-center gap-1">
+                        <ArrowDownToLine className="w-2.5 h-2.5" />
+                        Coleta
+                      </span>
+                      <p className="flex-1 font-semibold text-slate-800 break-words leading-snug">
+                        {selectedPlace.pickupNotes ? (
+                          selectedPlace.pickupNotes
+                        ) : (
+                          <span className="text-slate-400 italic font-normal">Sem comentário na coleta.</span>
+                        )}
+                      </p>
+                    </div>
+
+                    {/* Linha Troca (se for troca) */}
+                    {(operationType === 'troca' || selectedPlace.isExchangeOrder) && (
+                      <div className="flex items-start gap-2 p-2 rounded-xl bg-purple-50/60 border border-purple-200/80">
+                        <span className="px-1.5 py-0.5 rounded-md bg-purple-700 text-white font-black text-[9px] uppercase shrink-0 flex items-center gap-1">
+                          <Repeat className="w-2.5 h-2.5" />
+                          Troca
+                        </span>
+                        <p className="flex-1 font-semibold text-slate-800 break-words leading-snug">
+                          {selectedPlace.exchangeNotes ? (
+                            selectedPlace.exchangeNotes
+                          ) : (
+                            <span className="text-slate-400 italic font-normal">Sem comentário na troca.</span>
+                          )}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Linha Entrega */}
+                    <div className="flex items-start gap-2 p-2 rounded-xl bg-orange-50/60 border border-orange-200/80">
+                      <span className="px-1.5 py-0.5 rounded-md bg-[#FF5E00] text-white font-black text-[9px] uppercase shrink-0 flex items-center gap-1">
+                        <Package className="w-2.5 h-2.5" />
+                        {Boolean(operationType === 'troca' || selectedPlace.isExchangeOrder) ? 'Entrega/Retorno' : 'Entrega'}
+                      </span>
+                      <p className="flex-1 font-semibold text-slate-800 break-words leading-snug">
+                        {selectedPlace.deliveryNotes ? (
+                          selectedPlace.deliveryNotes
+                        ) : (
+                          <span className="text-slate-400 italic font-normal">Sem comentário na entrega.</span>
+                        )}
+                      </p>
+                    </div>
+
+                    {/* Se tiver observação legada que não se encaixa nas 3 */}
+                    {observations && !selectedPlace.pickupNotes && !selectedPlace.deliveryNotes && !selectedPlace.exchangeNotes && (
+                      <p className="text-[11px] text-slate-600 italic bg-white p-1.5 rounded-lg border border-slate-200">
+                        {observations}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
           </div>

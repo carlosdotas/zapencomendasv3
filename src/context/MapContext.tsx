@@ -1173,12 +1173,26 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...(partial.vehicleType ? { tipo_veiculo: partial.vehicleType } : {}),
         ...(partial.driverNotes || partial.observations ? { detalhes: partial.driverNotes || partial.observations } : {}),
         ...(partial.price ? { total: partial.price } : {}),
-        ...(partial.pickupName ? { coleta_nome: partial.pickupName } : {}),
+        ...(partial.name ? { local: partial.name } : {}),
+        ...(partial.pickupName ? { coleta_nome: partial.pickupName, coleta_local: partial.pickupName } : {}),
         ...(partial.pickupAddress ? { coleta_endereco: partial.pickupAddress } : {}),
-        ...(partial.deliveryName ? { entrega_nome: partial.deliveryName } : {}),
+        ...(partial.pickupCoordinates?.lat ? { coleta_lat: partial.pickupCoordinates.lat } : {}),
+        ...(partial.pickupCoordinates?.lng ? { coleta_lng: partial.pickupCoordinates.lng } : {}),
+        ...(partial.pickupContact ? { coleta_contato: partial.pickupContact } : {}),
+        ...(partial.pickupPhone ? { coleta_phone: partial.pickupPhone } : {}),
+        ...(partial.pickupNotes ? { coleta_obs: partial.pickupNotes } : {}),
+        ...(partial.deliveryName ? { entrega_nome: partial.deliveryName, entrega_local: partial.deliveryName } : {}),
         ...(partial.deliveryAddress ? { entrega_endereco: partial.deliveryAddress } : {}),
+        ...(partial.deliveryCoordinates?.lat ? { entrega_lat: partial.deliveryCoordinates.lat } : {}),
+        ...(partial.deliveryCoordinates?.lng ? { entrega_lng: partial.deliveryCoordinates.lng } : {}),
+        ...(partial.deliveryContact ? { entrega_contato: partial.deliveryContact } : {}),
+        ...(partial.deliveryPhone ? { entrega_phone: partial.deliveryPhone } : {}),
+        ...(partial.deliveryNotes ? { entrega_obs: partial.deliveryNotes } : {}),
         ...(partial.exchangeName ? { troca_nome: partial.exchangeName } : {}),
-        ...(partial.exchangeAddress ? { troca_endereco: partial.exchangeAddress } : {})
+        ...(partial.exchangeAddress ? { troca_endereco: partial.exchangeAddress } : {}),
+        ...(partial.exchangeCoordinates?.lat ? { troca_lat: partial.exchangeCoordinates.lat } : {}),
+        ...(partial.exchangeCoordinates?.lng ? { troca_lng: partial.exchangeCoordinates.lng } : {}),
+        ...(partial.exchangeNotes ? { troca_obs: partial.exchangeNotes } : {})
       }).catch(() => {});
     }
   }, []);
@@ -2227,6 +2241,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
+    // Se o pedido já é um pedido existente no sistema, apenas atualiza para evitar duplicação de marker
+    const isExistingOrder = typeof newPlace.id === 'string' && (newPlace.id.startsWith('pedido-') || (newPlace.orderCode && !newPlace.orderCode.startsWith('TEMP-')));
+    if (isExistingOrder) {
+      updatePlaceDetails(newPlace.id, newPlace);
+      return;
+    }
+
     setAllPlaces(prev => {
       const next = [newPlace, ...prev.filter(p => p.id !== newPlace.id)];
       try {
@@ -2348,7 +2369,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch((err) => {
       console.warn('Erro ao salvar pedido na API:', err);
     });
-  }, [flyToLocation]);
+  }, [flyToLocation, updatePlaceDetails, currentRole, user]);
 
   // Dá baixa em um ponto (coleta, troca ou entrega) e avança para a próxima etapa conforme as regras do EncomendasZap
   const completePlaceWaypoint = useCallback(async (rawPlaceId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity) => {

@@ -19,7 +19,9 @@ import {
   TrendingUp,
   ChevronDown,
   Phone,
-  MessageSquare
+  MessageSquare,
+  Copy,
+  Check
 } from 'lucide-react';
 import { Customer } from '../../types/customer';
 import { PastOrderRecord } from './NewOrderModal';
@@ -47,7 +49,19 @@ export const CustomerOrderHistoryFullScreen: React.FC<CustomerOrderHistoryFullSc
 
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'coleta' | 'entrega' | 'troca'>('all');
-  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopyOrder = (order: PastOrderRecord) => {
+    const op = order.operationType.toUpperCase();
+    const loc = order.placeName || order.deliveryAddress || order.pickupAddress;
+    const seller = order.sellerName || order.responsibleName ? ` | Vendedor: ${order.sellerName || order.responsibleName} ${order.sellerPhone || order.responsiblePhone ? `(${order.sellerPhone || order.responsiblePhone})` : ''}` : '';
+    const text = `Pedido #${order.orderCode} [${op}]\nLocal: ${loc}\nColeta: ${order.pickupAddress}\nEntrega: ${order.deliveryAddress}${order.exchangeAddress ? `\nTroca: ${order.exchangeAddress}` : ''}\nVeículo: ${order.vehicleType.toUpperCase()} | Pacote: ${order.packageType} (${order.volumesCount})${seller}\nValor: R$ ${(order.price || 0).toFixed(2)}${order.observations ? `\nObs: ${order.observations}` : ''}`;
+    try {
+      navigator.clipboard.writeText(text);
+      setCopiedId(order.id);
+      setTimeout(() => setCopiedId(null), 2500);
+    } catch {}
+  };
 
   // Contagem de frequência dos locais (endereços de entrega/coleta) do cliente
   const locationFrequencies = useMemo(() => {
@@ -227,12 +241,11 @@ export const CustomerOrderHistoryFullScreen: React.FC<CustomerOrderHistoryFullSc
         <div className="max-w-6xl mx-auto space-y-2">
           
           {/* CABEÇALHO TABULAR EM DESKTOP (FONTE BEM LEGÍVEL) */}
-          <div className="hidden lg:grid grid-cols-12 gap-3 px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 bg-slate-200/80 rounded-xl select-none shadow-2xs">
-            <div className="col-span-3">1. Cliente / Operação</div>
-            <div className="col-span-4">2. Coleta (A) ➔ 3. Entrega (B)</div>
-            <div className="col-span-3">Detalhes da Carga</div>
-            <div className="col-span-1 text-right">4. Preço</div>
-            <div className="col-span-1 text-right">Ação</div>
+          <div className="hidden lg:grid grid-cols-12 gap-2 px-3 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-600 bg-slate-200/90 rounded-lg select-none shadow-2xs">
+            <div className="col-span-4">1. Local & Operação (Em Evidência)</div>
+            <div className="col-span-5">2. Vendedor, Veículo & Detalhes</div>
+            <div className="col-span-1 text-right">Preço</div>
+            <div className="col-span-2 text-right">Ações Rápidas</div>
           </div>
 
           {filteredOrders.length === 0 ? (
@@ -260,241 +273,112 @@ export const CustomerOrderHistoryFullScreen: React.FC<CustomerOrderHistoryFullSc
               const isColeta = order.operationType === 'coleta';
               const isTroca = order.operationType === 'troca';
               const formattedPrice = (order.price || 18.5).toFixed(2).replace('.', ',');
-              const isExpanded = expandedOrderId === order.id;
+              const locDisplayName = order.placeName || (isColeta ? order.pickupAddress.split(',')[0] : order.deliveryAddress.split(',')[0]) || 'Local';
+              const mainAddress = isColeta ? order.pickupAddress : order.deliveryAddress;
 
               return (
                 <div
                   key={order.id}
-                  className={`bg-white rounded-xl border-2 transition-all p-2.5 sm:px-4 sm:py-3 shadow-2xs hover:border-[#0B5187] hover:bg-blue-50/20 ${
-                    isTop 
-                      ? 'border-amber-400 ring-1 ring-amber-400/40 bg-linear-to-r from-amber-50/40 via-white to-white' 
-                      : 'border-slate-200'
+                  className={`bg-white rounded-lg border transition-all px-3 py-1.5 sm:py-2 shadow-2xs hover:border-[#0B5187] flex flex-col lg:grid lg:grid-cols-12 gap-2 items-start lg:items-center text-xs ${
+                    isTop ? 'border-amber-400 bg-amber-50/20' : 'border-slate-200'
                   }`}
                 >
-                  
-                  {/* LINHA PRINCIPAL COM FONTE LEGÍVEL */}
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 lg:gap-3 items-center">
-                    
-                    {/* 1. CLIENTE & OPERAÇÃO (col-span-3) */}
-                    <div className="lg:col-span-3 flex items-center gap-2.5 min-w-0">
-                      
-                      {/* Tag com Ícone da Operação */}
-                      <span 
-                        className={`shrink-0 w-8 h-8 rounded-xl flex items-center justify-center font-black shadow-2xs ${
-                          isColeta 
-                            ? 'bg-blue-100 text-[#0B5187] border border-blue-200' 
-                            : isTroca 
-                            ? 'bg-purple-100 text-purple-900 border border-purple-200' 
-                            : 'bg-orange-100 text-[#FF5E00] border border-orange-200'
-                        }`}
-                        title={`Operação: ${order.operationType.toUpperCase()}`}
+                  {/* 1. LOCAL & OPERAÇÃO EM EVIDÊNCIA (col-span-4) */}
+                  <div className="lg:col-span-4 flex items-center gap-2 min-w-0 w-full">
+                    {/* Badge de Operação */}
+                    <span
+                      className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider text-white shadow-2xs ${
+                        isColeta ? 'bg-[#0B5187]' : isTroca ? 'bg-purple-700' : 'bg-[#FF5E00]'
+                      }`}
+                      title={`Operação: ${order.operationType.toUpperCase()}`}
+                    >
+                      {order.operationType}
+                    </span>
+
+                    {/* Nome do Local em Evidência */}
+                    <div className="min-w-0 flex-1">
+                      <span
+                        className="font-black text-xs sm:text-sm text-[#0B2F5B] truncate block uppercase tracking-tight"
+                        title={`Local: ${locDisplayName}`}
                       >
-                        {isColeta ? (
-                          <ArrowDownToLine className="w-4 h-4 stroke-[2.5]" />
-                        ) : isTroca ? (
-                          <RotateCcw className="w-4 h-4 stroke-[2.5]" />
-                        ) : (
-                          <ArrowUpFromLine className="w-4 h-4 stroke-[2.5]" />
-                        )}
+                        📍 {locDisplayName}
                       </span>
-
-                      {/* Nome do Cliente e Tag de Repetições */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 truncate flex-wrap">
-                          <span className="text-xs sm:text-sm font-black text-slate-900 truncate">
-                            {customer.fullName}
-                          </span>
-                          {(() => {
-                            const locKey = (order.deliveryAddress || order.pickupAddress || '').trim().toLowerCase();
-                            const locFreq = locationFrequencies[locKey] || order.executionCount || 1;
-                            return locFreq > 1 ? (
-                              <span className="shrink-0 text-[10px] font-black px-1.5 py-0.2 rounded-md bg-emerald-100 text-emerald-900 border border-emerald-300 flex items-center gap-0.5">
-                                <span>📍</span>
-                                <span>Local {locFreq}x</span>
-                              </span>
-                            ) : null;
-                          })()}
-                          {order.executionCount && order.executionCount > 1 && (
-                            <span className="shrink-0 text-[10px] font-black px-1.5 py-0.2 rounded-md bg-amber-100 text-amber-900 border border-amber-300">
-                              🔥 {order.executionCount}x
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs font-bold text-slate-500 flex items-center gap-1.5 truncate mt-0.5">
-                          <span className="font-extrabold text-slate-700">#{order.orderCode}</span>
-                          <span>•</span>
-                          <span className="truncate">{order.dateStr}</span>
-                        </div>
-                      </div>
-
-                      {/* Preço visível em mobile ao lado do nome */}
-                      <span className="lg:hidden text-sm sm:text-base font-black text-[#0B5187] shrink-0">
-                        R$ {formattedPrice}
+                      <span className="text-[10.5px] font-semibold text-slate-500 truncate block" title={mainAddress}>
+                        {mainAddress}
                       </span>
                     </div>
-
-                    {/* 2 & 3. LOCAL DE COLETA (A) ➔ LOCAL DE ENTREGA (B) (col-span-4) */}
-                    <div className="lg:col-span-4 flex items-center gap-2 min-w-0">
-                      
-                      {/* Ponto A (Coleta) */}
-                      <div className="flex items-start gap-1.5 min-w-0 flex-1 bg-blue-50/80 lg:bg-transparent px-2 py-1 lg:p-0 rounded-xl">
-                        <span className="w-5 h-5 rounded-md bg-[#0B5187] text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs mt-0.5">
-                          A
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs sm:text-sm font-extrabold text-slate-900 truncate" title={`Coleta: ${order.pickupAddress}`}>
-                            {order.pickupAddress}
-                          </p>
-                          {/* Cidade embaixo do endereço de coleta com fonte legível */}
-                          <p className="text-xs font-bold text-slate-600 truncate flex items-center gap-1 mt-0.5">
-                            <span className="text-[#0B5187] font-black">📍</span>
-                            <span className="truncate">{extractCityFromAddress(order.pickupAddress)}</span>
-                          </p>
-                        </div>
-                      </div>
-
-                      <span className="text-slate-400 font-black text-xs shrink-0 self-center">➔</span>
-
-                      {/* Ponto B (Entrega) */}
-                      <div className="flex items-start gap-1.5 min-w-0 flex-1 bg-orange-50/80 lg:bg-transparent px-2 py-1 lg:p-0 rounded-xl">
-                        <span className="w-5 h-5 rounded-md bg-[#FF5E00] text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs mt-0.5">
-                          B
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-xs sm:text-sm font-extrabold text-slate-900 truncate" title={`Entrega: ${order.deliveryAddress}`}>
-                            {order.deliveryAddress}
-                          </p>
-                          {/* Cidade embaixo do endereço de entrega com fonte legível */}
-                          <p className="text-xs font-bold text-slate-600 truncate flex items-center gap-1 mt-0.5">
-                            <span className="text-[#FF5E00] font-black">📍</span>
-                            <span className="truncate">{extractCityFromAddress(order.deliveryAddress)}</span>
-                          </p>
-                          {/* Se for troca */}
-                          {isTroca && order.exchangeAddress && (
-                            <div className="pt-1 border-t border-purple-100 mt-1">
-                              <p className="text-xs text-purple-900 font-extrabold truncate flex items-center gap-1" title={`Ponto de Troca: ${order.exchangeAddress}`}>
-                                <span>🔄</span>
-                                <span className="truncate">{order.exchangeAddress}</span>
-                              </p>
-                              <p className="text-xs text-purple-700 font-bold truncate pl-3.5 mt-0.5">
-                                📍 {extractCityFromAddress(order.exchangeAddress)}
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                    </div>
-
-                    {/* DETALHES COMPLETOS DA CARGA EM LINHA (col-span-3) - FONTE LEGÍVEL */}
-                    <div className="lg:col-span-3 flex items-center gap-1.5 flex-wrap min-w-0">
-                      
-                      {/* Tipo de Carga */}
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 text-slate-800 font-bold text-xs border border-slate-200 shadow-2xs">
-                        <Package className="w-3.5 h-3.5 text-slate-500" />
-                        <span className="truncate max-w-[80px]">{order.packageType}</span>
-                      </span>
-
-                      {/* Volumes */}
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 text-slate-800 font-bold text-xs border border-slate-200 shadow-2xs">
-                        <Layers className="w-3.5 h-3.5 text-slate-500" />
-                        <span>{order.volumesCount}</span>
-                      </span>
-
-                      {/* Veículo */}
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-100 text-[#0B5187] font-black text-xs border border-blue-200 uppercase shadow-2xs">
-                        {order.vehicleType === 'carro' ? <Car className="w-3.5 h-3.5" /> : order.vehicleType === 'utilitario' ? <Truck className="w-3.5 h-3.5" /> : <Bike className="w-3.5 h-3.5" />}
-                        <span>{order.vehicleType}</span>
-                      </span>
-
-                      {/* Frágil */}
-                      {order.isFragile && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-100 text-amber-900 font-black text-xs border border-amber-300 shadow-2xs">
-                          <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
-                          <span>Frágil</span>
-                        </span>
-                      )}
-
-                      {/* Peso */}
-                      {order.weightKg && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 font-bold text-xs border border-slate-200 shadow-2xs">
-                          <Scale className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{order.weightKg}kg</span>
-                        </span>
-                      )}
-
-                      {/* Medidas */}
-                      {order.dimensions && (
-                        <span className="text-xs font-semibold text-slate-500 hidden xl:inline">
-                          📐 {order.dimensions}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* 4. PREÇO (col-span-1) - DESKTOP (DESTAQUE GRANDE E LEGÍVEL) */}
-                    <div className="hidden lg:flex flex-col items-end justify-center lg:col-span-1">
-                      <span className="text-base sm:text-lg font-black text-[#0B5187] whitespace-nowrap">
-                        R$ {formattedPrice}
-                      </span>
-                    </div>
-
-                    {/* AÇÃO: REPETIR & EXPANDIR (col-span-1) */}
-                    <div className="lg:col-span-1 flex items-center justify-end gap-1.5">
-                      
-                      {/* Botão de Expandir Observações */}
-                      <button
-                        type="button"
-                        onClick={() => setExpandedOrderId(isExpanded ? null : order.id)}
-                        className={`p-1.5 rounded-lg text-slate-500 hover:text-slate-800 transition-colors cursor-pointer border ${
-                          isExpanded ? 'bg-blue-100 text-[#0B5187] border-blue-200' : 'bg-slate-50 border-slate-200 hover:bg-slate-100'
-                        }`}
-                        title="Ver responsável e observações completas"
-                      >
-                        <ChevronDown className={`w-4 h-4 transition-transform duration-150 ${isExpanded ? 'rotate-180 text-[#0B5187]' : ''}`} />
-                      </button>
-
-                      {/* Botão Repetir Pedido (Oculto para motoristas) */}
-                      {!isDriver && (
-                        <button
-                          type="button"
-                          onClick={() => onRepeatOrder(order)}
-                          className="px-3 py-1.5 bg-[#FF5E00] hover:bg-[#E05300] active:scale-95 text-white font-black text-xs sm:text-sm rounded-xl shadow-xs flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
-                          title="Repetir este pedido gerando uma nova encomenda na data atual"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5 stroke-[2.8]" />
-                          <span>Repetir Pedido</span>
-                        </button>
-                      )}
-                    </div>
-
                   </div>
 
-                  {/* SUB-LINHA EXPANSÍVEL: RESPONSÁVEL E OBSERVAÇÕES (FONTE CLARA E LEGÍVEL) */}
-                  {isExpanded && (
-                    <div className="mt-2 pt-2 border-t border-slate-200 flex items-center gap-4 flex-wrap text-xs text-slate-700 bg-slate-50 p-2.5 rounded-xl">
-                      <span className="flex items-center gap-1.5 font-bold text-slate-900">
-                        <User className="w-4 h-4 text-slate-500" />
-                        <span>Responsável: <strong>{order.responsibleName}</strong></span>
-                        {order.responsiblePhone && <span className="text-slate-600 font-semibold">({order.responsiblePhone})</span>}
-                      </span>
-
-                      {order.dimensions && (
-                        <span>📐 Medidas: <strong className="text-slate-900">{order.dimensions}</strong></span>
-                      )}
-
-                      {order.distanceKm && (
-                        <span className="text-emerald-800 font-black">⚡ Distância: {order.distanceKm} km</span>
-                      )}
-
-                      {order.observations && (
-                        <span className="flex items-center gap-1 text-slate-700 italic font-medium">
-                          <MessageSquare className="w-3.5 h-3.5 text-slate-400" />
-                          <span>"{order.observations}"</span>
+                  {/* 2. VENDEDOR, VEÍCULO & CARGA (col-span-5) */}
+                  <div className="lg:col-span-5 flex items-center gap-1.5 flex-wrap min-w-0">
+                    {/* Contato do Vendedor */}
+                    {(order.sellerName || order.responsibleName) && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-950 border border-amber-200 text-[10.5px] font-bold">
+                        <User className="w-3 h-3 text-amber-700 shrink-0" />
+                        <span className="truncate max-w-[130px]">
+                          Vendedor: <strong>{order.sellerName || order.responsibleName}</strong>
                         </span>
-                      )}
-                    </div>
-                  )}
+                        {(order.sellerPhone || order.responsiblePhone) && (
+                          <span className="text-amber-800 font-medium">({order.sellerPhone || order.responsiblePhone})</span>
+                        )}
+                      </span>
+                    )}
 
+                    {/* Tamanho do Veículo */}
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-50 text-[#0B5187] border border-blue-200 text-[10.5px] font-black uppercase">
+                      {order.vehicleType === 'carro' ? <Car className="w-3 h-3 text-blue-600" /> : order.vehicleType === 'utilitario' ? <Truck className="w-3 h-3 text-indigo-600" /> : <Bike className="w-3 h-3 text-emerald-600" />}
+                      <span>{order.vehicleType}</span>
+                    </span>
+
+                    {/* Carga / Volumes */}
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 text-[10.5px] font-bold">
+                      <Package className="w-3 h-3 text-slate-500 shrink-0" />
+                      <span className="truncate max-w-[80px]">{order.packageType}</span>
+                      {order.volumesCount && <span className="text-slate-400">({order.volumesCount})</span>}
+                    </span>
+
+                    {/* Medidas / Peso se houver */}
+                    {order.dimensions && (
+                      <span className="text-[10px] text-slate-500 font-semibold hidden xl:inline">📐 {order.dimensions}</span>
+                    )}
+                    {order.weightKg && (
+                      <span className="text-[10px] text-slate-500 font-semibold hidden xl:inline">⚖️ {order.weightKg}kg</span>
+                    )}
+                  </div>
+
+                  {/* 3. PREÇO (col-span-1) */}
+                  <div className="lg:col-span-1 text-left lg:text-right">
+                    <span className="font-black text-xs sm:text-sm text-emerald-700 px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 whitespace-nowrap inline-block">
+                      R$ {formattedPrice}
+                    </span>
+                  </div>
+
+                  {/* 4. AÇÕES RÁPIDAS: COPIAR E REFAZER PEDIDO (col-span-2) */}
+                  <div className="lg:col-span-2 flex items-center justify-end gap-1.5 w-full lg:w-auto">
+                    <button
+                      type="button"
+                      onClick={() => handleCopyOrder(order)}
+                      className="px-2 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 active:scale-95 text-slate-700 text-xs font-bold flex items-center gap-1 transition-all cursor-pointer shadow-2xs"
+                      title="Copiar dados do pedido"
+                      aria-label="Copiar dados do pedido"
+                    >
+                      {copiedId === order.id ? <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[3]" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedId === order.id ? 'Copiado' : 'Copiar'}</span>
+                    </button>
+
+                    {!isDriver && (
+                      <button
+                        type="button"
+                        onClick={() => onRepeatOrder(order)}
+                        className="px-2.5 py-1 rounded-lg bg-[#FF5E00] hover:bg-[#E05300] active:scale-95 text-white text-xs font-black flex items-center gap-1 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
+                        title="Refazer pedido gerando nova encomenda para hoje"
+                        aria-label="Refazer pedido"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 stroke-[2.8]" />
+                        <span>Refazer</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })

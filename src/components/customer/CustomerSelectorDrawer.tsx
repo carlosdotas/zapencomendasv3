@@ -94,6 +94,8 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
     openCustomerLocationModal, 
     selectedPlace,
     allPlaces,
+    savedPlaces,
+    completedOrders,
     addNewOrder,
     setSelectedPlace,
     mapInstance
@@ -132,7 +134,14 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
     const custPhoneDigits = (historyCustomer.phone || '').replace(/\D/g, '');
 
     // 1. Busca encomendas reais salvas deste cliente no app
-    const matches = (allPlaces || []).filter(p => {
+    const candidates = new Map<string, Place>();
+    [...(allPlaces || []), ...(savedPlaces || []), ...(completedOrders || [])].forEach(p => {
+      if (p && p.id && !candidates.has(p.id)) {
+        candidates.set(p.id, p);
+      }
+    });
+
+    const matches = Array.from(candidates.values()).filter(p => {
       const pName = (p.customerName || '').toLowerCase().trim();
       const pPhone = (p.customerPhone || '').replace(/\D/g, '');
       const pId = p.customerId || '';
@@ -143,10 +152,12 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
     });
 
     matches.forEach((p, idx) => {
+      const locName = p.name || (p.operationType === 'coleta' ? (p.pickupName || p.name) : (p.deliveryName || p.name)) || p.address || 'Local';
       list.push({
         id: `real-${p.id}`,
         orderCode: p.orderCode || `ZAP-${1000 + idx}`,
         dateStr: p.scheduledDate ? `Agendado: ${p.scheduledDate}` : 'No sistema',
+        placeName: locName,
         operationType: p.operationType || 'entrega',
         pickupAddress: p.pickupAddress || p.address || 'Goiânia - GO',
         pickupCoords: p.pickupCoordinates || p.coordinates || { lat: -16.6869, lng: -49.2648 },
@@ -156,11 +167,16 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
         deliveryCoords: p.deliveryCoordinates || p.coordinates || { lat: -16.7020, lng: -49.2610 },
         vehicleType: p.vehicleType || 'moto',
         packageType: p.packageType || 'caixa',
-        volumesCount: '1 volume',
+        volumesCount: p.volumesCount ? `${p.volumesCount} vol` : '1 volume',
+        sellerName: p.sellerName || p.responsibleName || '',
+        sellerPhone: p.sellerPhone || p.responsiblePhone || '',
         responsibleName: p.sellerName || p.responsibleName || 'Central EncomendasZap',
         responsiblePhone: p.sellerPhone || p.responsiblePhone || '(62) 3999-8800',
-        observations: p.observations || '',
-        price: p.price || 20.0,
+        observations: p.driverNotes || p.observations || '',
+        price: Number(p.price) || Number((p as any).total) || 20.0,
+        isFragile: p.isFragile,
+        weightKg: p.weightKg,
+        dimensions: p.dimensions,
         executionCount: 1
       });
     });
@@ -239,7 +255,7 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
       if (freqB !== freqA) return freqB - freqA;
       return (b.executionCount || 0) - (a.executionCount || 0);
     });
-  }, [historyCustomer, allPlaces]);
+  }, [historyCustomer, allPlaces, savedPlaces, completedOrders]);
 
   // Ação de repetir pedido do histórico: GERA NOVO PEDIDO NA DATA ATUAL
   const handleRepeatOrderFromHistory = (pastOrder: PastOrderRecord) => {
@@ -251,7 +267,7 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
     const newPlace: Place = {
       id: `pedido-${Date.now()}-coleta`,
       orderCode: `ZAP-${Math.floor(1000 + Math.random() * 9000)}`,
-      name: `Coleta: ${pastOrder.pickupAddress.split(',')[0]}`,
+      name: pastOrder.placeName || (pastOrder.operationType === 'coleta' ? `Coleta: ${pastOrder.pickupAddress.split(',')[0]}` : `Entrega: ${pastOrder.deliveryAddress.split(',')[0]}`),
       category: pastOrder.operationType === 'troca' ? 'Troca de Mercadoria' : 'Coleta Expressa',
       address: pastOrder.pickupAddress,
       coordinates: pastOrder.pickupCoords,
@@ -274,8 +290,13 @@ export const CustomerSelectorDrawer: React.FC<CustomerSelectorDrawerProps> = ({
       deliveryPhone: historyCustomer.phone,
       exchangeAddress: pastOrder.exchangeAddress,
       exchangeCoordinates: pastOrder.exchangeCoords,
+      sellerName: pastOrder.sellerName,
+      sellerPhone: pastOrder.sellerPhone,
       responsibleName: pastOrder.responsibleName,
       responsiblePhone: pastOrder.responsiblePhone,
+      isFragile: pastOrder.isFragile,
+      weightKg: pastOrder.weightKg,
+      dimensions: pastOrder.dimensions,
       observations: pastOrder.observations || `Pedido repetido do histórico para hoje (${todayFormatted})`,
       price: pastOrder.price,
       priceItems: [{ id: 'item-base', name: 'Taxa de Entrega', value: pastOrder.price || 20, isRemovable: false }]

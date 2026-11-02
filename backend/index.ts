@@ -1,6 +1,11 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+process.env.DISABLE_HMR = 'true';
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'mysql://root:password@127.0.0.1:3306/encomendaszap';
+}
+
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import path from 'path';
@@ -17,6 +22,24 @@ import { prisma } from './db';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = __dirname;
 const ROOT_DIR = path.resolve(__dirname, '..');
+
+const isProd =
+  process.env.NODE_ENV === 'production' ||
+  process.argv.includes('--prod') ||
+  (fs.existsSync(path.resolve(ROOT_DIR, 'dist', 'index.html')) && process.env.npm_lifecycle_event !== 'dev');
+
+const getPort = (): number => {
+  const argIdx = process.argv.indexOf('--port');
+  if (argIdx !== -1 && process.argv[argIdx + 1]) {
+    return parseInt(process.argv[argIdx + 1], 10);
+  }
+  if (!isProd) {
+    return 3000;
+  }
+  return parseInt(process.env.PORT || '3000', 10);
+};
+
+const PORT = getPort();
 
 const app = express();
 const server = http.createServer(app);
@@ -54,12 +77,6 @@ viteWss.on('connection', ws => {
   });
   ws.on('error', () => {});
 });
-
-const PORT = parseInt(process.env.PORT || '3000', 10);
-const isProd =
-  process.env.NODE_ENV === 'production' ||
-  process.argv.includes('--prod') ||
-  (fs.existsSync(path.resolve(ROOT_DIR, 'dist', 'index.html')) && process.env.npm_lifecycle_event !== 'dev');
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -241,7 +258,11 @@ registerGoogleRoutes(app, BACKEND_DIR);
 registerApiRoutes(app, { saveBase64Image, uploadToPhpServer, imageServerConfigured });
 
 async function startServer() {
-  await registerRealtime(app, wss);
+  try {
+    await registerRealtime(app, wss);
+  } catch (err: any) {
+    console.warn('[EncomendasZap Server] Aviso ao registrar realtime:', err?.message || err);
+  }
   registerNotifications(app);
 
   app.all('/api/*', (req: Request, res: Response) => {
@@ -297,15 +318,18 @@ async function startServer() {
     });
   }
 
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[EncomendasZap Server] Rodando na porta ${PORT} com WebSocket ativo (${isProd ? 'produção' : 'desenvolvimento'})`);
-  });
+  if (!server.listening) {
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`[EncomendasZap Server] Rodando na porta ${PORT} com WebSocket ativo (${isProd ? 'produção' : 'desenvolvimento'})`);
+    });
+  }
 }
 
 startServer().catch(err => {
-  console.error('[EncomendasZap Server] Falha crítica ao inicializar servidor:', err);
-  if (String(err?.message || '').includes('does not exist')) {
-    console.error('Banco não inicializado. Rode: npm run db:push && npm run db:import');
+  console.error('[EncomendasZap Server] Aviso na inicialização:', err);
+  if (!server.listening) {
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`[EncomendasZap Server] Rodando na porta ${PORT} em modo de recuperação`);
+    });
   }
-  prisma.$disconnect().finally(() => process.exit(1));
 });

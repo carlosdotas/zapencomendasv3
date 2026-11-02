@@ -474,9 +474,15 @@ export const createPlaceMarkerIcon = (
 
   // Veículo da encomenda individual
   const singleVehicle = getVehicleInfo(place.vehicleType);
+  const singlePrice = Number(place.price) || Number((place as any).total) || Number((place as any).valor_total) || 0;
   const singleClientName = place.customerName 
     ? (place.customerName.length > 26 ? place.customerName.slice(0, 24) + '...' : place.customerName) 
     : 'Cliente';
+
+  // Soma dos valores de todas as encomendas no mesmo local
+  const sumTotalValues = isMultiple
+    ? placesAtLocation.reduce((acc, p) => acc + (Number(p.price) || Number((p as any).total) || Number((p as any).valor_total) || 0), 0)
+    : singlePrice;
 
   // Montagem do conteúdo dos clientes:
   // Se houver mais de uma encomenda no mesmo lugar:
@@ -487,6 +493,7 @@ export const createPlaceMarkerIcon = (
       ${placesAtLocation.slice(0, 4).map((p, idx) => {
         const cName = p.customerName ? (p.customerName.length > 20 ? p.customerName.slice(0, 18) + '..' : p.customerName) : `Cliente ${idx + 1}`;
         const pVeh = getVehicleInfo(p.vehicleType);
+        const pPrice = Number(p.price) || Number((p as any).total) || Number((p as any).valor_total) || 0;
 
         let opLabel = 'Entrega';
         let opBg = 'rgba(234, 88, 12, 0.90)';
@@ -513,7 +520,7 @@ export const createPlaceMarkerIcon = (
             class="place-marker-customer-line" 
             data-customer-idx="${idx}"
             style="background: ${opBg}; border: 1.2px solid ${opBorder}; border-radius: 6px; padding: 2px 5px; display: flex; align-items: center; gap: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.3); transition: transform 0.12s ease;"
-            title="${opLabel}: ${cName} (${pVeh.label})"
+            title="${opLabel}: ${cName} (${pVeh.label}) - R$ ${pPrice.toFixed(2)}"
           >
             <!-- Na frente: se é carro ou moto com cor de fundo para diferenciar -->
             <span 
@@ -525,7 +532,7 @@ export const createPlaceMarkerIcon = (
             </span>
 
             <!-- Nome do cliente -->
-            <span class="place-marker-customer-name" style="color: #ffffff; font-size: 10.5px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;">
+            <span class="place-marker-customer-name" style="color: #ffffff; font-size: 10.5px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 105px;">
               ${cName}
             </span>
 
@@ -542,8 +549,15 @@ export const createPlaceMarkerIcon = (
               </span>
             ` : ''}
 
+            <!-- Valor do pedido individual -->
+            ${pPrice > 0 ? `
+              <span style="font-size: 9px; font-weight: 900; color: #FEF08A; text-shadow: 0 1px 2px rgba(0,0,0,0.5); white-space: nowrap; margin-left: auto;">
+                R$ ${pPrice.toFixed(2)}
+              </span>
+            ` : ''}
+
             <!-- Nome da operação (Coleta, Entrega, Troca) -->
-            <span style="margin-left: auto; font-size: 8.5px; font-weight: 900; text-transform: uppercase; color: #ffffff; opacity: 0.95; letter-spacing: 0.02em; padding-left: 2px;">
+            <span style="${pPrice > 0 ? 'margin-left: 2px;' : 'margin-left: auto;'} font-size: 8.5px; font-weight: 900; text-transform: uppercase; color: #ffffff; opacity: 0.95; letter-spacing: 0.02em; padding-left: 2px;">
               ${opLabel}
             </span>
           </div>
@@ -564,9 +578,14 @@ export const createPlaceMarkerIcon = (
         <span>${singleVehicle.emoji}</span>
         <span>${singleVehicle.label}</span>
       </span>
-      <span class="place-marker-customer" style="color: #ffffff; font-size: 11px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 155px;">
+      <span class="place-marker-customer" style="color: #ffffff; font-size: 11px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;">
         ${singleClientName}
       </span>
+      ${singlePrice > 0 ? `
+        <span style="margin-left: auto; font-size: 9.5px; font-weight: 900; color: #FEF08A; text-shadow: 0 1px 2px rgba(0,0,0,0.5); white-space: nowrap; background: rgba(0,0,0,0.25); padding: 0.5px 4px; border-radius: 4px;">
+          R$ ${singlePrice.toFixed(2)}
+        </span>
+      ` : ''}
     </div>
 
     ${isSingleMissing ? `
@@ -658,7 +677,7 @@ export const createPlaceMarkerIcon = (
                 : isPublicForDriver
                 ? `<span class="place-marker-op-badge" style="background: linear-gradient(135deg, #F59E0B, #D97706); border: 1.2px solid #FDE68A; color: #FFFFFF; font-size: 9px; font-weight: 900; padding: 1.5px 5px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.02em;">⚡ ${isMultiple ? `${placesAtLocation.length} PEDIDOS` : 'DISPONÍVEL'}</span>`
                 : isMultiple 
-                ? `<span class="place-marker-count-pill" style="background: #475569; border: 1px solid #CBD5E1; color: #ffffff; font-size: 9px; font-weight: 900; padding: 1px 6px; border-radius: 9999px;">${placesAtLocation.length} no local</span>` 
+                ? `<span class="place-marker-count-pill" style="background: #475569; border: 1px solid #CBD5E1; color: #ffffff; font-size: 9px; font-weight: 900; padding: 1px 6px; border-radius: 9999px;">${placesAtLocation.length} no local</span>${sumTotalValues > 0 ? `<span class="place-marker-sum-pill" style="background: #059669; border: 1px solid #6EE7B7; color: #ffffff; font-size: 9px; font-weight: 900; padding: 1px 6px; border-radius: 9999px; margin-left: 2px;">Total: R$ ${sumTotalValues.toFixed(2)}</span>` : ''}` 
                 : `<span class="place-marker-op-badge" style="background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.45); border-radius: 4px; padding: 1px 4px; font-size: 9px; font-weight: 900; text-transform: uppercase;">${opType === 'coleta' ? 'Coleta' : opType === 'troca' ? 'Troca' : place.orderStage === 'retorno' ? 'Retorno' : 'Entrega'}</span>`
               }
             </div>

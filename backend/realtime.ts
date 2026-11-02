@@ -45,15 +45,19 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
   const activeAssignments = assignmentStore as unknown as Map<string, OrderAssignmentData>;
   const lastHistoryWrite = new Map<string, number>();
 
-  const stored = await prisma.assignments.findMany();
-  for (const row of stored) {
-    try {
-      activeAssignments.set(row.order_key, JSON.parse(row.data));
-    } catch {
-      // registro corrompido é ignorado
+  try {
+    const stored = await prisma.assignments.findMany();
+    for (const row of stored) {
+      try {
+        activeAssignments.set(row.order_key, JSON.parse(row.data));
+      } catch {
+        // registro corrompido é ignorado
+      }
     }
+    console.log(`[Realtime Assignments] ${activeAssignments.size} atribuições carregadas do banco.`);
+  } catch (err: any) {
+    console.warn(`[Realtime Assignments] Banco de dados não conectado (${err?.message || 'offline'}). Atribuições em memória ativas.`);
   }
-  console.log(`[Realtime Assignments] ${activeAssignments.size} atribuições carregadas do banco.`);
 
   const persistAssignment = (key: string, data: OrderAssignmentData) =>
     prisma.assignments
