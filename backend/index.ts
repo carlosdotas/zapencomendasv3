@@ -78,6 +78,24 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.use(express.raw({ type: '*/*', limit: '50mb' }));
 
+// Aviso sem dados ("há mudanças") para todos os apps conectados: eles buscam a lista pela API autenticada
+let ordersPingTimer: NodeJS.Timeout | null = null;
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.method === 'POST' && /^\/(api\/)?(pedidos|realtime)\/(?!list|get|presenca|upload|tracking)/.test(req.path)) {
+    res.on('finish', () => {
+      if (res.statusCode >= 400 || ordersPingTimer) return;
+      ordersPingTimer = setTimeout(() => {
+        ordersPingTimer = null;
+        const payload = JSON.stringify({ type: 'orders:changed', at: Date.now() });
+        wss.clients.forEach(client => {
+          if (client.readyState === 1) client.send(payload);
+        });
+      }, 150);
+    });
+  }
+  next();
+});
+
 // ---------------------------------------------------------------------------
 // Uploads de imagens
 // ---------------------------------------------------------------------------

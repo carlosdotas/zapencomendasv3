@@ -57,15 +57,16 @@ export const NotificationMenu: React.FC = () => {
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Busca a cada 8 s: novas notificações disparam o alerta nativo e entram na lista
+  // Busca a cada 5 s: novas notificações disparam o alerta nativo e entram na lista
   useEffect(() => {
     notificationService.requestWebPermission();
     return startPolling(async () => {
       const fresh = await notificationService.pull();
       fresh.forEach(n => notificationService.alert(n));
+      if (fresh.length > 0) window.dispatchEvent(new Event('zap:refresh-orders'));
       const all = await notificationService.list();
       setNotifications(all.map(toItem));
-    }, 8000);
+    }, 5000);
   }, []);
 
   useBackButton('notification-menu-dropdown', isOpen, () => {

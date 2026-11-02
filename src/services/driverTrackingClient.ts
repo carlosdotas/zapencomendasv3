@@ -92,6 +92,8 @@ class DriverTrackingClient {
             this.onUpdateCallbacks.forEach(cb => cb(msg.driver));
           } else if (msg.type === 'driver:remove' && msg.driverId) {
             this.onRemoveCallbacks.forEach(cb => cb(msg.driverId));
+          } else if (msg.type === 'orders:changed') {
+            window.dispatchEvent(new Event('zap:refresh-orders'));
           }
         } catch (e) {
           // Ignora mensagens mal formatadas

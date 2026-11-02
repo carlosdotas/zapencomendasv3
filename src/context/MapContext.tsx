@@ -219,7 +219,7 @@ interface MapContextType {
   serverLatencyMs: number | null;
   apiBaseUrl: string;
   updateApiBaseUrl: (url: string) => void;
-  refreshServerData: () => Promise<void>;
+  refreshServerData: (opts?: { silent?: boolean }) => Promise<void>;
   isSyncingServer: boolean;
 
   // Monitoramento em Segundo Plano (PWA com tela desligada)
@@ -559,6 +559,11 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // e normaliza as fotos para as URLs com sufixo correto
         const onlyReal = parsed
           .filter(p => !p.id.startsWith('plc-') && p.orderStage !== 'concluido')
+          .filter(p => {
+            // Pedido criado localmente e nunca confirmado pelo servidor: descarta o resto de cache
+            const stamp = Number(p.id.replace('pedido-', '').split('-')[0]);
+            return !(p.id.startsWith('pedido-') && stamp > 1000000000 && Date.now() - stamp > 2 * 60 * 1000);
+          })
           .map(p => {
             const formattedImg = p.imageUrl ? (formatPhotoUrl(p.imageUrl, 'md') || p.imageUrl) : undefined;
             const formattedPhotos = p.photos ? extractPhotoUrls(p.photos, 'md') : (formattedImg ? [formattedImg] : undefined);
@@ -602,9 +607,12 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   // Busca todos os dados reais do servidor Express (locais, pedidos, clientes, motoristas)
-  const refreshServerData = useCallback(async () => {
-    setIsSyncingServer(true);
-    setServerStatus('checking');
+  const refreshServerData = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) {
+      setIsSyncingServer(true);
+      setServerStatus('checking');
+    }
 
     try {
       const conn = await api.checkConnection().catch(() => ({ ok: false, message: 'Servidor Express desconectado', latencyMs: undefined }));
@@ -836,7 +844,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Encomendas finalizadas/entregues são estritamente excluídas
       setAllPlaces(prev => {
         // Preserva quaisquer encomendas criadas localmente que ainda estejam sendo salvas
-        const locallyCreatedPending = prev.filter(p => p.id.startsWith('pedido-') && Number(p.id.replace('pedido-', '')) > 1000000000);
+        // Preserva só encomendas criadas localmente nos últimos 2 minutos (ainda sendo salvas); as antigas são fantasmas
+        const freshLocalWindowMs = 2 * 60 * 1000;
+        const locallyCreatedPending = prev.filter(p => {
+          if (!p.id.startsWith('pedido-')) return false;
+          const stamp = Number(p.id.replace('pedido-', '').split('-')[0]);
+          return stamp > 1000000000 && Date.now() - stamp < freshLocalWindowMs;
+        });
         const finalPlaces = [...allCombinedActivePlaces];
         locallyCreatedPending.forEach(lp => {
           if (!finalPlaces.some(fp => fp.id === lp.id || (lp.orderCode && fp.orderCode === lp.orderCode))) {
@@ -902,9 +916,36 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setServerStatus('offline');
       setServerMessage(e?.message || 'Falha ao buscar dados do servidor.');
     } finally {
-      setIsSyncingServer(false);
+      if (!silent) setIsSyncingServer(false);
     }
   }, [dateRangeFilter]);
+
+  // Atualização periódica dos pedidos (só com a aba visível) e imediata ao chegar uma notificação
+  useEffect(() => {
+    let running = false;
+    let queued = false;
+    const run = async () => {
+      if (document.visibilityState !== 'visible') return;
+      if (running) { queued = true; return; }
+      running = true;
+      try {
+        await realtimeAssignmentService.fetchServerAssignments().catch(() => {});
+        await refreshServerData({ silent: true });
+      } finally {
+        running = false;
+        if (queued) { queued = false; void run(); }
+      }
+    };
+    const silentRefresh = () => { void run(); };
+    const timer = window.setInterval(silentRefresh, 10000);
+    window.addEventListener('zap:refresh-orders', silentRefresh);
+    document.addEventListener('visibilitychange', silentRefresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('zap:refresh-orders', silentRefresh);
+      document.removeEventListener('visibilitychange', silentRefresh);
+    };
+  }, [refreshServerData]);
 
   // Busca inicial única ao montar o app no servidor (SEM releitura ou polling periódico)
   useEffect(() => {
@@ -1399,12 +1440,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       vehicleType: account.vehicleType || (account.role === 'motorista' ? 'moto' : undefined)
     }));
     setIsLoginModalOpen(false);
+    window.dispatchEvent(new Event('zap:refresh-orders'));
   }, []);
 
   const logout = useCallback(() => {
     setIsAuthenticated(false);
     setSelectedPlace(null);
+    setAllPlaces([]);
     try {
+      localStorage.removeItem('encomendaszap_all_places');
+      localStorage.removeItem('encomendaszap_completed_marks');
       localStorage.removeItem('encomendaszap_is_authenticated');
       localStorage.removeItem('encomendaszap_logged_account');
       localStorage.removeItem('encomendaszap_user_avatar');

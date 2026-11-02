@@ -2318,11 +2318,15 @@ export const FullscreenMap: React.FC = () => {
           // Mesmo formato dos demais pins: a pontinha (X) fica exatamente na coordenada (âncora 19,43)
           const icon = L.divIcon({
             className: 'collection-hub-marker',
-            iconSize: [200, 48],
-            iconAnchor: [19, 43],
+            iconSize: [160, 80],
+            iconAnchor: [80, 75],
             html: `
-              <div style="position:relative;width:38px;height:48px;cursor:pointer;pointer-events:auto;">
-                <svg width="38" height="48" viewBox="0 0 38 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter:drop-shadow(0 2px 3px rgba(0,0,0,0.3));">
+              <div style="position:relative;width:160px;height:80px;cursor:pointer;pointer-events:auto;">
+                <div style="position:absolute;left:50%;top:0;transform:translateX(-50%);max-width:156px;background:#0F766E;color:#FFFFFF;padding:2px 7px;border-radius:6px;border:1px solid #99F6E4;box-shadow:0 1px 3px rgba(0,0,0,0.3);line-height:1.15;text-align:center;">
+                  <div style="font-size:8.5px;font-weight:900;text-transform:uppercase;letter-spacing:0.03em;white-space:nowrap;opacity:0.9;">Central de Coletas</div>
+                  <div style="font-size:10px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
+                </div>
+                <svg width="38" height="48" viewBox="0 0 38 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:61px;top:32px;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.3));">
                   <ellipse cx="19" cy="43" rx="7.5" ry="2.2" fill="rgba(0,0,0,0.28)" />
                   <path d="M 14 38 L 24 48 M 14 48 L 24 38" stroke="#FFFFFF" stroke-width="3.8" stroke-linecap="round" />
                   <path d="M 14 38 L 24 48 M 14 48 L 24 38" stroke="#0F766E" stroke-width="2.2" stroke-linecap="round" />
@@ -2332,10 +2336,6 @@ export const FullscreenMap: React.FC = () => {
                   <rect x="5" y="3" width="28" height="23" rx="6" fill="#0F766E" stroke="#FFFFFF" stroke-width="2.4" />
                   <g transform="translate(9 5.5) scale(0.83)" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"><path d="M3 21V9l9-5 9 5v12"/><path d="M7 21v-8h10v8"/><path d="M7 16h10"/></g>
                 </svg>
-                <div style="position:absolute;left:42px;top:4px;max-width:150px;background:#0F766E;color:#FFFFFF;padding:2px 7px;border-radius:6px;border:1px solid #99F6E4;box-shadow:0 1px 3px rgba(0,0,0,0.3);line-height:1.15;">
-                  <div style="font-size:8.5px;font-weight:900;text-transform:uppercase;letter-spacing:0.03em;white-space:nowrap;opacity:0.9;">Central de Coletas</div>
-                  <div style="font-size:10px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
-                </div>
               </div>
             `
           });
