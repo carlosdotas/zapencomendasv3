@@ -245,7 +245,7 @@ export const CityManagementPage: React.FC<CityManagementPageProps> = ({ onBack }
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#F8F9FA]">
+    <div className="config-settings-page fixed inset-0 z-50 overflow-y-auto bg-[#F8F9FA]">
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur sm:px-6">
         <div className="mx-auto flex max-w-3xl items-center gap-3">
           <button

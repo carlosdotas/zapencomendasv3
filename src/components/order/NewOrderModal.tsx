@@ -68,6 +68,7 @@ import {
 import { CustomerFormFullScreen } from '../customer/CustomerFormFullScreen';
 import { CustomerOrderHistoryFullScreen } from './CustomerOrderHistoryFullScreen';
 import { Customer, AgendaContact, CustomerAddress } from '../../types/customer';
+import { SellerResponsibleModal } from '../place/SellerResponsibleModal';
 
 // Não há fonte de agenda no servidor; lista vazia (sem dados estáticos)
 const AGENDA_CONTACTS: AgendaContact[] = [];
@@ -129,18 +130,31 @@ const extractCityFromAddress = (address?: string): string => {
 const DEFAULT_PICKUP_COORDS: LocationCoordinates = { lat: -16.6780, lng: -49.2590 };
 const DEFAULT_DELIVERY_COORDS: LocationCoordinates = { lat: -16.7118, lng: -49.2346 };
 const DEFAULT_EXCHANGE_COORDS: LocationCoordinates = { lat: -16.6990, lng: -49.2650 };
+type RoutePointKey = 'pickup' | 'exchange' | 'delivery';
+type RoutePointConfig = {
+  visibility: OrderVisibilityType;
+  driverId: string;
+  sellerName: string;
+  sellerPhone: string;
+};
+
+const EMPTY_ROUTE_POINT_CONFIG: RoutePointConfig = {
+  visibility: 'publico',
+  driverId: '',
+  sellerName: '',
+  sellerPhone: ''
+};
 
 export const NewOrderModal: React.FC = () => {
   const { 
     isNewOrderModalOpen, 
     setIsNewOrderModalOpen, 
     newOrderInitialPlace, 
-    addNewOrder,
+    addOrderDraft,
     drivers,
     customers,
     user,
     currentRole,
-    addCustomer,
     persistCustomer,
     updateCustomer,
     allPlaces,
@@ -584,10 +598,27 @@ export const NewOrderModal: React.FC = () => {
   ]);
 
   const [discountAmount, setDiscountAmount] = useState<number>(0);
-  const [orderVisibility, setOrderVisibility] = useState<OrderVisibilityType>('publico');
-  const [assignedDriverId, setAssignedDriverId] = useState<string>('');
+  const [routePointConfigs, setRoutePointConfigs] = useState<Record<RoutePointKey, RoutePointConfig>>({
+    pickup: { ...EMPTY_ROUTE_POINT_CONFIG },
+    exchange: { ...EMPTY_ROUTE_POINT_CONFIG },
+    delivery: { ...EMPTY_ROUTE_POINT_CONFIG }
+  });
+  const [sellerEditPoint, setSellerEditPoint] = useState<RoutePointKey | null>(null);
   const miniMapContainerRef = useRef<HTMLDivElement>(null);
   const miniMapInstanceRef = useRef<L.Map | null>(null);
+
+  const updateRoutePointConfig = (point: RoutePointKey, update: Partial<RoutePointConfig>) => {
+    setRoutePointConfigs(previous => ({
+      ...previous,
+      [point]: { ...previous[point], ...update }
+    }));
+  };
+
+  const selectedCustomerHasLocation = Boolean(
+    selectedCustomer?.coordinates?.lat &&
+    selectedCustomer.coordinates.lng &&
+    selectedCustomer.address?.trim()
+  );
 
   // Estados de erro por etapa
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
@@ -688,6 +719,27 @@ export const NewOrderModal: React.FC = () => {
       setPastOrdersCustomer(null);
       setIsPastOrdersModalOpen(false);
       setMapPickerTarget(null);
+      setSellerEditPoint(null);
+      setRoutePointConfigs({
+        pickup: {
+          visibility: newOrderInitialPlace?.pickupVisibility || newOrderInitialPlace?.orderVisibility || 'publico',
+          driverId: newOrderInitialPlace?.pickupAssignedDriverId ?? newOrderInitialPlace?.assignedDriverId ?? '',
+          sellerName: newOrderInitialPlace?.pickupSellerName || '',
+          sellerPhone: newOrderInitialPlace?.pickupSellerPhone || ''
+        },
+        exchange: {
+          visibility: newOrderInitialPlace?.exchangeVisibility || newOrderInitialPlace?.orderVisibility || 'publico',
+          driverId: newOrderInitialPlace?.exchangeAssignedDriverId || '',
+          sellerName: newOrderInitialPlace?.exchangeSellerName || '',
+          sellerPhone: newOrderInitialPlace?.exchangeSellerPhone || ''
+        },
+        delivery: {
+          visibility: newOrderInitialPlace?.deliveryVisibility || newOrderInitialPlace?.orderVisibility || 'publico',
+          driverId: newOrderInitialPlace?.deliveryAssignedDriverId ?? newOrderInitialPlace?.assignedDriverId ?? '',
+          sellerName: newOrderInitialPlace?.deliverySellerName || '',
+          sellerPhone: newOrderInitialPlace?.deliverySellerPhone || ''
+        }
+      });
 
       if (newOrderInitialPlace) {
         const addr = newOrderInitialPlace.address || newOrderInitialPlace.name || '';
@@ -719,15 +771,21 @@ export const NewOrderModal: React.FC = () => {
           setDeliveryCoords(DEFAULT_DELIVERY_COORDS);
         }
 
-        setPickupContact('');
-        setPickupPhone('');
-        setPickupNotes('');
-        setDeliveryContact('');
-        setDeliveryPhone('');
-        setDeliveryNotes('');
-        setExchangeContact('');
-        setExchangePhone('');
-        setExchangeNotes('');
+        setPickupAddress(newOrderInitialPlace.pickupAddress || (opType === 'coleta' ? addr : ''));
+        setPickupCoords(newOrderInitialPlace.pickupCoordinates || DEFAULT_PICKUP_COORDS);
+        setPickupContact(newOrderInitialPlace.pickupContact || '');
+        setPickupPhone(newOrderInitialPlace.pickupPhone || '');
+        setPickupNotes(newOrderInitialPlace.pickupNotes || '');
+        setDeliveryAddress(newOrderInitialPlace.deliveryAddress || (opType === 'entrega' ? addr : ''));
+        setDeliveryCoords(newOrderInitialPlace.deliveryCoordinates || DEFAULT_DELIVERY_COORDS);
+        setDeliveryContact(newOrderInitialPlace.deliveryContact || '');
+        setDeliveryPhone(newOrderInitialPlace.deliveryPhone || '');
+        setDeliveryNotes(newOrderInitialPlace.deliveryNotes || '');
+        setExchangeAddress(newOrderInitialPlace.exchangeAddress || (opType === 'troca' ? addr : ''));
+        setExchangeCoords(newOrderInitialPlace.exchangeCoordinates || DEFAULT_EXCHANGE_COORDS);
+        setExchangeContact(newOrderInitialPlace.exchangeContact || '');
+        setExchangePhone(newOrderInitialPlace.exchangePhone || '');
+        setExchangeNotes(newOrderInitialPlace.exchangeNotes || '');
 
         if (newOrderInitialPlace.customerName) {
           const found = customers.find(c => c.fullName.toLowerCase() === newOrderInitialPlace.customerName?.toLowerCase());
@@ -1415,10 +1473,10 @@ export const NewOrderModal: React.FC = () => {
 
   // Ao clicar em contato da agenda:
   // "E se clicar no selecionar já deve avançar para a próxima etapa."
-  const handleSelectAgendaContact = (contact: AgendaContact) => {
+  const handleSelectAgendaContact = async (contact: AgendaContact) => {
     // Busca se já existe no sistema com este telefone
     const cleanPhone = contact.phone.replace(/\D/g, '');
-    const existing = customers.find(c => c.phone.replace(/\D/g, '') === cleanPhone);
+    const existing = cleanPhone ? customers.find(c => c.phone.replace(/\D/g, '') === cleanPhone) : undefined;
     let targetCust: Customer;
     if (existing) {
       targetCust = existing;
@@ -1431,7 +1489,12 @@ export const NewOrderModal: React.FC = () => {
         address: contact.address || '',
         createdAt: Date.now()
       };
-      addCustomer(targetCust);
+      const savedCustomer = await persistCustomer(targetCust);
+      if (!savedCustomer) {
+        window.alert('Não foi possível salvar o contato da agenda como cliente. Verifique a conexão e tente novamente.');
+        return;
+      }
+      targetCust = savedCustomer;
     }
     setSelectedCustomer(targetCust);
     setStepErrors({});
@@ -1582,8 +1645,12 @@ export const NewOrderModal: React.FC = () => {
       };
     }
 
+    const saved = await updateCustomer(selectedCustomer.id, updatedCust);
+    if (!saved) {
+      window.alert('Não foi possível salvar o endereço do cliente. Verifique a conexão e tente novamente.');
+      return;
+    }
     setSelectedCustomer(updatedCust);
-    updateCustomer(selectedCustomer.id, updatedCust);
 
     // Preenche o campo correspondente e coordenadas
     if (targetField === 'coleta') {
@@ -1606,54 +1673,54 @@ export const NewOrderModal: React.FC = () => {
 
   // Salva cliente a partir do formulário de cadastro em tela cheia
   const handleSaveCustomerFromRegistration = async (newCust: Customer) => {
-    const saved = await persistCustomer(newCust);
-    if (!saved) {
+    const savedCustomer = await persistCustomer(newCust);
+    if (!savedCustomer) {
       window.alert('Não foi possível salvar o endereço do cliente no banco de dados.');
       return;
     }
     if (selectorTargetField === 'client') {
-      setSelectedCustomer(newCust);
-      if (newCust.address) {
+      setSelectedCustomer(savedCustomer);
+      if (savedCustomer.address) {
         if (operationType === 'coleta') {
-          setDeliveryAddress(newCust.address);
-          if (newCust.coordinates) setDeliveryCoords(newCust.coordinates);
-          setDeliveryContact(newCust.fullName);
-          setDeliveryPhone(newCust.phone);
-          if (pickupAddress === newCust.address) {
+          setDeliveryAddress(savedCustomer.address);
+          if (savedCustomer.coordinates) setDeliveryCoords(savedCustomer.coordinates);
+          setDeliveryContact(savedCustomer.fullName);
+          setDeliveryPhone(savedCustomer.phone);
+          if (pickupAddress === savedCustomer.address) {
             setPickupAddress('');
             setPickupCoords(DEFAULT_PICKUP_COORDS);
             setPickupContact('');
             setPickupPhone('');
           }
         } else if (operationType === 'entrega') {
-          setPickupAddress(newCust.address);
-          if (newCust.coordinates) setPickupCoords(newCust.coordinates);
-          setPickupContact(newCust.fullName);
-          setPickupPhone(newCust.phone);
-          if (deliveryAddress === newCust.address) {
+          setPickupAddress(savedCustomer.address);
+          if (savedCustomer.coordinates) setPickupCoords(savedCustomer.coordinates);
+          setPickupContact(savedCustomer.fullName);
+          setPickupPhone(savedCustomer.phone);
+          if (deliveryAddress === savedCustomer.address) {
             setDeliveryAddress('');
             setDeliveryCoords(DEFAULT_DELIVERY_COORDS);
             setDeliveryContact('');
             setDeliveryPhone('');
           }
         } else if (operationType === 'troca') {
-          setPickupAddress(newCust.address);
-          setDeliveryAddress(newCust.address);
-          setPickupContact(newCust.fullName);
-          setPickupPhone(newCust.phone);
-          setDeliveryContact(newCust.fullName);
-          setDeliveryPhone(newCust.phone);
-          if (newCust.coordinates) {
-            setPickupCoords(newCust.coordinates);
-            setDeliveryCoords(newCust.coordinates);
+          setPickupAddress(savedCustomer.address);
+          setDeliveryAddress(savedCustomer.address);
+          setPickupContact(savedCustomer.fullName);
+          setPickupPhone(savedCustomer.phone);
+          setDeliveryContact(savedCustomer.fullName);
+          setDeliveryPhone(savedCustomer.phone);
+          if (savedCustomer.coordinates) {
+            setPickupCoords(savedCustomer.coordinates);
+            setDeliveryCoords(savedCustomer.coordinates);
           }
         }
       }
       // Ao salvar os dados completos do cliente, AVANÇA DIRETAMENTE PARA A ETAPA 2!
       setCurrentStep(2);
     } else {
-      setResponsibleName(newCust.fullName);
-      setResponsiblePhone(newCust.phone);
+      setResponsibleName(savedCustomer.fullName);
+      setResponsiblePhone(savedCustomer.phone);
     }
     setIsRegistrationFullScreenOpen(false);
     setRegistrationInitialData(null);
@@ -2108,7 +2175,13 @@ export const NewOrderModal: React.FC = () => {
       : '';
     const weightText = weightKg ? ` • Peso: ${weightKg}kg` : '';
     const fragileText = isFragile ? ' • ⚠️ FRÁGIL' : '';
-    const driver = drivers.find(d => d.id === assignedDriverId);
+    const activePointKey: RoutePointKey = operationType === 'troca'
+      ? 'exchange'
+      : operationType === 'entrega'
+        ? 'delivery'
+        : 'pickup';
+    const activePointConfig = routePointConfigs[activePointKey];
+    const driver = drivers.find(d => d.id === activePointConfig.driverId);
 
     const formatDateBr = (d: string) => {
       if (!d) return '';
@@ -2182,43 +2255,105 @@ export const NewOrderModal: React.FC = () => {
       packageType: 'caixa',
       customerName: custFullName,
       customerPhone: custPhone,
+      customerId: selectedCustomer?.id,
+      price: finalPrice,
+      priceItems: priceItems.map(item => ({ ...item })),
+      discountItems: discountItems.map(item => ({ ...item })),
+      totalDiscounts,
+      scheduledDate: activeSchedule.date,
+      data: activeSchedule.date,
+      scheduledTime: activeSchedule.time || undefined,
+      scheduledTimeMode: activeSchedule.mode === 'apos' ? 'partir' : 'ate',
+      packageSize,
+      volumesCount: Number.parseFloat(volumesCount) || 1,
+      weightKg: weightKg || undefined,
+      dimensions: (lengthCm || widthCm || heightCm)
+        ? `${lengthCm || '-'}x${widthCm || '-'}x${heightCm || '-'}cm`
+        : undefined,
+      isFragile,
       sellerName: responsibleName,
       sellerPhone: responsiblePhone,
       managerName: responsibleName,
       managerPhone: responsiblePhone,
       observations: `Item: ${selectedPackageType} (${volumesCount}) • Porte ${packageSize.toUpperCase()} (${vehicleType.toUpperCase()})${fragileText}${weightText}${dimsText}${scheduleText}\nQuilometragem: ${distanceKm} km • Preço: R$ ${finalPrice.toFixed(2)} (${priceItems.map(p => `${p.name}: R$ ${Number(p.value).toFixed(2)}`).join(' | ')}${totalDiscounts > 0 ? ` • Desconto: -R$ ${totalDiscounts.toFixed(2)}` : ''})${observations ? `\nObs: ${observations}` : ''}`,
       driverNotes: `Rota: ${distanceKm} km (~${durationMin} min). ${priceItems.map(p => `${p.name}: R$ ${Number(p.value).toFixed(2)}`).join(' | ')}${totalDiscounts > 0 ? ` • Desconto: -R$ ${totalDiscounts.toFixed(2)}` : ''}`,
-      orderVisibility: orderVisibility,
-      assignedDriverId: orderVisibility === 'privado' ? (assignedDriverId || undefined) : undefined,
-      assignedDriverPhone: orderVisibility === 'privado' ? driver?.phone : undefined,
+      orderVisibility: activePointConfig.visibility,
+      assignedDriverId: activePointConfig.visibility === 'privado' ? (activePointConfig.driverId || undefined) : undefined,
+      assignedDriverPhone: activePointConfig.visibility === 'privado' ? driver?.phone : undefined,
+      pickupVisibility: routePointConfigs.pickup.visibility,
+      pickupAssignedDriverId: routePointConfigs.pickup.visibility === 'privado' ? routePointConfigs.pickup.driverId || undefined : undefined,
+      pickupAssignedDriverPhone: routePointConfigs.pickup.visibility === 'privado'
+        ? drivers.find(item => item.id === routePointConfigs.pickup.driverId)?.phone
+        : undefined,
+      pickupAssignedDriverName: routePointConfigs.pickup.visibility === 'privado'
+        ? drivers.find(item => item.id === routePointConfigs.pickup.driverId)?.name
+        : undefined,
+      pickupSellerName: routePointConfigs.pickup.sellerName || undefined,
+      pickupSellerPhone: routePointConfigs.pickup.sellerPhone || undefined,
+      exchangeVisibility: routePointConfigs.exchange.visibility,
+      exchangeAssignedDriverId: routePointConfigs.exchange.visibility === 'privado' ? routePointConfigs.exchange.driverId || undefined : undefined,
+      exchangeAssignedDriverPhone: routePointConfigs.exchange.visibility === 'privado'
+        ? drivers.find(item => item.id === routePointConfigs.exchange.driverId)?.phone
+        : undefined,
+      exchangeAssignedDriverName: routePointConfigs.exchange.visibility === 'privado'
+        ? drivers.find(item => item.id === routePointConfigs.exchange.driverId)?.name
+        : undefined,
+      exchangeSellerName: routePointConfigs.exchange.sellerName || undefined,
+      exchangeSellerPhone: routePointConfigs.exchange.sellerPhone || undefined,
+      deliveryVisibility: routePointConfigs.delivery.visibility,
+      deliveryAssignedDriverId: routePointConfigs.delivery.visibility === 'privado' ? routePointConfigs.delivery.driverId || undefined : undefined,
+      deliveryAssignedDriverPhone: routePointConfigs.delivery.visibility === 'privado'
+        ? drivers.find(item => item.id === routePointConfigs.delivery.driverId)?.phone
+        : undefined,
+      deliveryAssignedDriverName: routePointConfigs.delivery.visibility === 'privado'
+        ? drivers.find(item => item.id === routePointConfigs.delivery.driverId)?.name
+        : undefined,
+      deliverySellerName: routePointConfigs.delivery.sellerName || undefined,
+      deliverySellerPhone: routePointConfigs.delivery.sellerPhone || undefined,
       isExchangeOrder: isTroca,
       pickupAddress: hasRealPickup ? pickupAddress : undefined,
       pickupCoordinates: hasRealPickup ? pickupCoords : undefined,
+      pickupName: hasRealPickup ? `Coleta: ${pickupContact || custFullName}` : undefined,
       pickupContact: pickupContact || responsibleName,
       pickupPhone: pickupPhone || responsiblePhone,
-      pickupNotes: pickupNotes || observations,
+      pickupNotes,
       exchangeAddress: hasRealExchange ? (exchangeAddress || deliveryAddress) : undefined,
       exchangeCoordinates: hasRealExchange ? (exchangeCoords || deliveryCoords) : undefined,
+      exchangeName: hasRealExchange ? `Troca: ${exchangeContact || custFullName}` : undefined,
       exchangeContact: isTroca ? (exchangeContact || responsibleName) : undefined,
       exchangePhone: isTroca ? (exchangePhone || responsiblePhone) : undefined,
       exchangeNotes: isTroca ? exchangeNotes : undefined,
       deliveryAddress: hasRealDelivery ? deliveryAddress : undefined,
       deliveryCoordinates: hasRealDelivery ? deliveryCoords : undefined,
+      deliveryName: hasRealDelivery ? `Entrega: ${deliveryContact || custFullName}` : undefined,
       deliveryContact: deliveryContact || custFullName,
       deliveryPhone: deliveryPhone || custPhone,
-      deliveryNotes: deliveryNotes || observations
+      deliveryNotes
     };
 
-    addNewOrder(newPlace);
-    if (selectedCustomer) {
-      customerOrderStatsService.registerOrder(selectedCustomer);
-    }
-    if (typeof window !== 'undefined' && window.AndroidApp) {
-      window.AndroidApp.showNotification?.("EncomendasZap", "Novo pedido criado com sucesso!");
-      window.AndroidApp.vibrate?.(200);
+    const added = addOrderDraft(newPlace);
+    if (!added) {
+      window.alert('Não foi possível preparar o pedido para revisão.');
+      return;
     }
     setIsNewOrderModalOpen(false);
   };
+
+  const routeStops: Array<{
+    key: RoutePointKey;
+    label: string;
+    address: string;
+    notes: string;
+    setNotes: (value: string) => void;
+    color: string;
+    border: string;
+  }> = [
+    { key: 'pickup', label: 'Coleta', address: pickupAddress, notes: pickupNotes, setNotes: setPickupNotes, color: '#0B5187', border: 'border-blue-200 bg-blue-50/80' },
+    ...(operationType === 'troca'
+      ? [{ key: 'exchange' as const, label: 'Troca', address: exchangeAddress, notes: exchangeNotes, setNotes: setExchangeNotes, color: '#7C3AED', border: 'border-purple-200 bg-purple-50/80' }]
+      : []),
+    { key: 'delivery', label: 'Entrega', address: deliveryAddress, notes: deliveryNotes, setNotes: setDeliveryNotes, color: '#FF5E00', border: 'border-orange-200 bg-orange-50/80' }
+  ];
 
   if (!isNewOrderModalOpen || isDriverRole) return null;
 
@@ -2481,15 +2616,19 @@ export const NewOrderModal: React.FC = () => {
                               address: selectedCustomer.address,
                               coordinates: selectedCustomer.coordinates
                             } as Place : undefined,
-                            onLocationSelected: (newAddr, newCoords, newCity) => {
+                            onLocationSelected: async (newAddr, newCoords, newCity) => {
                               const updated: Customer = {
                                 ...selectedCustomer,
                                 address: newAddr,
                                 coordinates: newCoords,
                                 ...(newCity ? { city: newCity, cidade: newCity } : {})
                               };
+                              const saved = await updateCustomer(selectedCustomer.id, updated);
+                              if (!saved) {
+                                window.alert('Não foi possível salvar o endereço do cliente. Verifique a conexão e tente novamente.');
+                                return;
+                              }
                               setSelectedCustomer(updated);
-                              updateCustomer(selectedCustomer.id, updated);
                               if (operationType === 'coleta') {
                                 setDeliveryAddress(newAddr);
                                 setDeliveryCoords(newCoords);
@@ -2933,8 +3072,12 @@ export const NewOrderModal: React.FC = () => {
                     coordinates: coords,
                     ...(city ? { city, cidade: city } : {})
                   };
+                  const saved = await updateCustomer(selectedCustomer.id, updatedCust);
+                  if (!saved) {
+                    window.alert('Não foi possível salvar o endereço do cliente. Verifique a conexão e tente novamente.');
+                    return;
+                  }
                   setSelectedCustomer(updatedCust);
-                  updateCustomer(selectedCustomer.id, updatedCust);
                 }
               }}
             />
@@ -3657,40 +3800,92 @@ export const NewOrderModal: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Resumo visual dos locais (com suporte a Troca) */}
-                <div className={`grid gap-2 text-xs ${operationType === 'troca' ? 'grid-cols-1 sm:grid-cols-3' : 'grid-cols-1 sm:grid-cols-2'}`}>
-                  {/* Coleta */}
-                  <div className="bg-blue-50/80 p-2.5 rounded-xl border border-blue-200 shadow-2xs">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-[#0B5187] block">A • Coleta</span>
-                    <p className="font-extrabold text-slate-900 truncate mt-0.5">{pickupAddress || 'Endereço de coleta'}</p>
-                    <p className="text-[10px] text-slate-500 font-bold truncate mt-0.5 flex items-center gap-0.5">
-                      <span className="text-[#0B5187]">📍</span>
-                      <span>{extractCityFromAddress(pickupAddress)}</span>
-                    </p>
+                <section className="space-y-2.5" aria-label="Configurações das paradas da rota">
+                  <div>
+                    <h3 className="text-[11px] font-black uppercase tracking-wider text-slate-700">Detalhes por ponto da rota</h3>
+                    <p className="text-[10px] text-slate-500">Comentários, vendedor e visibilidade são definidos separadamente em cada parada.</p>
                   </div>
-
-                  {/* Ponto de Troca (se houver) */}
-                  {operationType === 'troca' && (
-                    <div className="bg-purple-50/80 p-2.5 rounded-xl border border-purple-200 shadow-2xs">
-                      <span className="text-[10px] font-black uppercase tracking-wider text-[#7C3AED] block">T • Troca</span>
-                      <p className="font-extrabold text-slate-900 truncate mt-0.5">{exchangeAddress || 'Ponto de troca'}</p>
-                      <p className="text-[10px] text-slate-500 font-bold truncate mt-0.5 flex items-center gap-0.5">
-                        <span className="text-[#7C3AED]">📍</span>
-                        <span>{extractCityFromAddress(exchangeAddress)}</span>
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Entrega */}
-                  <div className="bg-orange-50/80 p-2.5 rounded-xl border border-orange-200 shadow-2xs">
-                    <span className="text-[10px] font-black uppercase tracking-wider text-[#FF5E00] block">B • Entrega</span>
-                    <p className="font-extrabold text-slate-900 truncate mt-0.5">{deliveryAddress || 'Endereço de entrega'}</p>
-                    <p className="text-[10px] text-slate-500 font-bold truncate mt-0.5 flex items-center gap-0.5">
-                      <span className="text-[#FF5E00]">📍</span>
-                      <span>{extractCityFromAddress(deliveryAddress)}</span>
-                    </p>
+                  <div className="space-y-2">
+                    {routeStops.map((stop, index) => {
+                      const config = routePointConfigs[stop.key];
+                      const pointDriver = drivers.find(item => item.id === config.driverId);
+                      return (
+                        <article key={stop.key} className={`rounded-xl border p-3 shadow-2xs ${stop.border}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="text-[10px] font-black uppercase tracking-wider" style={{ color: stop.color }}>
+                                {index + 1} • {stop.label}
+                              </span>
+                              <p className="mt-0.5 text-xs font-extrabold text-slate-900">{stop.address || `Endereço de ${stop.label.toLowerCase()}`}</p>
+                              <p className="mt-0.5 text-[10px] font-bold text-slate-500">📍 {extractCityFromAddress(stop.address)}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setSellerEditPoint(stop.key)}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-orange-200 bg-white px-2.5 py-1.5 text-[10px] font-black text-orange-800 hover:bg-orange-50"
+                              aria-label={`Definir vendedor de ${stop.label}`}
+                            >
+                              <UserCheck className="h-3.5 w-3.5" />
+                              {config.sellerName ? config.sellerName : 'Vendedor'}
+                            </button>
+                          </div>
+                          <label className="mt-2 block text-[10px] font-black text-slate-700">
+                            Comentários / observações deste ponto
+                            <textarea
+                              rows={2}
+                              value={stop.notes}
+                              onChange={event => stop.setNotes(event.target.value)}
+                              placeholder={`Instruções para ${stop.label.toLowerCase()}...`}
+                              className="mt-1 w-full resize-y rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-[#0B5187]"
+                            />
+                          </label>
+                          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[10px] font-black text-slate-700">Visibilidade desta parada</span>
+                            <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+                              {(['publico', 'privado'] as const).map(visibility => (
+                                <button
+                                  key={visibility}
+                                  type="button"
+                                  aria-pressed={config.visibility === visibility}
+                                  onClick={() => updateRoutePointConfig(stop.key, {
+                                    visibility,
+                                    ...(visibility === 'publico' ? { driverId: '' } : {})
+                                  })}
+                                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-black ${
+                                    config.visibility === visibility
+                                      ? visibility === 'publico' ? 'bg-emerald-600 text-white' : 'bg-[#0B5187] text-white'
+                                      : 'text-slate-600 hover:bg-slate-100'
+                                  }`}
+                                >
+                                  {visibility === 'publico' ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
+                                  {visibility === 'publico' ? 'Público' : 'Privado'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          {config.visibility === 'privado' && (
+                            <label className="mt-2 block text-[10px] font-black text-slate-700">
+                              Motorista autorizado para esta parada
+                              <select
+                                value={config.driverId}
+                                onChange={event => updateRoutePointConfig(stop.key, { driverId: event.target.value })}
+                                className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-2 text-xs font-bold text-slate-800"
+                              >
+                                <option value="">Aguardando direcionamento</option>
+                                {drivers.map(item => (
+                                  <option key={item.id} value={item.id}>{item.name} ({item.vehicleModel})</option>
+                                ))}
+                              </select>
+                              <span className="mt-1 block font-medium text-slate-500">
+                                {pointDriver ? `Somente ${pointDriver.name} verá esta parada.` : 'Sem motorista atribuído, a parada fica aguardando direcionamento.'}
+                              </span>
+                            </label>
+                          )}
+                        </article>
+                      );
+                    })}
                   </div>
-                </div>
+                </section>
               </div>
 
               {/* LADO DIREITO: FINANCEIRO, DESCONTO E MOTORISTA (5 COLUNAS) */}
@@ -3934,85 +4129,6 @@ export const NewOrderModal: React.FC = () => {
 
                 </div>
 
-                {/* Visibilidade da Rota: Público vs Privado */}
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <label className="block text-[10px] font-black uppercase tracking-wider text-slate-700">
-                        Visibilidade da Rota
-                      </label>
-                      <p className="text-[10px] text-slate-500">
-                        Defina como a rota aparecerá para os motoristas no mapa
-                      </p>
-                    </div>
-
-                    <div className="inline-flex p-0.5 rounded-xl bg-slate-200/90 border border-slate-300/80">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOrderVisibility('publico');
-                          setAssignedDriverId('');
-                        }}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${
-                          orderVisibility === 'publico'
-                            ? 'bg-emerald-600 text-white shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                        }`}
-                        title="Público: Aparece para todos os motoristas"
-                      >
-                        <Globe className="w-3.5 h-3.5" />
-                        <span>Público</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setOrderVisibility('privado')}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${
-                          orderVisibility === 'privado'
-                            ? 'bg-[#0B5187] text-white shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                        }`}
-                        title="Privado: Escolha o motorista para aparecer (opcional)"
-                      >
-                        <Lock className="w-3.5 h-3.5" />
-                        <span>Privado</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {orderVisibility === 'publico' ? (
-                    <div className="flex items-center gap-2.5 p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900">
-                      <Globe className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <div className="text-[11px] leading-tight">
-                        <span className="font-black">Visível para todos os motoristas:</span> Esta encomenda aparecerá no mapa de todos os motoristas conectados.
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-1.5 pt-1 border-t border-slate-200">
-                      <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider">
-                        Escolher Motorista para Aparecer (Opcional)
-                      </label>
-                      <select
-                        value={assignedDriverId}
-                        onChange={(e) => setAssignedDriverId(e.target.value)}
-                        className="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 cursor-pointer focus:ring-2 focus:ring-[#0B5187]/20 focus:border-[#0B5187]"
-                      >
-                        <option value="">Nenhum motorista selecionado (Opcional)</option>
-                        <option value="usr-mot-04">Marcos Silva (Entregador - Atual)</option>
-                        {drivers.map(d => (
-                          <option key={d.id} value={d.id}>
-                            {d.name} ({d.vehicleModel})
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-[10px] text-slate-500">
-                        {assignedDriverId 
-                          ? 'Apenas o motorista selecionado verá esta rota no mapa dele.' 
-                          : 'Nenhum motorista foi selecionado ainda. A rota ficará aguardando direcionamento.'}
-                      </p>
-                    </div>
-                  )}
-                </div>
-
               </div>
 
             </div>
@@ -4083,7 +4199,7 @@ export const NewOrderModal: React.FC = () => {
               className="inline-flex items-center gap-2 px-6 py-2.5 bg-[#FF5E00] hover:bg-[#E05300] active:scale-[0.98] text-white font-black text-xs sm:text-sm rounded-xl shadow-md transition-all cursor-pointer"
             >
               <Check className="w-4.5 h-4.5 stroke-[3]" />
-              <span>Confirmar e Lançar no Mapa</span>
+              <span>Revisar e salvar pedido</span>
             </button>
           )}
         </footer>
@@ -4168,8 +4284,12 @@ export const NewOrderModal: React.FC = () => {
                   coordinates,
                   ...(city ? { city, cidade: city } : {})
                 };
+                const saved = await updateCustomer(selectedCustomer.id, updatedCust);
+                if (!saved) {
+                  window.alert('Não foi possível salvar o endereço do cliente. Verifique a conexão e tente novamente.');
+                  return;
+                }
                 setSelectedCustomer(updatedCust);
-                updateCustomer(selectedCustomer.id, updatedCust);
                 if (operationType === 'coleta') {
                   setDeliveryAddress(address);
                   setDeliveryCoords(coordinates);
@@ -4232,6 +4352,22 @@ export const NewOrderModal: React.FC = () => {
             : 'Entrega'
         }
         onSelectContact={handleSelectPhoneAgendaContact}
+      />
+      <SellerResponsibleModal
+        isOpen={sellerEditPoint !== null}
+        onClose={() => setSellerEditPoint(null)}
+        initialName={sellerEditPoint ? routePointConfigs[sellerEditPoint].sellerName : ''}
+        initialPhone={sellerEditPoint ? routePointConfigs[sellerEditPoint].sellerPhone : ''}
+        clientName={selectedCustomer?.fullName}
+        clientPhone={selectedCustomer?.phone}
+        onSave={data => {
+          if (sellerEditPoint) {
+            updateRoutePointConfig(sellerEditPoint, {
+              sellerName: data.name,
+              sellerPhone: data.phone
+            });
+          }
+        }}
       />
     </div>
   );

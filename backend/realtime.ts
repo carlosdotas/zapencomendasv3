@@ -4,7 +4,7 @@ import { prisma } from './db';
 import { parseRawJsonBody } from './routes';
 import { toInt } from './mappers';
 import { notifyOrderProgress, notifyUser } from './notifications';
-import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, assignmentsVisibleTo } from './access';
+import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, isConfirmedDriverClaim, assignmentsVisibleTo } from './access';
 
 interface LiveDriverData {
   id: string;
@@ -34,6 +34,7 @@ interface OrderAssignmentData {
   vehicleType?: string;
   assignedAt: number;
   enRoute?: boolean;
+  acceptedByDriver?: boolean;
 }
 
 // Motoristas sem atualização há mais de 30 minutos somem do mapa
@@ -196,7 +197,8 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
       driverId: String(driverId),
       driverName: driverName || undefined,
       driverPhone: driverPhone || undefined,
-      vehicleType: vehicleType || undefined
+      vehicleType: vehicleType || undefined,
+      acceptedByDriver: isConfirmedDriverClaim(caller, claim)
     });
     const opLabel = opOfKey(String(orderId));
     const who = driverName || `Motorista ${driverId}`;

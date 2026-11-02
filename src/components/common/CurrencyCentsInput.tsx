@@ -8,6 +8,7 @@ interface CurrencyCentsInputProps {
   disabled?: boolean;
   prefix?: string;
   autoFocus?: boolean;
+  ariaLabel?: string;
 }
 
 /**
@@ -26,7 +27,8 @@ export const CurrencyCentsInput: React.FC<CurrencyCentsInputProps> = ({
   placeholder = '0,00',
   disabled = false,
   prefix = 'R$',
-  autoFocus = false
+  autoFocus = false,
+  ariaLabel
 }) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -80,6 +82,7 @@ export const CurrencyCentsInput: React.FC<CurrencyCentsInputProps> = ({
         placeholder={placeholder}
         disabled={disabled}
         autoFocus={autoFocus}
+        aria-label={ariaLabel}
         className={`focus:outline-none bg-transparent ${className}`}
       />
     </div>

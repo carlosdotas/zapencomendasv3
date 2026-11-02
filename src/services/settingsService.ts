@@ -29,6 +29,7 @@ import { request, startPolling } from './httpClient';
 
 export interface GlobalAppSettings {
   pricing: PricingSettings;
+  cityPriceTable: CityPriceTable;
   payments: PaymentConditionRule[];
   userRequiredFields: UserRequiredFieldsConfig;
   navigation: {
@@ -51,11 +52,49 @@ export interface GlobalAppSettings {
   updatedBy?: string;
 }
 
+export interface CityPriceRule {
+  mode: 'fixed' | 'km' | 'volume';
+  fixedPrice: string;
+  pricePerKm: string;
+  pricePerVolume: string;
+  minimum: string;
+}
+
+export interface CityPriceTable {
+  intercity: Record<string, Record<string, string>>;
+  local: Record<string, CityPriceOperationRules>;
+  combinations?: Record<string, CityPriceCombination>;
+}
+
+export type PricingVehicleType = 'moto' | 'carro' | 'utilitario';
+
+export interface CityPriceOperationRules {
+  coletaEntrega?: CityPriceRule;
+  vehicles?: Partial<Record<PricingVehicleType, CityPriceRule>>;
+  coleta?: CityPriceRule;
+  entrega?: CityPriceRule;
+}
+
+export interface CityPriceCombination {
+  transport: string;
+  origin: CityPriceOperationRules;
+  destination: CityPriceOperationRules;
+  coleta?: CityPriceRule;
+  entrega?: CityPriceRule;
+}
+
+export const DEFAULT_CITY_PRICE_TABLE: CityPriceTable = {
+  intercity: {},
+  local: {},
+  combinations: {}
+};
+
 const LOCAL_STORAGE_CACHE_KEY = 'encomendaszap_settings_cache_v3';
 const POLL_INTERVAL_MS = 30000;
 
 export const DEFAULT_GLOBAL_SETTINGS: GlobalAppSettings = {
   pricing: DEFAULT_PRICING_SETTINGS,
+  cityPriceTable: DEFAULT_CITY_PRICE_TABLE,
   payments: DEFAULT_PAYMENT_RULES,
   userRequiredFields: DEFAULT_USER_REQUIRED_FIELDS,
   navigation: {
@@ -101,6 +140,7 @@ class SettingsService {
           ...DEFAULT_GLOBAL_SETTINGS,
           ...cachedSettings,
           pricing: { ...DEFAULT_PRICING_SETTINGS, ...(cachedSettings.pricing || {}) },
+          cityPriceTable: cachedSettings.cityPriceTable || DEFAULT_CITY_PRICE_TABLE,
           payments: Array.isArray(cachedSettings.payments) && cachedSettings.payments.length > 0 ? cachedSettings.payments : DEFAULT_PAYMENT_RULES,
           userRequiredFields: { ...DEFAULT_USER_REQUIRED_FIELDS, ...(cachedSettings.userRequiredFields || {}) }
         };
@@ -161,6 +201,7 @@ class SettingsService {
         ...this.currentSettings.pricing,
         ...(remoteData.pricing || {})
       },
+      cityPriceTable: remoteData.cityPriceTable || this.currentSettings.cityPriceTable,
       payments: Array.isArray(remoteData.payments) && remoteData.payments.length > 0
         ? remoteData.payments
         : this.currentSettings.payments,
@@ -222,6 +263,10 @@ class SettingsService {
     return { ...this.currentSettings };
   }
 
+  public async refreshFromServer(): Promise<void> {
+    await this.fetchRemote();
+  }
+
   /**
    * Salva configurações atualizadas localmente e no servidor
    */
@@ -230,6 +275,7 @@ class SettingsService {
       ...this.currentSettings,
       ...updates,
       pricing: updates.pricing ? { ...this.currentSettings.pricing, ...updates.pricing } : this.currentSettings.pricing,
+      cityPriceTable: updates.cityPriceTable || this.currentSettings.cityPriceTable,
       payments: updates.payments ? [...updates.payments] : this.currentSettings.payments,
       userRequiredFields: updates.userRequiredFields ? { ...this.currentSettings.userRequiredFields, ...updates.userRequiredFields } : this.currentSettings.userRequiredFields,
       navigation: updates.navigation ? { ...this.currentSettings.navigation, ...updates.navigation } : this.currentSettings.navigation,

@@ -413,12 +413,12 @@ export const SetCustomerLocationModal: React.FC = () => {
         cidade: finalCity,
         createdAt: Date.now()
       };
-      const saved = await persistCustomer(newCust);
-      if (!saved) {
+      const savedCustomer = await persistCustomer(newCust);
+      if (!savedCustomer) {
         showFeedback('Não foi possível gravar o cliente no banco. Verifique o telefone e tente novamente.');
         return;
       }
-      savedCustomerId = newCust.id;
+      savedCustomerId = savedCustomer.id;
     }
 
     // 2. Atualizar o pedido/place vinculado se houver

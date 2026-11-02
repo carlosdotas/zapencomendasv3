@@ -72,6 +72,9 @@ export interface BackendUser {
   orderCount?: number;
   cnpj?: string;
   person_type?: string;
+  email?: string;
+  notes?: string;
+  companyId?: string;
 }
 
 export interface BackendLocal {
@@ -115,11 +118,17 @@ export interface BackendPedido {
   phone?: string;
   cidade?: string;
   detalhes?: string;
-  setor?: string;
-  local?: string;
   valor?: number | string;
   desconto?: number | string;
   total?: number | string;
+  coleta_valor?: number | string;
+  valor_intercidade?: number | string;
+  entrega_valor?: number | string;
+  itens_extras?: string;
+  coleta_data?: string;
+  entrega_data?: string;
+  setor?: string;
+  local?: string;
   status_pagamento?: 'pendente' | 'pago' | 'estornado' | string;
   users_id?: number | string;
   clientes_id?: number | string;
@@ -215,6 +224,27 @@ export interface BackendPedido {
   created_at?: string;
   updated_at?: string;
   public_tracking_token?: string;
+  orderVisibility?: 'publico' | 'privado';
+  assignedDriverId?: string;
+  assignedDriverPhone?: string;
+  pickupVisibility?: 'publico' | 'privado';
+  pickupAssignedDriverId?: string;
+  pickupAssignedDriverPhone?: string;
+  pickupAssignedDriverName?: string;
+  pickupSellerName?: string;
+  pickupSellerPhone?: string;
+  exchangeVisibility?: 'publico' | 'privado';
+  exchangeAssignedDriverId?: string;
+  exchangeAssignedDriverPhone?: string;
+  exchangeAssignedDriverName?: string;
+  exchangeSellerName?: string;
+  exchangeSellerPhone?: string;
+  deliveryVisibility?: 'publico' | 'privado';
+  deliveryAssignedDriverId?: string;
+  deliveryAssignedDriverPhone?: string;
+  deliveryAssignedDriverName?: string;
+  deliverySellerName?: string;
+  deliverySellerPhone?: string;
 }
 
 export interface BackendMotorista {

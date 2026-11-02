@@ -51,7 +51,7 @@ export const ServerSyncSettingsPage: React.FC<ServerSyncSettingsPageProps> = ({
   };
 
   return (
-    <div className="min-h-full pb-20 animate-in fade-in slide-in-from-right-4 duration-200">
+    <div className="config-settings-page min-h-full pb-20 animate-in fade-in slide-in-from-right-4 duration-200">
       {/* Top App Bar Estilo Android */}
       <div className="sticky top-0 z-20 bg-[#F8F9FA]/95 backdrop-blur-md px-4 sm:px-6 py-3 border-b border-slate-200/80 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">

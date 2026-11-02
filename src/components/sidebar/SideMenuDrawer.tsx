@@ -124,10 +124,12 @@ export const SideMenuDrawer: React.FC = () => {
         {/* Conteúdo com Rolagem */}
         <div className="flex-1 overflow-y-auto p-3 space-y-4 divide-y divide-slate-100">
           
-          {/* Instalação do Aplicativo (PWA) */}
-          <div>
-            <PWAInstallButton variant="sidebar" />
-          </div>
+          {/* APK já instalado não deve oferecer instalação do PWA. */}
+          {!(window as any).Capacitor?.isNativePlatform?.() && (
+            <div>
+              <PWAInstallButton variant="sidebar" />
+            </div>
+          )}
 
           {/* Acessos de Gestão e Configuração (Oculto para motoristas) */}
           <div className="pt-3 space-y-1.5">

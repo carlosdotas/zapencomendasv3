@@ -351,7 +351,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   // SE NÃO ESTIVER AUTENTICADO COMO MASTER ADMIN: TELA DE BLOQUEIO MINIMALISTA
   if (!isUnlocked && !isCurrentlyMaster) {
     return (
-      <div className="min-h-full pb-20 animate-in fade-in duration-200">
+      <div className="config-settings-page min-h-full pb-20 animate-in fade-in duration-200">
         <div className="sticky top-0 z-20 bg-white/90 backdrop-blur-md px-4 sm:px-6 py-3.5 border-b border-slate-200/80 flex items-center gap-3">
           <button
             type="button"
@@ -428,7 +428,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
 
   // TELA PRINCIPAL: MINIMALISTA, INTUITIVA E MODERNA
   return (
-    <div className="min-h-full pb-20 animate-in fade-in duration-150 bg-slate-50/50">
+    <div className="config-settings-page min-h-full pb-20 animate-in fade-in duration-150 bg-slate-50/50">
       
       {/* Top App Bar Minimalista */}
       <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-md px-4 sm:px-6 py-3 border-b border-slate-200/80 flex items-center justify-between gap-3">

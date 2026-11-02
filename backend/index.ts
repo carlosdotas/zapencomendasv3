@@ -97,8 +97,20 @@ app.use(express.raw({ type: '*/*', limit: '50mb' }));
 
 // Aviso sem dados ("há mudanças") para todos os apps conectados: eles buscam a lista pela API autenticada
 let ordersPingTimer: NodeJS.Timeout | null = null;
+const notifyOrdersChanged = () => {
+  const payload = JSON.stringify({ type: 'orders:changed', at: Date.now() });
+  wss.clients.forEach(client => {
+    if (client.readyState !== 1) return;
+    try {
+      client.send(payload);
+    } catch (error) {
+      console.warn('[Realtime Orders] Falha ao avisar cliente:', error);
+    }
+  });
+};
 app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.method === 'POST' && /^\/(api\/)?(pedidos|realtime)\/(?!list|get|presenca|upload|tracking)/.test(req.path)) {
+  const isSaveOrderRoute = /^\/(api\/)?pedidos\/save(?:_pedido)?\/?$/.test(req.path);
+  if (!isSaveOrderRoute && req.method === 'POST' && /^\/(api\/)?(pedidos|realtime)\/(?!list|get|presenca|upload|tracking)/.test(req.path)) {
     res.on('finish', () => {
       if (res.statusCode >= 400 || ordersPingTimer) return;
       ordersPingTimer = setTimeout(() => {
@@ -255,7 +267,7 @@ app.post('/api/image-server/delete', async (req: Request, res: Response) => {
 // Rotas da aplicação
 // ---------------------------------------------------------------------------
 registerGoogleRoutes(app, BACKEND_DIR);
-registerApiRoutes(app, { saveBase64Image, uploadToPhpServer, imageServerConfigured });
+registerApiRoutes(app, { saveBase64Image, uploadToPhpServer, imageServerConfigured, notifyOrdersChanged });
 
 async function startServer() {
   try {

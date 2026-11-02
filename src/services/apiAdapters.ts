@@ -507,6 +507,58 @@ export function extractDriverAssignmentFromPedido(
   };
 }
 
+type RoutePointKey = 'pickup' | 'exchange' | 'delivery';
+
+function parseOrderExtraItems(pedido?: BackendPedido | null): Record<string, unknown> {
+  const raw = pedido?.itens_extras;
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getRoutePointMetadata(pedido: BackendPedido, point: RoutePointKey, includeLegacySeller = false) {
+  const extra = parseOrderExtraItems(pedido);
+  const visibilityValue = pedido[`${point}Visibility`] ?? extra[`${point}Visibility`] ??
+    pedido.orderVisibility ?? extra.orderVisibility;
+  const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
+  const legacyDriver = extractDriverAssignmentFromPedido(pedido, operation);
+  const driverId = pedido[`${point}AssignedDriverId`] ?? extra[`${point}AssignedDriverId`] ??
+    (point === 'pickup' && extra.assignedDriverId) ??
+    (point === 'delivery' && extra.assignedDriverId) ??
+    legacyDriver.driverId;
+  const driverName = pedido[`${point}AssignedDriverName`] ?? extra[`${point}AssignedDriverName`] ??
+    legacyDriver.driverName;
+  const driverPhone = pedido[`${point}AssignedDriverPhone`] ?? extra[`${point}AssignedDriverPhone`] ??
+    (point !== 'exchange' && extra.assignedDriverPhone) ??
+    legacyDriver.driverPhone;
+
+  const sellerName = pedido[`${point}SellerName`] ?? extra[`${point}SellerName`] ??
+    (includeLegacySeller ? extra.sellerName : undefined) ??
+    (point === 'pickup' ? pedido.coleta_responsavel || pedido.coleta_contato
+      : point === 'exchange' ? pedido.troca_responsavel || pedido.troca_contato
+        : pedido.entrega_responsavel || pedido.entrega_contato);
+  const sellerPhone = pedido[`${point}SellerPhone`] ?? extra[`${point}SellerPhone`] ??
+    (includeLegacySeller ? extra.sellerPhone : undefined) ??
+    (point === 'pickup' ? pedido.coleta_responsavel_phone || pedido.coleta_phone
+      : point === 'exchange' ? pedido.troca_responsavel_phone || pedido.troca_phone
+        : pedido.entrega_responsavel_phone || pedido.entrega_phone);
+
+  return {
+    visibility: visibilityValue === 'privado' ? 'privado' as const : visibilityValue === 'publico' ? 'publico' as const : undefined,
+    driverId: driverId == null ? undefined : String(driverId),
+    driverName: driverName == null ? undefined : String(driverName),
+    driverPhone: driverPhone == null ? undefined : String(driverPhone),
+    sellerName: sellerName == null ? undefined : String(sellerName),
+    sellerPhone: sellerPhone == null ? undefined : String(sellerPhone)
+  };
+}
+
 export function backendPedidoToPlace(pedido: BackendPedido): Place {
   const isExchange = pedido.tipo_encomenda === 'troca' || Boolean(pedido.troca_lat);
   
@@ -603,11 +655,11 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     : extractPhotoUrls(pedido.entrega_foto, 'md');
   const uniquePhotos = Array.from(new Set(orderPhotos));
 
-  const activeObsRaw = activeOperationType === 'coleta' 
-    ? (pedido.coleta_obs || pedido.detalhes) 
+  const activeObsRaw = activeOperationType === 'coleta'
+    ? (pedido.coleta_obs ?? pedido.detalhes)
     : activeOperationType === 'troca' 
-    ? (pedido.troca_obs || pedido.detalhes) 
-    : (pedido.entrega_obs || pedido.detalhes);
+    ? (pedido.troca_obs ?? pedido.detalhes)
+    : (pedido.entrega_obs ?? pedido.detalhes);
   const activeObs = (activeObsRaw || '').trim() || undefined;
 
   const activeResp = (activeOperationType === 'coleta' 
@@ -622,6 +674,15 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     ? (pedido.troca_responsavel_phone || pedido.troca_phone) 
     : (pedido.entrega_responsavel_phone || pedido.entrega_phone);
   const activeRespPhone = activeRespPhoneRaw ? String(activeRespPhoneRaw) : undefined;
+  const activePointKey: RoutePointKey = activeOperationType === 'coleta'
+    ? 'pickup'
+    : activeOperationType === 'troca'
+      ? 'exchange'
+      : 'delivery';
+  const activePointMetadata = getRoutePointMetadata(pedido, activePointKey, true);
+  const pickupMetadata = getRoutePointMetadata(pedido, 'pickup');
+  const exchangeMetadata = getRoutePointMetadata(pedido, 'exchange');
+  const deliveryMetadata = getRoutePointMetadata(pedido, 'delivery');
 
   return {
     id: `pedido-${pedido.id}-${activeOperationType}`,
@@ -634,6 +695,24 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     operationType: activeOperationType,
     orderStage: activeStage,
     isExchangeOrder: isExchange,
+    pickupVisibility: pickupMetadata.visibility,
+    pickupAssignedDriverId: pickupMetadata.driverId,
+    pickupAssignedDriverPhone: pickupMetadata.driverPhone,
+    pickupAssignedDriverName: pickupMetadata.driverName,
+    pickupSellerName: pickupMetadata.sellerName,
+    pickupSellerPhone: pickupMetadata.sellerPhone,
+    exchangeVisibility: exchangeMetadata.visibility,
+    exchangeAssignedDriverId: exchangeMetadata.driverId,
+    exchangeAssignedDriverPhone: exchangeMetadata.driverPhone,
+    exchangeAssignedDriverName: exchangeMetadata.driverName,
+    exchangeSellerName: exchangeMetadata.sellerName,
+    exchangeSellerPhone: exchangeMetadata.sellerPhone,
+    deliveryVisibility: deliveryMetadata.visibility,
+    deliveryAssignedDriverId: deliveryMetadata.driverId,
+    deliveryAssignedDriverPhone: deliveryMetadata.driverPhone,
+    deliveryAssignedDriverName: deliveryMetadata.driverName,
+    deliverySellerName: deliveryMetadata.sellerName,
+    deliverySellerPhone: deliveryMetadata.sellerPhone,
     customerName: pedido.cliente || 'Cliente EncomendasZap',
     customerPhone: pedido.phone ? String(pedido.phone) : undefined,
     originCity: pedido.coleta_cidade || pedido.cidade || 'Goiânia - GO',
@@ -646,13 +725,14 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     responsiblePhone: activeRespPhone,
     managerName: activeResp,
     managerPhone: activeRespPhone,
-    sellerName: activeResp,
-    sellerPhone: activeRespPhone,
+    sellerName: activePointMetadata.sellerName || activeResp,
+    sellerPhone: activePointMetadata.sellerPhone || activeRespPhone,
+    orderVisibility: activePointMetadata.visibility,
+    assignedDriverId: activePointMetadata.driverId || extractDriverAssignmentFromPedido(pedido, activeOperationType).driverId,
+    assignedDriverName: activePointMetadata.driverName || extractDriverAssignmentFromPedido(pedido, activeOperationType).driverName,
+    assignedDriverPhone: activePointMetadata.driverPhone || extractDriverAssignmentFromPedido(pedido, activeOperationType).driverPhone,
     imageUrl: uniquePhotos[0] || undefined,
     photos: uniquePhotos.length > 0 ? uniquePhotos : undefined,
-    assignedDriverId: extractDriverAssignmentFromPedido(pedido).driverId,
-    assignedDriverName: extractDriverAssignmentFromPedido(pedido).driverName,
-    assignedDriverPhone: extractDriverAssignmentFromPedido(pedido).driverPhone,
     
     // Dados completos dos pontos da encomenda
     pickupName: coletaLocalName,
@@ -663,7 +743,7 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     pickupNotes: pedido.coleta_obs,
 
     exchangeName: pedido.troca_nome || entregaLocalName,
-    exchangeAddress: entregaFullAddress,
+    exchangeAddress: pedido.troca_endereco || entregaFullAddress,
     exchangeCoordinates: exchangeCoords || deliveryCoords,
     exchangeContact: pedido.troca_contato,
     exchangePhone: pedido.troca_phone,
@@ -768,6 +848,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
   const vType: VehicleCollectionType = pedido.tipo_veiculo === 'carro' ? 'carro' : pedido.tipo_veiculo === 'utilitario' ? 'utilitario' : 'moto';
   const dateBadge = getOrderDateBadgeFromDate(pedido.data || pedido.created_at);
   const cleanOrderDate = String(pedido.data || pedido.created_at || '').slice(0, 10) || undefined;
+  const pickupMetadata = getRoutePointMetadata(pedido, 'pickup');
+  const exchangeMetadata = getRoutePointMetadata(pedido, 'exchange');
+  const deliveryMetadata = getRoutePointMetadata(pedido, 'delivery');
 
   const baseShared = {
     ...pedidoPaymentFields(pedido),
@@ -787,15 +870,44 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
     scheduledDate: cleanOrderDate,
     data: cleanOrderDate,
     orderDate: cleanOrderDate,
-    driverNotes: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
-    observations: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
+    driverNotes: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
+    observations: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
+    pickupVisibility: pickupMetadata.visibility,
+    pickupAssignedDriverId: pickupMetadata.driverId,
+    pickupAssignedDriverPhone: pickupMetadata.driverPhone,
+    pickupAssignedDriverName: pickupMetadata.driverName,
+    pickupSellerName: pickupMetadata.sellerName,
+    pickupSellerPhone: pickupMetadata.sellerPhone,
+    exchangeVisibility: exchangeMetadata.visibility,
+    exchangeAssignedDriverId: exchangeMetadata.driverId,
+    exchangeAssignedDriverPhone: exchangeMetadata.driverPhone,
+    exchangeAssignedDriverName: exchangeMetadata.driverName,
+    exchangeSellerName: exchangeMetadata.sellerName,
+    exchangeSellerPhone: exchangeMetadata.sellerPhone,
+    deliveryVisibility: deliveryMetadata.visibility,
+    deliveryAssignedDriverId: deliveryMetadata.driverId,
+    deliveryAssignedDriverPhone: deliveryMetadata.driverPhone,
+    deliveryAssignedDriverName: deliveryMetadata.driverName,
+    deliverySellerName: deliveryMetadata.sellerName,
+    deliverySellerPhone: deliveryMetadata.sellerPhone,
     pickupName: coletaLocalName,
     pickupAddress: coletaFullAddress,
     pickupCoordinates: hasRealColeta ? pickupCoords : undefined,
+    pickupContact: pedido.coleta_contato,
+    pickupPhone: pedido.coleta_phone,
+    pickupNotes: pedido.coleta_obs ?? pedido.detalhes,
     deliveryName: entregaLocalName,
     deliveryAddress: entregaFullAddress,
     deliveryCoordinates: hasRealEntrega ? deliveryCoords : undefined,
+    deliveryContact: pedido.entrega_contato,
+    deliveryPhone: pedido.entrega_phone,
+    deliveryNotes: pedido.entrega_obs ?? pedido.detalhes,
+    exchangeName: pedido.troca_nome || entregaLocalName,
+    exchangeAddress: pedido.troca_endereco || entregaFullAddress,
     exchangeCoordinates: isExchange && hasRealEntrega ? deliveryCoords : undefined,
+    exchangeContact: pedido.troca_contato,
+    exchangePhone: pedido.troca_phone,
+    exchangeNotes: pedido.troca_obs ?? pedido.detalhes,
   };
 
   const coletaDriver = extractDriverAssignmentFromPedido(pedido, 'coleta');
@@ -826,11 +938,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
           category: 'Troca de Mercadoria',
           operationType: 'troca',
           orderStage: 'troca',
-          assignedDriverId: trocaDriver.driverId,
-          assignedDriverName: trocaDriver.driverName,
-          assignedDriverPhone: trocaDriver.driverPhone,
-          observations: (pedido.troca_obs || pedido.detalhes || '').trim() || undefined,
-          driverNotes: (pedido.troca_obs || pedido.detalhes || '').trim() || undefined,
+          assignedDriverId: exchangeMetadata.driverId || trocaDriver.driverId,
+          assignedDriverName: exchangeMetadata.driverName || trocaDriver.driverName,
+          assignedDriverPhone: exchangeMetadata.driverPhone || trocaDriver.driverPhone,
+          orderVisibility: exchangeMetadata.visibility,
+          sellerName: exchangeMetadata.sellerName,
+          sellerPhone: exchangeMetadata.sellerPhone,
+          observations: (pedido.troca_obs ?? pedido.detalhes ?? '').trim() || undefined,
+          driverNotes: (pedido.troca_obs ?? pedido.detalhes ?? '').trim() || undefined,
           responsibleName: pedido.troca_responsavel || pedido.troca_contato || undefined,
           responsiblePhone: (pedido.troca_responsavel_phone || pedido.troca_phone) ? String(pedido.troca_responsavel_phone || pedido.troca_phone) : undefined,
           managerName: pedido.troca_responsavel || pedido.troca_contato || undefined,
@@ -850,11 +965,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
           category: 'Entrega Expressa',
           operationType: 'entrega',
           orderStage: 'entrega',
-          assignedDriverId: entregaDriver.driverId,
-          assignedDriverName: entregaDriver.driverName,
-          assignedDriverPhone: entregaDriver.driverPhone,
-          observations: (pedido.entrega_obs || pedido.detalhes || '').trim() || undefined,
-          driverNotes: (pedido.entrega_obs || pedido.detalhes || '').trim() || undefined,
+          assignedDriverId: deliveryMetadata.driverId || entregaDriver.driverId,
+          assignedDriverName: deliveryMetadata.driverName || entregaDriver.driverName,
+          assignedDriverPhone: deliveryMetadata.driverPhone || entregaDriver.driverPhone,
+          orderVisibility: deliveryMetadata.visibility,
+          sellerName: deliveryMetadata.sellerName,
+          sellerPhone: deliveryMetadata.sellerPhone,
+          observations: (pedido.entrega_obs ?? pedido.detalhes ?? '').trim() || undefined,
+          driverNotes: (pedido.entrega_obs ?? pedido.detalhes ?? '').trim() || undefined,
           responsibleName: pedido.entrega_responsavel || pedido.entrega_contato || undefined,
           responsiblePhone: (pedido.entrega_responsavel_phone || pedido.entrega_phone) ? String(pedido.entrega_responsavel_phone || pedido.entrega_phone) : undefined,
           managerName: pedido.entrega_responsavel || pedido.entrega_contato || undefined,
@@ -882,11 +1000,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
       category: 'Coleta Expressa',
       operationType: 'coleta',
       orderStage: 'coleta',
-      assignedDriverId: coletaDriver.driverId,
-      assignedDriverName: coletaDriver.driverName,
-      assignedDriverPhone: coletaDriver.driverPhone,
-      observations: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
-      driverNotes: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
+      assignedDriverId: pickupMetadata.driverId || coletaDriver.driverId,
+      assignedDriverName: pickupMetadata.driverName || coletaDriver.driverName,
+      assignedDriverPhone: pickupMetadata.driverPhone || coletaDriver.driverPhone,
+      orderVisibility: pickupMetadata.visibility,
+      sellerName: pickupMetadata.sellerName,
+      sellerPhone: pickupMetadata.sellerPhone,
+      observations: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
+      driverNotes: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
       responsibleName: pedido.coleta_responsavel || pedido.coleta_contato || undefined,
       responsiblePhone: (pedido.coleta_responsavel_phone || pedido.coleta_phone) ? String(pedido.coleta_responsavel_phone || pedido.coleta_phone) : undefined,
       managerName: pedido.coleta_responsavel || pedido.coleta_contato || undefined,
@@ -912,11 +1033,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
       category: isExchange ? 'Troca de Mercadoria' : 'Coleta Expressa',
       operationType: 'coleta',
       orderStage: 'coleta',
-      assignedDriverId: coletaDriver.driverId,
-      assignedDriverName: coletaDriver.driverName,
-      assignedDriverPhone: coletaDriver.driverPhone,
-      observations: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
-      driverNotes: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
+      assignedDriverId: pickupMetadata.driverId || coletaDriver.driverId,
+      assignedDriverName: pickupMetadata.driverName || coletaDriver.driverName,
+      assignedDriverPhone: pickupMetadata.driverPhone || coletaDriver.driverPhone,
+      orderVisibility: pickupMetadata.visibility,
+      sellerName: pickupMetadata.sellerName,
+      sellerPhone: pickupMetadata.sellerPhone,
+      observations: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
+      driverNotes: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
       responsibleName: pedido.coleta_responsavel || pedido.coleta_contato || undefined,
       responsiblePhone: (pedido.coleta_responsavel_phone || pedido.coleta_phone) ? String(pedido.coleta_responsavel_phone || pedido.coleta_phone) : undefined,
       managerName: pedido.coleta_responsavel || pedido.coleta_contato || undefined,
@@ -937,11 +1061,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         category: 'Troca de Mercadoria',
         operationType: 'entrega',
         orderStage: 'retorno',
-        assignedDriverId: entregaDriver.driverId || coletaDriver.driverId,
-        assignedDriverName: entregaDriver.driverName || coletaDriver.driverName,
-        assignedDriverPhone: entregaDriver.driverPhone || coletaDriver.driverPhone,
-        observations: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
-        driverNotes: (pedido.coleta_obs || pedido.detalhes || '').trim() || undefined,
+        assignedDriverId: deliveryMetadata.driverId || entregaDriver.driverId || pickupMetadata.driverId,
+        assignedDriverName: deliveryMetadata.driverName || entregaDriver.driverName || pickupMetadata.driverName,
+        assignedDriverPhone: deliveryMetadata.driverPhone || entregaDriver.driverPhone || pickupMetadata.driverPhone,
+        orderVisibility: deliveryMetadata.visibility || pickupMetadata.visibility,
+        sellerName: deliveryMetadata.sellerName || pickupMetadata.sellerName,
+        sellerPhone: deliveryMetadata.sellerPhone || pickupMetadata.sellerPhone,
+        observations: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
+        driverNotes: (pedido.coleta_obs ?? pedido.detalhes ?? '').trim() || undefined,
         responsibleName: pedido.coleta_responsavel || pedido.coleta_contato || undefined,
         responsiblePhone: (pedido.coleta_responsavel_phone || pedido.coleta_phone) ? String(pedido.coleta_responsavel_phone || pedido.coleta_phone) : undefined,
       });
@@ -958,11 +1085,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         category: 'Troca de Mercadoria',
         operationType: 'troca',
         orderStage: 'troca',
-        assignedDriverId: trocaDriver.driverId,
-        assignedDriverName: trocaDriver.driverName,
-        assignedDriverPhone: trocaDriver.driverPhone,
-        observations: (pedido.troca_obs || pedido.detalhes || '').trim() || undefined,
-        driverNotes: (pedido.troca_obs || pedido.detalhes || '').trim() || undefined,
+        assignedDriverId: exchangeMetadata.driverId || trocaDriver.driverId,
+        assignedDriverName: exchangeMetadata.driverName || trocaDriver.driverName,
+        assignedDriverPhone: exchangeMetadata.driverPhone || trocaDriver.driverPhone,
+        orderVisibility: exchangeMetadata.visibility,
+        sellerName: exchangeMetadata.sellerName,
+        sellerPhone: exchangeMetadata.sellerPhone,
+        observations: (pedido.troca_obs ?? pedido.detalhes ?? '').trim() || undefined,
+        driverNotes: (pedido.troca_obs ?? pedido.detalhes ?? '').trim() || undefined,
         responsibleName: pedido.troca_responsavel || pedido.troca_contato || undefined,
         responsiblePhone: (pedido.troca_responsavel_phone || pedido.troca_phone) ? String(pedido.troca_responsavel_phone || pedido.troca_phone) : undefined,
         managerName: pedido.troca_responsavel || pedido.troca_contato || undefined,
@@ -983,11 +1113,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         category: 'Entrega Expressa',
         operationType: 'entrega',
         orderStage: 'entrega',
-        assignedDriverId: entregaDriver.driverId,
-        assignedDriverName: entregaDriver.driverName,
-        assignedDriverPhone: entregaDriver.driverPhone,
-        observations: (pedido.entrega_obs || pedido.detalhes || '').trim() || undefined,
-        driverNotes: (pedido.entrega_obs || pedido.detalhes || '').trim() || undefined,
+        assignedDriverId: deliveryMetadata.driverId || entregaDriver.driverId,
+        assignedDriverName: deliveryMetadata.driverName || entregaDriver.driverName,
+        assignedDriverPhone: deliveryMetadata.driverPhone || entregaDriver.driverPhone,
+        orderVisibility: deliveryMetadata.visibility,
+        sellerName: deliveryMetadata.sellerName,
+        sellerPhone: deliveryMetadata.sellerPhone,
+        observations: (pedido.entrega_obs ?? pedido.detalhes ?? '').trim() || undefined,
+        driverNotes: (pedido.entrega_obs ?? pedido.detalhes ?? '').trim() || undefined,
         responsibleName: pedido.entrega_responsavel || pedido.entrega_contato || undefined,
         responsiblePhone: (pedido.entrega_responsavel_phone || pedido.entrega_phone) ? String(pedido.entrega_responsavel_phone || pedido.entrega_phone) : undefined,
         managerName: pedido.entrega_responsavel || pedido.entrega_contato || undefined,
@@ -1094,6 +1227,32 @@ export function backendOrderMarkerToPlace(
   const finalAddress = isRetornoStage 
     ? (fullPedido?.coleta_cidade ? `${pickupName} - ${fullPedido.coleta_cidade}` : pickupName)
     : fullAddress;
+  const activePointKey: RoutePointKey = activeOp === 'coleta' ? 'pickup' : activeOp === 'troca' ? 'exchange' : 'delivery';
+  const pointMetadata = fullPedido
+    ? getRoutePointMetadata(fullPedido, activePointKey, true)
+    : { visibility: undefined, driverId: undefined, driverName: undefined, driverPhone: undefined, sellerName: undefined, sellerPhone: undefined };
+  const pickupMetadata = fullPedido ? getRoutePointMetadata(fullPedido, 'pickup') : undefined;
+  const exchangeMetadata = fullPedido ? getRoutePointMetadata(fullPedido, 'exchange') : undefined;
+  const deliveryMetadata = fullPedido ? getRoutePointMetadata(fullPedido, 'delivery') : undefined;
+  const legacyDriver = extractDriverAssignmentFromPedido(
+    fullPedido || { id: marker.pedido_id },
+    isColetaMarker ? 'coleta' : activeOp === 'troca' ? 'troca' : 'entrega'
+  );
+  const activeNotes = isColetaMarker
+    ? (fullPedido?.coleta_obs ?? fullPedido?.detalhes)
+    : activeOp === 'troca'
+      ? (fullPedido?.troca_obs ?? fullPedido?.detalhes)
+      : (fullPedido?.entrega_obs ?? fullPedido?.detalhes);
+  const activeResponsible = activeOp === 'coleta'
+    ? (fullPedido?.coleta_responsavel || fullPedido?.coleta_contato)
+    : activeOp === 'troca'
+      ? (fullPedido?.troca_responsavel || fullPedido?.troca_contato)
+      : (fullPedido?.entrega_responsavel || fullPedido?.entrega_contato);
+  const activeResponsiblePhone = activeOp === 'coleta'
+    ? (fullPedido?.coleta_responsavel_phone || fullPedido?.coleta_phone)
+    : activeOp === 'troca'
+      ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
+      : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone);
 
   return {
     id: `pedido-${marker.pedido_id}-${marker.tipo}`,
@@ -1121,78 +1280,56 @@ export function backendOrderMarkerToPlace(
     openNow: true,
     imageUrl: photoUrl,
     photos: markerPhotos.length > 0 ? markerPhotos : undefined,
-    assignedDriverId: extractDriverAssignmentFromPedido(fullPedido || { id: marker.pedido_id }, isColetaMarker ? 'coleta' : (isExchange ? 'troca' : 'entrega')).driverId,
-    assignedDriverName: extractDriverAssignmentFromPedido(fullPedido || { id: marker.pedido_id }, isColetaMarker ? 'coleta' : (isExchange ? 'troca' : 'entrega')).driverName,
-    assignedDriverPhone: extractDriverAssignmentFromPedido(fullPedido || { id: marker.pedido_id }, isColetaMarker ? 'coleta' : (isExchange ? 'troca' : 'entrega')).driverPhone,
-    observations: (
-      (isColetaMarker 
-        ? (fullPedido?.coleta_obs || fullPedido?.detalhes)
-        : activeOp === 'troca'
-        ? (fullPedido?.troca_obs || fullPedido?.detalhes)
-        : (fullPedido?.entrega_obs || fullPedido?.detalhes)) ||
-      (marker as any).obs ||
-      (marker as any).observacao ||
-      (marker as any).detalhes ||
-      ''
-    ).trim() || undefined,
-    driverNotes: (
-      (isColetaMarker 
-        ? (fullPedido?.coleta_obs || fullPedido?.detalhes)
-        : activeOp === 'troca'
-        ? (fullPedido?.troca_obs || fullPedido?.detalhes)
-        : (fullPedido?.entrega_obs || fullPedido?.detalhes)) ||
-      (marker as any).obs ||
-      (marker as any).detalhes ||
-      ''
-    ).trim() || undefined,
-    responsibleName: (isColetaMarker
-      ? (fullPedido?.coleta_responsavel || fullPedido?.coleta_contato)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel || fullPedido?.troca_contato)
-      : (fullPedido?.entrega_responsavel || fullPedido?.entrega_contato)) || undefined,
-    responsiblePhone: (isColetaMarker
-      ? (fullPedido?.coleta_responsavel_phone || fullPedido?.coleta_phone)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
-      : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone)) ? String(isColetaMarker
-      ? (fullPedido?.coleta_responsavel_phone || fullPedido?.coleta_phone)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
-      : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone)) : undefined,
-    managerName: (isColetaMarker
-      ? (fullPedido?.coleta_responsavel || fullPedido?.coleta_contato)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel || fullPedido?.troca_contato)
-      : (fullPedido?.entrega_responsavel || fullPedido?.entrega_contato)) || undefined,
-    managerPhone: (isColetaMarker
-      ? (fullPedido?.coleta_responsavel_phone || fullPedido?.coleta_phone)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
-      : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone)) ? String(isColetaMarker
-      ? (fullPedido?.coleta_responsavel_phone || fullPedido?.coleta_phone)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
-      : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone)) : undefined,
-    sellerName: (isColetaMarker
-      ? (fullPedido?.coleta_responsavel || fullPedido?.coleta_contato)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel || fullPedido?.troca_contato)
-      : (fullPedido?.entrega_responsavel || fullPedido?.entrega_contato)) || undefined,
-    sellerPhone: (isColetaMarker
-      ? (fullPedido?.coleta_responsavel_phone || fullPedido?.coleta_phone)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
-      : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone)) ? String(isColetaMarker
-      ? (fullPedido?.coleta_responsavel_phone || fullPedido?.coleta_phone)
-      : activeOp === 'troca'
-      ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
-      : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone)) : undefined,
+    assignedDriverId: pointMetadata.driverId || legacyDriver.driverId,
+    assignedDriverName: pointMetadata.driverName || legacyDriver.driverName,
+    assignedDriverPhone: pointMetadata.driverPhone || legacyDriver.driverPhone,
+    orderVisibility: pointMetadata.visibility,
+    sellerName: pointMetadata.sellerName || activeResponsible || undefined,
+    sellerPhone: pointMetadata.sellerPhone || (activeResponsiblePhone ? String(activeResponsiblePhone) : undefined),
+    responsibleName: activeResponsible || undefined,
+    responsiblePhone: activeResponsiblePhone ? String(activeResponsiblePhone) : undefined,
+    managerName: activeResponsible || undefined,
+    managerPhone: activeResponsiblePhone ? String(activeResponsiblePhone) : undefined,
+    pickupVisibility: pickupMetadata?.visibility,
+    pickupAssignedDriverId: pickupMetadata?.driverId,
+    pickupAssignedDriverName: pickupMetadata?.driverName,
+    pickupAssignedDriverPhone: pickupMetadata?.driverPhone,
+    pickupSellerName: pickupMetadata?.sellerName,
+    pickupSellerPhone: pickupMetadata?.sellerPhone,
+    exchangeVisibility: exchangeMetadata?.visibility,
+    exchangeAssignedDriverId: exchangeMetadata?.driverId,
+    exchangeAssignedDriverName: exchangeMetadata?.driverName,
+    exchangeAssignedDriverPhone: exchangeMetadata?.driverPhone,
+    exchangeSellerName: exchangeMetadata?.sellerName,
+    exchangeSellerPhone: exchangeMetadata?.sellerPhone,
+    deliveryVisibility: deliveryMetadata?.visibility,
+    deliveryAssignedDriverId: deliveryMetadata?.driverId,
+    deliveryAssignedDriverName: deliveryMetadata?.driverName,
+    deliveryAssignedDriverPhone: deliveryMetadata?.driverPhone,
+    deliverySellerName: deliveryMetadata?.sellerName,
+    deliverySellerPhone: deliveryMetadata?.sellerPhone,
+    observations: (activeNotes ?? (marker as any).obs ?? (marker as any).observacao ?? (marker as any).detalhes ?? '').trim() || undefined,
+    driverNotes: (activeNotes ?? (marker as any).obs ?? (marker as any).detalhes ?? '').trim() || undefined,
     pickupName,
     pickupAddress: fullPedido?.coleta_cidade ? `${pickupName} - ${fullPedido.coleta_cidade}` : pickupName,
     pickupCoordinates: { lat: coletaLat, lng: coletaLng },
+    pickupContact: fullPedido?.coleta_contato,
+    pickupPhone: fullPedido?.coleta_phone,
+    pickupNotes: fullPedido?.coleta_obs ?? fullPedido?.detalhes,
+    exchangeName: fullPedido?.troca_nome,
+    exchangeAddress: fullPedido?.troca_endereco,
+    exchangeCoordinates: fullPedido?.troca_lat && fullPedido?.troca_lng
+      ? { lat: Number(fullPedido.troca_lat), lng: Number(fullPedido.troca_lng) }
+      : undefined,
+    exchangeContact: fullPedido?.troca_contato,
+    exchangePhone: fullPedido?.troca_phone,
+    exchangeNotes: fullPedido?.troca_obs ?? fullPedido?.detalhes,
     deliveryName,
     deliveryAddress: fullPedido?.entrega_cidade ? `${deliveryName} - ${fullPedido.entrega_cidade}` : deliveryName,
-    deliveryCoordinates: { lat: entregaLat, lng: entregaLng }
+    deliveryCoordinates: { lat: entregaLat, lng: entregaLng },
+    deliveryContact: fullPedido?.entrega_contato,
+    deliveryPhone: fullPedido?.entrega_phone,
+    deliveryNotes: fullPedido?.entrega_obs ?? fullPedido?.detalhes
   };
 }
 
@@ -1229,7 +1366,9 @@ export function backendUserToCustomer(user: BackendUser): Customer {
     address: user.address || user.endereco || '',
     coordinates,
     additionalAddresses,
-    notes: user.cliente_especial ? 'Cliente Especial' : undefined,
+    email: user.email,
+    notes: user.notes || (user.cliente_especial ? 'Cliente Especial' : undefined),
+    companyId: user.companyId,
     orderCount: Number(user.orderCount ?? user.order_count ?? user.pedidos_count ?? 0),
     createdAt: user.created_at ? new Date(user.created_at).getTime() : Date.now()
   };

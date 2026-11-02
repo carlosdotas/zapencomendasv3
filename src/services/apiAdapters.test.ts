@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { backendUserToCustomer, formatPhotoUrl } from './apiAdapters';
+import { backendPedidoToPlaces, backendUserToCustomer, formatPhotoUrl } from './apiAdapters';
 import { mergeCustomerLists, normalizeCustomerId, normalizeCustomerPhone } from '../utils/customerIdentity';
 
 test('preserves the PHP image host returned by the upload server', () => {
@@ -78,6 +78,23 @@ test('normalizes database ids and Brazilian phone country codes', () => {
   assert.equal(normalizeCustomerPhone('+55 (62) 99999-0000'), '62999990000');
 });
 
+test('preserves customer email, notes and company on reload from the backend', () => {
+  const customer = backendUserToCustomer({
+    id: '84',
+    name: 'Contato',
+    full_name: 'Cliente Teste',
+    phone: '62999990000',
+    access_level: 'cliente',
+    email: 'cliente@example.com',
+    notes: 'Entregar pela portaria',
+    companyId: 'company-7'
+  });
+
+  assert.equal(customer.email, 'cliente@example.com');
+  assert.equal(customer.notes, 'Entregar pela portaria');
+  assert.equal(customer.companyId, 'company-7');
+});
+
 test('merges database and local records while keeping distinct ids with shared phone separate', () => {
   const databaseCustomer = {
     id: '42', fullName: 'Cliente A', phone: '62999990000', cpf: '',
@@ -98,4 +115,154 @@ test('merges database and local records while keeping distinct ids with shared p
   assert.equal(merged[0].address, 'Rua 10, 200');
   assert.deepEqual(merged[0].coordinates, { lat: -16.7, lng: -49.2 });
   assert.equal(merged[1].id, '43');
+});
+
+test('maps per-stop visibility, assignment, seller and comments from saved order metadata', () => {
+  const [pickup] = backendPedidoToPlaces({
+    id: 321,
+    etapa: 'pendente',
+    tipo_encomenda: 'entrega',
+    cliente: 'Cliente Rota',
+    coleta_endereco: 'Rua de Coleta, Goiânia',
+    coleta_lat: -16.7,
+    coleta_lng: -49.2,
+    coleta_obs: '',
+    detalhes: 'Observação geral legada',
+    entrega_endereco: 'Rua de Entrega, Goiânia',
+    entrega_lat: -16.71,
+    entrega_lng: -49.21,
+    itens_extras: JSON.stringify({
+      pickupVisibility: 'privado',
+      pickupAssignedDriverId: '44',
+      pickupAssignedDriverName: 'Motorista Coleta',
+      pickupSellerName: 'Vendedor Coleta',
+      deliveryVisibility: 'publico',
+      deliverySellerName: 'Vendedor Entrega'
+    })
+  });
+
+  assert.equal(pickup.operationType, 'coleta');
+  assert.equal(pickup.pickupVisibility, 'privado');
+  assert.equal(pickup.pickupAssignedDriverId, '44');
+  assert.equal(pickup.pickupAssignedDriverName, 'Motorista Coleta');
+  assert.equal(pickup.pickupSellerName, 'Vendedor Coleta');
+  assert.equal(pickup.deliveryVisibility, 'publico');
+  assert.equal(pickup.deliverySellerName, 'Vendedor Entrega');
+  assert.equal(pickup.pickupNotes, '');
+  assert.equal(pickup.observations, undefined);
+});
+
+test('uses the active delivery stop metadata after the pickup is completed', () => {
+  const [delivery] = backendPedidoToPlaces({
+    id: 322,
+    etapa: 'coletado',
+    tipo_encomenda: 'entrega',
+    cliente: 'Cliente Rota',
+    coleta_endereco: 'Rua de Coleta, Goiânia',
+    coleta_lat: -16.7,
+    coleta_lng: -49.2,
+    entrega_endereco: 'Rua de Entrega, Goiânia',
+    entrega_lat: -16.71,
+    entrega_lng: -49.21,
+    entrega_obs: 'Instruções da entrega',
+    itens_extras: JSON.stringify({
+      pickupVisibility: 'privado',
+      pickupAssignedDriverId: '44',
+      deliveryVisibility: 'privado',
+      deliveryAssignedDriverId: '55',
+      deliveryAssignedDriverName: 'Motorista Entrega',
+      deliverySellerName: 'Vendedor Entrega',
+      deliverySellerPhone: '(62) 99999-1234'
+    })
+  });
+
+  assert.equal(delivery.operationType, 'entrega');
+  assert.equal(delivery.orderVisibility, 'privado');
+  assert.equal(delivery.assignedDriverId, '55');
+  assert.equal(delivery.assignedDriverName, 'Motorista Entrega');
+  assert.equal(delivery.sellerName, 'Vendedor Entrega');
+  assert.equal(delivery.sellerPhone, '(62) 99999-1234');
+  assert.equal(delivery.observations, 'Instruções da entrega');
+});
+
+test('preserves independent pickup and delivery settings on each active route point', () => {
+  const pickupOrder = {
+    id: 323,
+    etapa: 'pendente',
+    tipo_encomenda: 'entrega',
+    cliente: 'Cliente Rota',
+    coleta_endereco: 'Rua de Coleta, Goiânia',
+    coleta_lat: -16.7,
+    coleta_lng: -49.2,
+    coleta_obs: 'Retirar na recepção',
+    entrega_endereco: 'Rua de Entrega, Goiânia',
+    entrega_lat: -16.71,
+    entrega_lng: -49.21,
+    entrega_obs: 'Entregar ao cliente',
+    itens_extras: JSON.stringify({
+      pickupVisibility: 'privado',
+      pickupAssignedDriverId: '44',
+      pickupAssignedDriverName: 'Motorista Coleta',
+      pickupSellerName: 'Responsável da coleta',
+      pickupSellerPhone: '62911111111',
+      deliveryVisibility: 'publico',
+      deliveryAssignedDriverId: '55',
+      deliveryAssignedDriverName: 'Motorista Entrega',
+      deliverySellerName: 'Responsável da entrega',
+      deliverySellerPhone: '62922222222'
+    })
+  };
+  const [pickup] = backendPedidoToPlaces(pickupOrder);
+  const [delivery] = backendPedidoToPlaces({ ...pickupOrder, etapa: 'coletado' });
+
+  assert.equal(pickup.operationType, 'coleta');
+  assert.equal(pickup.pickupVisibility, 'privado');
+  assert.equal(pickup.pickupAssignedDriverId, '44');
+  assert.equal(pickup.pickupSellerName, 'Responsável da coleta');
+  assert.equal(pickup.pickupSellerPhone, '62911111111');
+  assert.equal(pickup.pickupNotes, 'Retirar na recepção');
+  assert.equal(pickup.deliveryVisibility, 'publico');
+  assert.equal(pickup.deliveryAssignedDriverId, '55');
+  assert.equal(pickup.deliverySellerName, 'Responsável da entrega');
+  assert.equal(pickup.deliverySellerPhone, '62922222222');
+  assert.equal(pickup.deliveryNotes, 'Entregar ao cliente');
+  assert.equal(delivery.operationType, 'entrega');
+  assert.equal(delivery.deliveryVisibility, 'publico');
+  assert.equal(delivery.deliveryAssignedDriverId, '55');
+  assert.equal(delivery.sellerName, 'Responsável da entrega');
+  assert.equal(delivery.sellerPhone, '62922222222');
+  assert.equal(delivery.deliveryNotes, 'Entregar ao cliente');
+});
+
+test('keeps the exchange seller responsible at the exchange stop', () => {
+  const [exchange] = backendPedidoToPlaces({
+    id: 324,
+    etapa: 'coletado',
+    tipo_encomenda: 'troca',
+    cliente: 'Cliente Troca',
+    coleta_endereco: 'Rua de Coleta, Goiânia',
+    coleta_lat: -16.7,
+    coleta_lng: -49.2,
+    entrega_endereco: 'Rua de Entrega, Goiânia',
+    entrega_lat: -16.71,
+    entrega_lng: -49.21,
+    troca_nome: 'Ponto de Troca',
+    troca_endereco: 'Avenida Central, Goiânia',
+    troca_lat: -16.72,
+    troca_lng: -49.22,
+    itens_extras: JSON.stringify({
+      pickupSellerName: 'Responsável da coleta',
+      exchangeSellerName: 'Responsável da troca',
+      exchangeSellerPhone: '62933333333',
+      deliverySellerName: 'Responsável da entrega'
+    })
+  });
+
+  assert.equal(exchange.operationType, 'troca');
+  assert.equal(exchange.exchangeAddress, 'Avenida Central, Goiânia');
+  assert.equal(exchange.sellerName, 'Responsável da troca');
+  assert.equal(exchange.sellerPhone, '62933333333');
+  assert.equal(exchange.pickupSellerName, 'Responsável da coleta');
+  assert.equal(exchange.exchangeSellerName, 'Responsável da troca');
+  assert.equal(exchange.deliverySellerName, 'Responsável da entrega');
 });

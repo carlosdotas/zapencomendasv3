@@ -51,7 +51,8 @@ import {
   getOrderDateBadgeFromDate
 } from '../services/apiAdapters';
 import { filterPlacesBySequence } from '../utils/orderSequence';
-import { BackendPedido, BaixaProximity } from '../services/apiTypes';
+import { isTemporaryOrderId } from '../utils/orderIds';
+import { BackendPedido, BackendUser, BaixaProximity } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
 
@@ -122,7 +123,8 @@ interface MapContextType {
   setIsNewOrderModalOpen: (open: boolean) => void;
   newOrderInitialPlace: Partial<Place> | null;
   openNewOrderForm: (initialPlace?: Partial<Place>) => void;
-  addNewOrder: (newPlace: Place) => void;
+  addOrderDraft: (newPlace: Place) => boolean;
+  addNewOrder: (newPlace: Place) => Promise<boolean>;
   viewingPhotoUrl: string | null;
   setViewingPhotoUrl: (url: string | null) => void;
   viewingPhotoPlace: Place | null;
@@ -167,8 +169,8 @@ interface MapContextType {
   revertCompletedMark: (markId: string) => Promise<boolean>;
   completePlaceWaypoint: (placeId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity) => void;
   resetWorkflowToColetas: () => void;
-  updatePlaceDetails: (placeId: string, partial: Partial<Place>) => void;
-  assignPlaceToDriver: (placeId: string, driverId: string | null, driverPhone?: string, driverName?: string) => void;
+  updatePlaceDetails: (placeId: string, partial: Partial<Place>) => Promise<boolean>;
+  assignPlaceToDriver: (placeId: string, driverId: string | null, driverPhone?: string, driverName?: string, acceptedByDriver?: boolean) => void;
   claimPublicOrder: (placeId: string) => Promise<boolean>;
   toggleSavePlace: (place: Place) => void;
   isPlaceSaved: (placeId: string) => boolean;
@@ -177,7 +179,7 @@ interface MapContextType {
   // Customers & Contact Book
   customers: Customer[];
   addCustomer: (customerData: Omit<Customer, 'id' | 'createdAt'>, options?: { persist?: boolean }) => Customer;
-  persistCustomer: (customer: Customer) => Promise<boolean>;
+  persistCustomer: (customer: Customer) => Promise<Customer | null>;
   updateCustomer: (id: string, partial: Partial<Customer>) => Promise<boolean>;
   deleteCustomer: (id: string) => Promise<boolean>;
   customerLocationModalData: CustomerLocationModalData | null;
@@ -599,6 +601,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [completedOrders, setCompletedOrders] = useState<Place[]>([]);
 
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const lastCustomersSyncAt = useRef(0);
+  const customerMutationVersion = useRef(0);
 
   useEffect(() => {
     try {
@@ -847,7 +851,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             assignedDriverId: rt.driverId,
             assignedDriverName: rt.driverName || p.assignedDriverName,
             assignedDriverPhone: rt.driverPhone || p.assignedDriverPhone,
-            driverEnRoute: Boolean(rt.enRoute)
+            driverEnRoute: Boolean(rt.enRoute),
+            acceptedByDriver: Boolean(rt.acceptedByDriver)
           };
         }
         return p;
@@ -911,10 +916,32 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       // 3. Busca Clientes / Usuários do backend (POST /pedidos/list_users)
-      const usersRes = await api.listUsers({ limit: 50 });
-      if (usersRes.success && Array.isArray(usersRes.data)) {
-        const serverCustomers = usersRes.data.map(backendUserToCustomer);
-        setCustomers(serverCustomers);
+      if (Date.now() - lastCustomersSyncAt.current >= 30000) {
+        const syncVersion = customerMutationVersion.current;
+        const users: BackendUser[] = [];
+        let cursor: string | undefined;
+        let usersLoadComplete = true;
+        do {
+          const usersRes = await api.listUsers({ limit: 100, ...(cursor ? { cursor } : {}) });
+          if (!usersRes.success || !Array.isArray(usersRes.data)) {
+            usersLoadComplete = false;
+            console.warn('[Customers] Não foi possível carregar todos os clientes:', usersRes.message);
+            break;
+          }
+          users.push(...usersRes.data);
+          if (!usersRes.hasMore) break;
+          if (!usersRes.cursor) {
+            usersLoadComplete = false;
+            console.warn('[Customers] A paginação de clientes não retornou o próximo cursor.');
+            break;
+          }
+          cursor = usersRes.cursor;
+        } while (true);
+
+        if (usersLoadComplete && syncVersion === customerMutationVersion.current) {
+          setCustomers(users.map(backendUserToCustomer));
+          lastCustomersSyncAt.current = Date.now();
+        }
       }
 
       // 4. Busca Motoristas Reais Ativos e em Tempo Real (exclui inativos há mais de 30 minutos)
@@ -976,14 +1003,15 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                              (p.operationType && numId ? assignments[`${numId}_${p.operationType}`] : null) ||
                              (p.operationType && numId ? assignments[`pedido-${numId}-${p.operationType}`] : null);
           if (assignment && assignment.driverId) {
-            if (p.assignedDriverId !== assignment.driverId || p.assignedDriverName !== assignment.driverName || Boolean(p.driverEnRoute) !== Boolean(assignment.enRoute)) {
+            if (p.assignedDriverId !== assignment.driverId || p.assignedDriverName !== assignment.driverName || Boolean(p.driverEnRoute) !== Boolean(assignment.enRoute) || Boolean(p.acceptedByDriver) !== Boolean(assignment.acceptedByDriver)) {
               hasChanges = true;
               return {
                 ...p,
                 assignedDriverId: assignment.driverId,
                 assignedDriverName: assignment.driverName || p.assignedDriverName,
                 assignedDriverPhone: assignment.driverPhone || p.assignedDriverPhone,
-                driverEnRoute: Boolean(assignment.enRoute)
+                driverEnRoute: Boolean(assignment.enRoute),
+                acceptedByDriver: Boolean(assignment.acceptedByDriver)
               };
             }
           }
@@ -1005,13 +1033,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const assignment = assignments[prev.id] || 
                            (prev.operationType && numId ? assignments[`${numId}_${prev.operationType}`] : null) ||
                            (prev.operationType && numId ? assignments[`pedido-${numId}-${prev.operationType}`] : null);
-        if (assignment && assignment.driverId && (prev.assignedDriverId !== assignment.driverId || prev.assignedDriverName !== assignment.driverName || Boolean(prev.driverEnRoute) !== Boolean(assignment.enRoute))) {
+        if (assignment && assignment.driverId && (prev.assignedDriverId !== assignment.driverId || prev.assignedDriverName !== assignment.driverName || Boolean(prev.driverEnRoute) !== Boolean(assignment.enRoute) || Boolean(prev.acceptedByDriver) !== Boolean(assignment.acceptedByDriver))) {
           return {
             ...prev,
             assignedDriverId: assignment.driverId,
             assignedDriverName: assignment.driverName || prev.assignedDriverName,
             assignedDriverPhone: assignment.driverPhone || prev.assignedDriverPhone,
-            driverEnRoute: Boolean(assignment.enRoute)
+            driverEnRoute: Boolean(assignment.enRoute),
+            acceptedByDriver: Boolean(assignment.acceptedByDriver)
           };
         }
         return prev;
@@ -1023,11 +1052,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  const persistCustomer = useCallback(async (customer: Customer): Promise<boolean> => {
+  const persistCustomer = useCallback(async (customer: Customer): Promise<Customer | null> => {
     const normalizedId = customer.id.trim().replace(/^db-user-/, '');
     const serverId = /^\d+$/.test(normalizedId) ? normalizedId : undefined;
     const phone = customer.phone?.trim();
-    if (!serverId && !phone) return false;
+    if (!serverId && !phone && !customer.fullName?.trim()) {
+      console.warn('[Customers] Não foi possível salvar um cliente sem nome.');
+      return null;
+    }
 
     try {
       const city = resolveCustomerCity(customer);
@@ -1040,6 +1072,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cpf: customer.cpf,
         cnpj: customer.cnpj,
         person_type: customer.personType,
+        email: customer.email,
+        notes: customer.notes,
+        companyId: customer.companyId,
         address: customer.address || '',
         endereco: customer.address || '',
         coordinates: customer.coordinates || null,
@@ -1048,9 +1083,24 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...(city ? { city, cidade: city } : {}),
         access_level: 'cliente'
       });
-      if (!result.success) return false;
+      if (!result.success) {
+        console.warn('[Customers] O servidor recusou salvar o cliente:', result.message);
+        return null;
+      }
 
-      const savedId = String(result.id ?? result.data?.id ?? normalizedId);
+      const responseId = result.id ?? result.data?.id ?? serverId;
+      if (responseId == null || String(responseId).trim() === '') {
+        console.warn('[Customers] O servidor confirmou o salvamento sem retornar o ID do cliente.');
+        return null;
+      }
+      const savedId = String(responseId);
+      const persistedCustomer: Customer = {
+        ...customer,
+        id: savedId,
+        ...(city ? { city, cidade: city } : {})
+      };
+      customerMutationVersion.current += 1;
+      lastCustomersSyncAt.current = 0;
       setCustomers(prev => {
         const normalizedCustomerId = customer.id.replace(/^db-user-/, '');
         const matchingIds = prev
@@ -1063,7 +1113,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const matchIndex = matchingIds[0]?.index ?? (phoneMatches.length === 1 ? phoneMatches[0].index : -1);
         const savedCustomer = {
           ...(matchIndex >= 0 ? prev[matchIndex] : {}),
-          ...customer,
+          ...persistedCustomer,
           id: matchIndex >= 0 && !prev[matchIndex].id.replace(/^db-user-/, '').startsWith('cust-')
             ? prev[matchIndex].id.replace(/^db-user-/, '')
             : savedId,
@@ -1074,10 +1124,10 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         else next.unshift(savedCustomer);
         return next;
       });
-      return true;
+      return persistedCustomer;
     } catch (error) {
       console.warn('[Customers] Falha ao persistir cliente:', error);
-      return false;
+      return null;
     }
   }, []);
 
@@ -1089,6 +1139,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `cust-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       createdAt: Date.now()
     };
+    customerMutationVersion.current += 1;
     setCustomers(prev => [newCustomer, ...prev]);
 
     if (options?.persist !== false) {
@@ -1144,9 +1195,42 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCustomerLocationModalData(null);
   }, []);
 
-  const updatePlaceDetails = useCallback((placeId: string, partial: Partial<Place>) => {
+  const updatePlaceDetails = useCallback(async (placeId: string, partial: Partial<Place>): Promise<boolean> => {
+    const currentPlace = allPlaces.find(place => place.id === placeId) ||
+      (selectedPlace?.id === placeId ? selectedPlace : undefined);
+    const operation = partial.operationType || currentPlace?.operationType ||
+      (placeId.match(/-(coleta|troca|entrega|retorno)$/)?.[1] === 'troca' ? 'troca'
+        : placeId.match(/-(coleta|troca|entrega|retorno)$/)?.[1] === 'coleta' ? 'coleta' : 'entrega');
+    const routePoint = operation === 'coleta' ? 'pickup' : operation === 'troca' ? 'exchange' : 'delivery';
+    const routeFields = {
+      pickup: { visibility: 'pickupVisibility', driverId: 'pickupAssignedDriverId', driverName: 'pickupAssignedDriverName', driverPhone: 'pickupAssignedDriverPhone', sellerName: 'pickupSellerName', sellerPhone: 'pickupSellerPhone', notes: 'pickupNotes' },
+      exchange: { visibility: 'exchangeVisibility', driverId: 'exchangeAssignedDriverId', driverName: 'exchangeAssignedDriverName', driverPhone: 'exchangeAssignedDriverPhone', sellerName: 'exchangeSellerName', sellerPhone: 'exchangeSellerPhone', notes: 'exchangeNotes' },
+      delivery: { visibility: 'deliveryVisibility', driverId: 'deliveryAssignedDriverId', driverName: 'deliveryAssignedDriverName', driverPhone: 'deliveryAssignedDriverPhone', sellerName: 'deliverySellerName', sellerPhone: 'deliverySellerPhone', notes: 'deliveryNotes' }
+    } as const;
+    const activeFields = routeFields[routePoint];
+    const resolvedPartial: Partial<Place> = { ...partial };
+    const hasField = (field: keyof Place) => Object.prototype.hasOwnProperty.call(partial, field);
+    const setActiveField = (field: keyof Place, value: unknown) => {
+      (resolvedPartial as Record<string, unknown>)[field] = value;
+    };
+
+    if (hasField('orderVisibility')) setActiveField(activeFields.visibility, partial.orderVisibility);
+    if (hasField('assignedDriverId')) setActiveField(activeFields.driverId, partial.assignedDriverId || '');
+    if (hasField('assignedDriverName')) setActiveField(activeFields.driverName, partial.assignedDriverName || '');
+    if (hasField('assignedDriverPhone')) setActiveField(activeFields.driverPhone, partial.assignedDriverPhone || '');
+    if (hasField('sellerName') || hasField('responsibleName')) {
+      setActiveField(activeFields.sellerName, partial.sellerName ?? partial.responsibleName ?? '');
+    }
+    if (hasField('sellerPhone') || hasField('responsiblePhone')) {
+      setActiveField(activeFields.sellerPhone, partial.sellerPhone ?? partial.responsiblePhone ?? '');
+    }
+    if ((hasField('observations') || hasField('driverNotes')) && !hasField(activeFields.notes)) {
+      setActiveField(activeFields.notes, partial.observations ?? partial.driverNotes ?? '');
+    }
+    const resolvedPlace = { ...(currentPlace || {}), ...resolvedPartial } as Place;
+
     setAllPlaces(prev => {
-      const next = prev.map(p => p.id === placeId ? { ...p, ...partial } : p);
+      const next = prev.map(p => p.id === placeId ? { ...p, ...resolvedPartial } : p);
       try {
         localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
       } catch (e) {
@@ -1156,36 +1240,39 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     setSavedPlaces(prev => {
-      const next = prev.map(p => p.id === placeId ? { ...p, ...partial } : p);
+      const next = prev.map(p => p.id === placeId ? { ...p, ...resolvedPartial } : p);
       return next;
     });
 
     setSelectedPlace(prev => {
       if (prev && prev.id === placeId) {
-        return { ...prev, ...partial };
+        return { ...prev, ...resolvedPartial };
       }
       return prev;
     });
 
     // Sincroniza atualização de pedido no servidor (Motoristas NÃO podem editar pedidos)
-    const isDriver = currentRole === 'motorista' || user?.userRole === 'motorista' || localStorage.getItem('encomendaszap_user_role') === 'motorista';
+    const isDriver = currentRole === 'motorista' || localStorage.getItem('encomendaszap_user_role') === 'motorista';
     if (isDriver) {
-      return;
+      return false;
     }
 
     const numId = resolvePlaceId(placeId).match(/pedido-(\d+)/)?.[1] || placeId.match(/\d+/)?.[0];
     if (numId && !isTempPedidoNumber(numId)) {
-      api.savePedido({
+      try {
+        const result = await api.savePedido({
         id: numId,
-        ...(partial.customerName ? { cliente: partial.customerName } : {}),
-        ...(partial.customerPhone ? { phone: partial.customerPhone } : {}),
+        ...(partial.customerName !== undefined ? { cliente: partial.customerName } : {}),
+        ...(partial.customerPhone !== undefined ? { phone: partial.customerPhone } : {}),
         // orderStage (coleta/troca/entrega/retorno) é só a visão da parada ativa no mapa, não a etapa do banco.
         // Enviá-lo como etapa fazia o backend gravar "pendente" e reabrir pedidos já entregues.
         ...(partial.orderStage === 'concluido' ? { etapa: 'entregue' } : {}),
         ...(partial.operationType && !partial.orderStage ? { tipo_encomenda: partial.operationType } : {}),
         ...(partial.vehicleType ? { tipo_veiculo: partial.vehicleType } : {}),
-        ...(partial.driverNotes || partial.observations ? { detalhes: partial.driverNotes || partial.observations } : {}),
-        ...(partial.price ? { total: partial.price } : {}),
+        ...((partial.driverNotes !== undefined || partial.observations !== undefined)
+          ? { detalhes: partial.driverNotes ?? partial.observations ?? '' }
+          : {}),
+        ...(partial.price !== undefined ? { total: partial.price } : {}),
         ...(partial.name ? { local: partial.name } : {}),
         ...(partial.pickupName ? { coleta_nome: partial.pickupName, coleta_local: partial.pickupName } : {}),
         ...(partial.pickupAddress ? { coleta_endereco: partial.pickupAddress } : {}),
@@ -1193,24 +1280,60 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...(partial.pickupCoordinates?.lng ? { coleta_lng: partial.pickupCoordinates.lng } : {}),
         ...(partial.pickupContact ? { coleta_contato: partial.pickupContact } : {}),
         ...(partial.pickupPhone ? { coleta_phone: partial.pickupPhone } : {}),
-        ...(partial.pickupNotes ? { coleta_obs: partial.pickupNotes } : {}),
+        ...(partial.pickupNotes !== undefined ? { coleta_obs: partial.pickupNotes } : {}),
         ...(partial.deliveryName ? { entrega_nome: partial.deliveryName, entrega_local: partial.deliveryName } : {}),
         ...(partial.deliveryAddress ? { entrega_endereco: partial.deliveryAddress } : {}),
         ...(partial.deliveryCoordinates?.lat ? { entrega_lat: partial.deliveryCoordinates.lat } : {}),
         ...(partial.deliveryCoordinates?.lng ? { entrega_lng: partial.deliveryCoordinates.lng } : {}),
         ...(partial.deliveryContact ? { entrega_contato: partial.deliveryContact } : {}),
         ...(partial.deliveryPhone ? { entrega_phone: partial.deliveryPhone } : {}),
-        ...(partial.deliveryNotes ? { entrega_obs: partial.deliveryNotes } : {}),
+        ...(partial.deliveryNotes !== undefined ? { entrega_obs: partial.deliveryNotes } : {}),
         ...(partial.exchangeName ? { troca_nome: partial.exchangeName } : {}),
         ...(partial.exchangeAddress ? { troca_endereco: partial.exchangeAddress } : {}),
         ...(partial.exchangeCoordinates?.lat ? { troca_lat: partial.exchangeCoordinates.lat } : {}),
         ...(partial.exchangeCoordinates?.lng ? { troca_lng: partial.exchangeCoordinates.lng } : {}),
-        ...(partial.exchangeNotes ? { troca_obs: partial.exchangeNotes } : {})
-      }).catch(() => {});
+        ...(partial.exchangeNotes !== undefined ? { troca_obs: partial.exchangeNotes } : {}),
+        ...(partial.observations !== undefined || partial.driverNotes !== undefined
+          ? routePoint === 'pickup'
+            ? { coleta_obs: partial.observations ?? partial.driverNotes ?? '' }
+            : routePoint === 'exchange'
+              ? { troca_obs: partial.observations ?? partial.driverNotes ?? '' }
+              : { entrega_obs: partial.observations ?? partial.driverNotes ?? '' }
+          : {}),
+        ...({
+          pickupVisibility: resolvedPlace.pickupVisibility,
+          pickupAssignedDriverId: resolvedPlace.pickupAssignedDriverId ?? '',
+          pickupAssignedDriverPhone: resolvedPlace.pickupAssignedDriverPhone ?? '',
+          pickupAssignedDriverName: resolvedPlace.pickupAssignedDriverName ?? '',
+          pickupSellerName: resolvedPlace.pickupSellerName ?? '',
+          pickupSellerPhone: resolvedPlace.pickupSellerPhone ?? '',
+          exchangeVisibility: resolvedPlace.exchangeVisibility,
+          exchangeAssignedDriverId: resolvedPlace.exchangeAssignedDriverId ?? '',
+          exchangeAssignedDriverPhone: resolvedPlace.exchangeAssignedDriverPhone ?? '',
+          exchangeAssignedDriverName: resolvedPlace.exchangeAssignedDriverName ?? '',
+          exchangeSellerName: resolvedPlace.exchangeSellerName ?? '',
+          exchangeSellerPhone: resolvedPlace.exchangeSellerPhone ?? '',
+          deliveryVisibility: resolvedPlace.deliveryVisibility,
+          deliveryAssignedDriverId: resolvedPlace.deliveryAssignedDriverId ?? '',
+          deliveryAssignedDriverPhone: resolvedPlace.deliveryAssignedDriverPhone ?? '',
+          deliveryAssignedDriverName: resolvedPlace.deliveryAssignedDriverName ?? '',
+          deliverySellerName: resolvedPlace.deliverySellerName ?? '',
+          deliverySellerPhone: resolvedPlace.deliverySellerPhone ?? ''
+        })
+        });
+        if (!result.success) {
+          console.warn(`[updatePlaceDetails] O servidor recusou salvar o pedido ${numId}:`, result.message);
+          return false;
+        }
+      } catch (error) {
+        console.warn(`[updatePlaceDetails] Falha ao salvar o pedido ${numId}:`, error);
+        return false;
+      }
     }
-  }, []);
+    return true;
+  }, [allPlaces, selectedPlace, currentRole]);
 
-  const assignPlaceToDriver = useCallback((placeId: string, driverId: string | null, driverPhone?: string, driverName?: string) => {
+  const assignPlaceToDriver = useCallback((placeId: string, driverId: string | null, driverPhone?: string, driverName?: string, acceptedByDriver = false) => {
     const numericPedidoId = resolvePlaceId(placeId).match(/pedido-(\d+)/)?.[1] || placeId.match(/\d+/)?.[0];
     const cleanMotoristaId = driverId ? parseInt(driverId.replace(/\D/g, ''), 10) || null : null;
     const finalDriverId = cleanMotoristaId ? String(cleanMotoristaId) : (driverId || undefined);
@@ -1224,7 +1347,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         id: finalDriverId,
         name: driverName,
         phone: driverPhone
-      }, op);
+      }, op, acceptedByDriver);
 
       if (typeof window !== 'undefined' && window.AndroidApp) {
         window.AndroidApp.showNotification?.("EncomendasZap", "Pedido direcionado ao entregador!");
@@ -1242,7 +1365,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...p,
             assignedDriverId: finalDriverId,
             assignedDriverPhone: driverPhone || undefined,
-            assignedDriverName: driverName || undefined
+            assignedDriverName: driverName || undefined,
+            acceptedByDriver: Boolean(finalDriverId && acceptedByDriver)
           };
         }
         return p;
@@ -1263,7 +1387,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...p,
             assignedDriverId: finalDriverId,
             assignedDriverPhone: driverPhone || undefined,
-            assignedDriverName: driverName || undefined
+            assignedDriverName: driverName || undefined,
+            acceptedByDriver: Boolean(finalDriverId && acceptedByDriver)
           };
         }
         return p;
@@ -1277,7 +1402,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...prev,
           assignedDriverId: finalDriverId,
           assignedDriverPhone: driverPhone || undefined,
-          assignedDriverName: driverName || undefined
+          assignedDriverName: driverName || undefined,
+          acceptedByDriver: Boolean(finalDriverId && acceptedByDriver)
         };
       }
       return prev;
@@ -1514,7 +1640,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!won) return false;
 
     // Atribui o motorista via serviço de tempo real
-    assignPlaceToDriver(placeId, driverId, driverPhone, driverName);
+    assignPlaceToDriver(placeId, driverId, driverPhone, driverName, true);
 
     // Atualiza visibilidade como privado para consolidar que não é mais aberto/público
     setAllPlaces(prev => {
@@ -1525,7 +1651,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             orderVisibility: 'privado' as const,
             assignedDriverId: driverId,
             assignedDriverName: driverName,
-            assignedDriverPhone: driverPhone
+            assignedDriverPhone: driverPhone,
+            acceptedByDriver: true
           };
         }
         return p;
@@ -1544,7 +1671,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             orderVisibility: 'privado' as const,
             assignedDriverId: driverId,
             assignedDriverName: driverName,
-            assignedDriverPhone: driverPhone
+            assignedDriverPhone: driverPhone,
+            acceptedByDriver: true
           };
         }
         return p;
@@ -1562,7 +1690,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           orderVisibility: 'privado' as const,
           assignedDriverId: driverId,
           assignedDriverName: driverName,
-          assignedDriverPhone: driverPhone
+          assignedDriverPhone: driverPhone,
+          acceptedByDriver: true
         };
       }
       return prev;
@@ -2247,18 +2376,38 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [mapInstance]);
 
-  const addNewOrder = useCallback((newPlace: Place) => {
+  const addOrderDraft = useCallback((newPlace: Place): boolean => {
+    if (currentRole === 'motorista' || user?.userRole === 'motorista') {
+      console.warn('[addOrderDraft] Motoristas não possuem permissão para adicionar pedidos.');
+      return false;
+    }
+
+    setAllPlaces(prev => {
+      const next = [newPlace, ...prev.filter(place => place.id !== newPlace.id)];
+      try {
+        localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    setSelectedPlace(newPlace);
+    flyToLocation(newPlace.coordinates, 16);
+    return true;
+  }, [currentRole, user, flyToLocation]);
+
+  const addNewOrder = useCallback(async (newPlace: Place): Promise<boolean> => {
     // Regra de permissão: Motorista NÃO PODE adicionar pedidos
     if (currentRole === 'motorista' || user?.userRole === 'motorista') {
       console.warn('[addNewOrder] Motoristas não possuem permissão para adicionar pedidos.');
-      return;
+      return false;
     }
 
     // Se o pedido já é um pedido existente no sistema, apenas atualiza para evitar duplicação de marker
-    const isExistingOrder = typeof newPlace.id === 'string' && (newPlace.id.startsWith('pedido-') || (newPlace.orderCode && !newPlace.orderCode.startsWith('TEMP-')));
+    const persistedIdMatch = /^pedido-(\d+)(?:-(?:coleta|entrega|troca|retorno))?$/i.exec(newPlace.id);
+    const hasPersistedId = Boolean(persistedIdMatch && Number(persistedIdMatch[1]) < 1_000_000_000_000);
+    const isExistingOrder = !isTemporaryOrderId(newPlace.id) && hasPersistedId;
     if (isExistingOrder) {
       updatePlaceDetails(newPlace.id, newPlace);
-      return;
+      return true;
     }
 
     setAllPlaces(prev => {
@@ -2274,38 +2423,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSavedPlaces(prev => [newPlace, ...prev.filter(p => p.id !== newPlace.id)]);
     setSelectedPlace(newPlace);
     flyToLocation(newPlace.coordinates, 16);
-
-    // Marca e incrementa imediatamente o contador de pedidos nos dados do cliente
-    if (newPlace.customerPhone || newPlace.customerName || newPlace.customerId) {
-      const custPhoneDigits = (newPlace.customerPhone || '').replace(/\D/g, '');
-      const custName = (newPlace.customerName || '').toLowerCase().trim();
-      const custId = newPlace.customerId;
-
-      setCustomers(prev => {
-        const next = prev.map(c => {
-          const cPhoneDigits = (c.phone || '').replace(/\D/g, '');
-          const cName = (c.fullName || '').toLowerCase().trim();
-          const matches = (custId && c.id === custId) ||
-            (custPhoneDigits && custPhoneDigits.length >= 8 && cPhoneDigits && (cPhoneDigits === custPhoneDigits || cPhoneDigits.endsWith(custPhoneDigits) || custPhoneDigits.endsWith(cPhoneDigits))) ||
-            (custName && cName && (custName === cName || cName.includes(custName) || custName.includes(cName)));
-
-          if (matches) {
-            const updatedCount = (c.orderCount || 0) + 1;
-            customerOrderStatsService.registerOrder(c);
-            return { ...c, orderCount: updatedCount };
-          }
-          return c;
-        });
-
-        return next;
-      });
-
-      customerOrderStatsService.registerOrder({
-        fullName: newPlace.customerName,
-        phone: newPlace.customerPhone,
-        id: newPlace.customerId
-      });
-    }
 
     // Regra EncomendasZap: "ao add, e o cliente nao tiver local setado, deve add apenas um maker."
     const op = newPlace.operationType || 'coleta';
@@ -2335,16 +2452,80 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       : (op === 'troca' ? newPlace.coordinates?.lng : undefined);
 
     // Envia o novo pedido para a API Express (/pedidos/save)
-    api.savePedido({
+    const removeFailedLocalOrder = () => {
+      setSavedPlaces(prev => prev.filter(p => p.id !== newPlace.id));
+    };
+
+    try {
+      const res = await api.savePedido({
+      data: newPlace.data || newPlace.scheduledDate,
+      etapa: 'pendente',
       cliente: newPlace.customerName || 'Cliente EncomendasZap',
       phone: newPlace.customerPhone || '',
+      clientes_id: newPlace.customerId && /^\d+$/.test(newPlace.customerId)
+        ? Number(newPlace.customerId)
+        : undefined,
       cidade: newPlace.originCity || 'Goiânia',
       tipo_encomenda: newPlace.operationType || 'coleta',
       tipo_veiculo: newPlace.vehicleType || 'moto',
       detalhes: newPlace.driverNotes || '',
+      valor: newPlace.price !== undefined ? newPlace.price + (newPlace.totalDiscounts || 0) : undefined,
+      desconto: newPlace.totalDiscounts || 0,
+      total: newPlace.price,
+      coleta_valor: newPlace.priceItems
+        ?.filter(item => item.category === 'coleta')
+        .reduce((sum, item) => sum + item.value, 0),
+      valor_intercidade: newPlace.priceItems
+        ?.filter(item => item.category === 'transporte')
+        .reduce((sum, item) => sum + item.value, 0),
+      entrega_valor: newPlace.priceItems
+        ?.filter(item => item.category === 'entrega')
+        .reduce((sum, item) => sum + item.value, 0),
+      mercadoria_nome: newPlace.packageType,
+      mercadoria_altura: newPlace.dimensions?.split('x')[2]?.replace('cm', ''),
+      mercadoria_largura: newPlace.dimensions?.split('x')[1],
+      mercadoria_comprimento: newPlace.dimensions?.split('x')[0],
+      mercadoria_peso: newPlace.weightKg,
+      mercadoria_fragil: newPlace.isFragile,
+      mercadoria_quantidade: newPlace.volumesCount,
+      itens_extras: JSON.stringify({
+        priceItems: newPlace.priceItems || [],
+        discountItems: newPlace.discountItems || [],
+        orderVisibility: newPlace.orderVisibility,
+        assignedDriverId: newPlace.assignedDriverId,
+        assignedDriverPhone: newPlace.assignedDriverPhone,
+        pickupVisibility: newPlace.pickupVisibility,
+        pickupAssignedDriverId: newPlace.pickupAssignedDriverId,
+        pickupAssignedDriverPhone: newPlace.pickupAssignedDriverPhone,
+        pickupAssignedDriverName: newPlace.pickupAssignedDriverName,
+        pickupSellerName: newPlace.pickupSellerName,
+        pickupSellerPhone: newPlace.pickupSellerPhone,
+        exchangeVisibility: newPlace.exchangeVisibility,
+        exchangeAssignedDriverId: newPlace.exchangeAssignedDriverId,
+        exchangeAssignedDriverPhone: newPlace.exchangeAssignedDriverPhone,
+        exchangeAssignedDriverName: newPlace.exchangeAssignedDriverName,
+        exchangeSellerName: newPlace.exchangeSellerName,
+        exchangeSellerPhone: newPlace.exchangeSellerPhone,
+        deliveryVisibility: newPlace.deliveryVisibility,
+        deliveryAssignedDriverId: newPlace.deliveryAssignedDriverId,
+        deliveryAssignedDriverPhone: newPlace.deliveryAssignedDriverPhone,
+        deliveryAssignedDriverName: newPlace.deliveryAssignedDriverName,
+        deliverySellerName: newPlace.deliverySellerName,
+        deliverySellerPhone: newPlace.deliverySellerPhone,
+        packageSize: newPlace.packageSize,
+        volumesCount: newPlace.volumesCount,
+        scheduledTime: newPlace.scheduledTime,
+        scheduledTimeMode: newPlace.scheduledTimeMode,
+        paymentCondition: newPlace.paymentCondition,
+        paymentAdjustmentType: newPlace.paymentAdjustmentType,
+        paymentAdjustmentValue: newPlace.paymentAdjustmentValue,
+        paymentAdjustmentMode: newPlace.paymentAdjustmentMode
+      }),
       local: newPlace.name,
       coleta_local: op === 'coleta' ? (newPlace.pickupName || newPlace.name) : (hasColetaCoords ? (newPlace.pickupName || 'Ponto de Coleta') : undefined),
       coleta_nome: op === 'coleta' ? (newPlace.pickupName || newPlace.name) : (hasColetaCoords ? (newPlace.pickupName || 'Ponto de Coleta') : undefined),
+      coleta_data: newPlace.data || newPlace.scheduledDate,
+      coleta_cidade: newPlace.originCity,
       coleta_endereco: op === 'coleta' ? (newPlace.pickupAddress || newPlace.address) : (hasColetaCoords ? newPlace.pickupAddress : undefined),
       coleta_lat: coletaLat,
       coleta_lng: coletaLng,
@@ -2353,6 +2534,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       coleta_obs: newPlace.pickupNotes,
       entrega_local: op === 'entrega' ? (newPlace.deliveryName || newPlace.name) : (hasEntregaCoords ? (newPlace.deliveryName || 'Ponto de Entrega') : undefined),
       entrega_nome: op === 'entrega' ? (newPlace.deliveryName || newPlace.name) : (hasEntregaCoords ? (newPlace.deliveryName || 'Ponto de Entrega') : undefined),
+      entrega_data: newPlace.data || newPlace.scheduledDate,
+      entrega_cidade: newPlace.destinationCity,
       entrega_endereco: op === 'entrega' ? (newPlace.deliveryAddress || newPlace.address) : (hasEntregaCoords ? newPlace.deliveryAddress : undefined),
       entrega_lat: entregaLat,
       entrega_lng: entregaLng,
@@ -2362,26 +2545,75 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       troca_nome: op === 'troca' ? (newPlace.exchangeName || newPlace.name) : (hasTrocaCoords ? (newPlace.exchangeName || 'Ponto de Troca') : undefined),
       troca_endereco: op === 'troca' ? (newPlace.exchangeAddress || newPlace.address) : (hasTrocaCoords ? newPlace.exchangeAddress : undefined),
       troca_lat: trocaLat,
-      troca_lng: trocaLng
-    }).then(res => {
-      if (res && res.success && res.data?.id) {
-        const savedId = String(res.data.id);
-        const serverPlaceId = `pedido-${savedId}`;
-        const serverOrderCode = `EZ-${savedId}-GO`;
-        tempPedidoIdMap.set(newPlace.id, serverPlaceId);
-        setAllPlaces(prev => {
-          const next = prev.map(p => p.id === newPlace.id ? { ...p, id: serverPlaceId, orderCode: serverOrderCode } : p);
-          try {
-            localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-          } catch {}
-          return next;
-        });
-        setSavedPlaces(prev => prev.map(p => p.id === newPlace.id ? { ...p, id: serverPlaceId, orderCode: serverOrderCode } : p));
-        setSelectedPlace(prev => prev && prev.id === newPlace.id ? { ...prev, id: serverPlaceId, orderCode: serverOrderCode } : prev);
+      troca_lng: trocaLng,
+      troca_contato: newPlace.exchangeContact,
+      troca_phone: newPlace.exchangePhone,
+      troca_obs: newPlace.exchangeNotes,
+      pickupVisibility: newPlace.pickupVisibility,
+      pickupAssignedDriverId: newPlace.pickupAssignedDriverId,
+      pickupAssignedDriverPhone: newPlace.pickupAssignedDriverPhone,
+      pickupAssignedDriverName: newPlace.pickupAssignedDriverName,
+      pickupSellerName: newPlace.pickupSellerName,
+      pickupSellerPhone: newPlace.pickupSellerPhone,
+      exchangeVisibility: newPlace.exchangeVisibility,
+      exchangeAssignedDriverId: newPlace.exchangeAssignedDriverId,
+      exchangeAssignedDriverPhone: newPlace.exchangeAssignedDriverPhone,
+      exchangeAssignedDriverName: newPlace.exchangeAssignedDriverName,
+      exchangeSellerName: newPlace.exchangeSellerName,
+      exchangeSellerPhone: newPlace.exchangeSellerPhone,
+      deliveryVisibility: newPlace.deliveryVisibility,
+      deliveryAssignedDriverId: newPlace.deliveryAssignedDriverId,
+      deliveryAssignedDriverPhone: newPlace.deliveryAssignedDriverPhone,
+      deliveryAssignedDriverName: newPlace.deliveryAssignedDriverName,
+      deliverySellerName: newPlace.deliverySellerName,
+      deliverySellerPhone: newPlace.deliverySellerPhone
+      });
+      if (!res.success || !res.data?.id) {
+        removeFailedLocalOrder();
+        window.alert(res.message || 'Não foi possível salvar o pedido. Verifique a conexão e tente novamente.');
+        return false;
       }
-    }).catch((err) => {
+
+      const savedId = String(res.data.id);
+      const serverPlaceId = `pedido-${savedId}`;
+      const serverOrderCode = `EZ-${savedId}-GO`;
+      tempPedidoIdMap.set(newPlace.id, serverPlaceId);
+      setAllPlaces(prev => {
+        const next = prev.map(p => p.id === newPlace.id ? { ...p, id: serverPlaceId, orderCode: serverOrderCode } : p);
+        try {
+          localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      setSavedPlaces(prev => prev.map(p => p.id === newPlace.id ? { ...p, id: serverPlaceId, orderCode: serverOrderCode } : p));
+      setSelectedPlace(prev => prev && prev.id === newPlace.id ? { ...prev, id: serverPlaceId, orderCode: serverOrderCode } : prev);
+      if (newPlace.customerPhone || newPlace.customerName || newPlace.customerId) {
+        const customerStatsRecord = {
+          fullName: newPlace.customerName,
+          phone: newPlace.customerPhone,
+          id: newPlace.customerId
+        };
+        customerOrderStatsService.registerOrder(customerStatsRecord);
+        const orderCount = customerOrderStatsService.getOrderCount(customerStatsRecord);
+        setCustomers(prev => prev.map(customer => {
+          const phoneDigits = (customer.phone || '').replace(/\D/g, '');
+          const customerPhoneDigits = (newPlace.customerPhone || '').replace(/\D/g, '');
+          const name = (customer.fullName || '').trim().toLowerCase();
+          const customerName = (newPlace.customerName || '').trim().toLowerCase();
+          const matches = (newPlace.customerId && customer.id === newPlace.customerId) ||
+            (customerPhoneDigits.length >= 8 && phoneDigits &&
+              (phoneDigits === customerPhoneDigits || phoneDigits.endsWith(customerPhoneDigits) || customerPhoneDigits.endsWith(phoneDigits))) ||
+            (name && customerName && (name === customerName || name.includes(customerName) || customerName.includes(name)));
+          return matches ? { ...customer, orderCount } : customer;
+        }));
+      }
+      return true;
+    } catch (err) {
       console.warn('Erro ao salvar pedido na API:', err);
-    });
+      removeFailedLocalOrder();
+      window.alert(err instanceof Error ? err.message : 'Erro ao salvar o pedido. Verifique a conexão e tente novamente.');
+      return false;
+    }
   }, [flyToLocation, updatePlaceDetails, currentRole, user]);
 
   // Dá baixa em um ponto (coleta, troca ou entrega) e avança para a próxima etapa conforme as regras do EncomendasZap
@@ -3127,6 +3359,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsNewOrderModalOpen,
         newOrderInitialPlace,
         openNewOrderForm,
+        addOrderDraft,
         addNewOrder,
         viewingPhotoUrl,
         setViewingPhotoUrl,

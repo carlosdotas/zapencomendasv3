@@ -18,6 +18,7 @@ export interface OrderAssignment {
   vehicleType?: string;
   assignedAt: number;
   enRoute?: boolean;
+  acceptedByDriver?: boolean;
 }
 
 type AssignmentListener = (assignments: Record<string, OrderAssignment>) => void;
@@ -83,10 +84,19 @@ class RealtimeAssignmentService {
   public async assignOrder(
     rawPlaceId: string, 
     driver: { id: string; name?: string; phone?: string; vehicleType?: string },
-    operationType?: string
+    operationType?: string,
+    acceptedByDriver = false
   ): Promise<OrderAssignment> {
     const numId = rawPlaceId.match(/\d+/)?.[0] || rawPlaceId;
     const cleanDriverId = driver.id.replace(/\D/g, '') || driver.id;
+    const confirmedClaim = this.getAssignmentForOrder(rawPlaceId, operationType);
+    if (
+      acceptedByDriver &&
+      confirmedClaim?.acceptedByDriver &&
+      confirmedClaim.driverId === String(cleanDriverId)
+    ) {
+      return confirmedClaim;
+    }
 
     const assignment: OrderAssignment = {
       orderId: rawPlaceId,
@@ -94,7 +104,8 @@ class RealtimeAssignmentService {
       driverName: driver.name,
       driverPhone: driver.phone,
       vehicleType: driver.vehicleType,
-      assignedAt: Date.now()
+      assignedAt: Date.now(),
+      acceptedByDriver
     };
 
     // Atualiza o estado em memória e grava as chaves do pedido no servidor.
@@ -114,7 +125,8 @@ class RealtimeAssignmentService {
         driverId: assignment.driverId,
         driverName: assignment.driverName,
         driverPhone: assignment.driverPhone,
-        vehicleType: assignment.vehicleType
+        vehicleType: assignment.vehicleType,
+        claim: acceptedByDriver
       })
     ));
     const failed = results.find(r => !r.success);
@@ -134,8 +146,7 @@ class RealtimeAssignmentService {
   ): Promise<boolean> {
     const numId = rawPlaceId.match(/\d+/)?.[0] || rawPlaceId;
     const cleanDriverId = driver.id.replace(/\D/g, '') || driver.id;
-    const keys = [rawPlaceId];
-    if (operationType) keys.push(`${numId}_${operationType}`, `pedido-${numId}-${operationType}`);
+    const keys = [operationType ? `${numId}_${operationType}` : rawPlaceId];
 
     const results = await Promise.all(keys.map(key =>
       request('/api/realtime/assign-driver', 'POST', {
@@ -151,6 +162,17 @@ class RealtimeAssignmentService {
       await this.fetchServerAssignments().catch(() => {});
       return false;
     }
+    const key = keys[0];
+    this.assignments[key] = {
+      orderId: key,
+      driverId: String(cleanDriverId),
+      driverName: driver.name,
+      driverPhone: driver.phone,
+      vehicleType: driver.vehicleType,
+      assignedAt: Date.now(),
+      acceptedByDriver: true
+    };
+    this.notifyListeners();
     return true;
   }
 

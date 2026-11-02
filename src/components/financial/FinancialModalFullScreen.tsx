@@ -59,6 +59,7 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
   const { allPlaces } = useMapStore();
 
   const [activeTab, setActiveTab] = useState<'pagar' | 'receber'>(initialTab);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   
@@ -323,13 +324,13 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex flex-col justify-end sm:justify-center p-0 animate-in fade-in duration-200">
-      <div className="w-full h-full sm:max-w-6xl sm:h-[94vh] sm:rounded-2xl bg-white shadow-2xl flex flex-col overflow-hidden border border-slate-200/90">
+    <div className="fixed inset-0 z-[120] bg-slate-900/60 backdrop-blur-xs flex flex-col justify-end sm:justify-center p-0 animate-in fade-in duration-200">
+      <div className="relative w-full h-[100dvh] min-h-0 sm:max-w-6xl sm:h-[94dvh] sm:max-h-[94dvh] sm:rounded-2xl bg-white shadow-2xl flex flex-col overflow-hidden border border-slate-200/90">
         
         {/* ========================================================================= */}
         {/* CABEÇALHO PRINCIPAL FULLSCREEN */}
         {/* ========================================================================= */}
-        <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white px-3 sm:px-6 py-2.5 sm:py-3.5 flex items-center justify-between border-b border-slate-700/80 shrink-0">
+        <header className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white px-2.5 sm:px-6 py-1 sm:py-1.5 flex items-center justify-between border-b border-slate-700/80 shrink-0">
           <div className="flex items-center gap-2.5 sm:gap-3">
             <button
               type="button"
@@ -351,13 +352,23 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                   {activeTab === 'pagar' ? 'Repasses de Motoristas' : 'Faturamento de Clientes'}
                 </span>
               </div>
-              <p className="text-[11px] sm:text-xs text-slate-400 font-medium">
+              <p className="hidden sm:block text-[11px] sm:text-xs text-slate-400 font-medium">
                 Controle de pagamentos, cobranças WhatsApp e recibos autenticados
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <button
+              type="button"
+              onClick={() => setFiltersOpen(open => !open)}
+              aria-expanded={filtersOpen}
+              aria-label={filtersOpen ? 'Fechar filtros' : 'Abrir filtros'}
+              title="Filtros"
+              className={`p-2 rounded-lg transition-colors cursor-pointer ${filtersOpen ? 'bg-[#0B5187] text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+            >
+              {filtersOpen ? <X className="w-4 h-4" /> : <Filter className="w-4 h-4" />}
+            </button>
             <button
               type="button"
               onClick={loadFinancialData}
@@ -381,7 +392,7 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
         {/* ========================================================================= */}
         {/* TABS PRINCIPAIS: CONTAS A PAGAR & CONTAS A RECEBER */}
         {/* ========================================================================= */}
-        <div className="bg-slate-100/90 border-b border-slate-200 px-3 sm:px-6 pt-2 shrink-0 flex items-center justify-between">
+        <div className="bg-slate-100/90 border-b border-slate-200 px-3 sm:px-6 pt-1 shrink-0 flex items-center justify-between">
           <nav className="flex space-x-2" aria-label="Abas Financeiras">
             <button
               type="button"
@@ -451,61 +462,49 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
         {/* ========================================================================= */}
         {/* CARDS DE MÉTRICAS / SUBTOTAL NO TOPO */}
         {/* ========================================================================= */}
-        <div className="bg-slate-50 px-3 sm:px-6 py-2.5 border-b border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 shrink-0">
+        <div className="bg-slate-50 px-2 sm:px-6 py-1.5 border-b border-slate-200 grid grid-cols-4 gap-1 sm:gap-3 shrink-0">
           {activeTab === 'pagar' ? (
             <>
               {/* Pendente / A Pagar (Destaque conforme pedido) */}
-              <div className="bg-red-50/80 border border-red-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-red-700">
-                  <span>A Pagar (Pendente)</span>
-                  <Clock className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-red-800 tracking-tight mt-0.5">
+              <div className="min-w-0 bg-red-50/80 border border-red-200/90 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-red-700">A Pagar</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-red-800 tracking-tight">
                   {formatCurrency(payableSubtotals.unpaidTotal)}
                 </div>
-                <div className="text-[10px] text-red-600 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-red-600 font-medium">
                   {payableSubtotals.unpaidCount} {payableSubtotals.unpaidCount === 1 ? 'serviço' : 'serviços'}
                 </div>
               </div>
 
               {/* Pago / Baixa Realizada */}
-              <div className="bg-emerald-50/80 border border-emerald-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-emerald-700">
-                  <span>Pago (Baixado)</span>
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-emerald-800 tracking-tight mt-0.5">
+              <div className="min-w-0 bg-emerald-50/80 border border-emerald-200/90 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-emerald-700">Pago</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-emerald-800 tracking-tight">
                   {formatCurrency(payableSubtotals.paidTotal)}
                 </div>
-                <div className="text-[10px] text-emerald-600 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-emerald-600 font-medium">
                   {payableSubtotals.paidCount} {payableSubtotals.paidCount === 1 ? 'serviço' : 'serviços'}
                 </div>
               </div>
 
               {/* Total Geral de Repasses */}
-              <div className="bg-white border border-slate-200 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-slate-600">
-                  <span>Total Acumulado</span>
-                  <Layers className="w-3.5 h-3.5 text-slate-400" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-slate-800 tracking-tight mt-0.5">
+              <div className="min-w-0 bg-white border border-slate-200 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-slate-600">Total</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-slate-800 tracking-tight">
                   {formatCurrency(payableSubtotals.allTotal)}
                 </div>
-                <div className="text-[10px] text-slate-500 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-slate-500 font-medium">
                   {payableSubtotals.allCount} serviços registrados
                 </div>
               </div>
 
               {/* Total na Visualização Filtrada */}
-              <div className="bg-orange-50/70 border border-orange-200 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-orange-800">
-                  <span>Subtotal da Lista</span>
-                  <Sparkles className="w-3.5 h-3.5 text-orange-500" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-[#FF5E00] tracking-tight mt-0.5">
+              <div className="min-w-0 bg-orange-50/70 border border-orange-200 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-orange-800">Na lista</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-[#FF5E00] tracking-tight">
                   {formatCurrency(filteredPayablesTotal)}
                 </div>
-                <div className="text-[10px] text-orange-700 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-orange-700 font-medium">
                   {filteredPayables.length} itens exibidos
                 </div>
               </div>
@@ -513,57 +512,45 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
           ) : (
             <>
               {/* A Receber / Pendente */}
-              <div className="bg-amber-50/80 border border-amber-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-amber-800">
-                  <span>A Receber (Pendente)</span>
-                  <Clock className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-amber-900 tracking-tight mt-0.5">
+              <div className="min-w-0 bg-amber-50/80 border border-amber-200/90 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-amber-800">A Receber</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-amber-900 tracking-tight">
                   {formatCurrency(receivableSubtotals.unpaidTotal)}
                 </div>
-                <div className="text-[10px] text-amber-700 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-amber-700 font-medium">
                   {receivableSubtotals.unpaidCount} {receivableSubtotals.unpaidCount === 1 ? 'pedido' : 'pedidos'}
                 </div>
               </div>
 
               {/* Recebido / Quitado */}
-              <div className="bg-emerald-50/80 border border-emerald-200/90 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-emerald-700">
-                  <span>Recebido (Quitado)</span>
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-emerald-800 tracking-tight mt-0.5">
+              <div className="min-w-0 bg-emerald-50/80 border border-emerald-200/90 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-emerald-700">Recebido</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-emerald-800 tracking-tight">
                   {formatCurrency(receivableSubtotals.paidTotal)}
                 </div>
-                <div className="text-[10px] text-emerald-600 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-emerald-600 font-medium">
                   {receivableSubtotals.paidCount} {receivableSubtotals.paidCount === 1 ? 'pedido' : 'pedidos'}
                 </div>
               </div>
 
               {/* Faturamento Acumulado */}
-              <div className="bg-white border border-slate-200 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-slate-600">
-                  <span>Faturamento Total</span>
-                  <Receipt className="w-3.5 h-3.5 text-slate-400" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-slate-800 tracking-tight mt-0.5">
+              <div className="min-w-0 bg-white border border-slate-200 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-slate-600">Total</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-slate-800 tracking-tight">
                   {formatCurrency(receivableSubtotals.allTotal)}
                 </div>
-                <div className="text-[10px] text-slate-500 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-slate-500 font-medium">
                   {receivableSubtotals.allCount} pedidos registrados
                 </div>
               </div>
 
               {/* Total na Visualização Filtrada */}
-              <div className="bg-blue-50/70 border border-blue-200 rounded-xl p-2 sm:p-2.5 shadow-2xs">
-                <div className="flex items-center justify-between text-[11px] font-bold text-[#0B5187]">
-                  <span>Subtotal da Lista</span>
-                  <Sparkles className="w-3.5 h-3.5 text-[#0B5187]" />
-                </div>
-                <div className="text-base sm:text-lg font-black text-[#0B5187] tracking-tight mt-0.5">
+              <div className="min-w-0 bg-blue-50/70 border border-blue-200 rounded-lg px-1.5 py-1 shadow-2xs">
+                <div className="truncate text-[8px] sm:text-[10px] font-bold text-[#0B5187]">Na lista</div>
+                <div className="truncate text-[10px] sm:text-base font-black text-[#0B5187] tracking-tight">
                   {formatCurrency(filteredReceivablesTotal)}
                 </div>
-                <div className="text-[10px] text-blue-700 font-medium">
+                <div className="truncate text-[8px] sm:text-[10px] text-blue-700 font-medium">
                   {filteredReceivables.length} pedidos exibidos
                 </div>
               </div>
@@ -574,7 +561,7 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
         {/* ========================================================================= */}
         {/* BARRA DE FILTROS MINIMALISTA */}
         {/* ========================================================================= */}
-        <div className="bg-white px-3 sm:px-6 py-2 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="hidden">
           {/* 1. Status Filter Pills */}
           <div className="flex items-center gap-1.5 text-xs font-bold">
             <span className="text-[11px] text-slate-500 uppercase tracking-wider mr-1 hidden sm:inline">
@@ -712,10 +699,92 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
           </div>
         </div>
 
+        <div className="absolute top-14 right-3 z-[140] sm:top-16 sm:right-6">
+          {filtersOpen && (
+            <div className="mb-3 w-[min(92vw,380px)] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-sm font-black text-slate-800">Filtros financeiros</h2>
+                <button type="button" onClick={() => setFiltersOpen(false)} aria-label="Fechar filtros" className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="mb-2 grid grid-cols-3 gap-1">
+                {(activeTab === 'pagar'
+                  ? [
+                      { value: 'unpaid', label: `Pendentes (${payableSubtotals.unpaidCount})` },
+                      { value: 'paid', label: `Pagas (${payableSubtotals.paidCount})` },
+                      { value: 'all', label: `Todas (${payableSubtotals.allCount})` }
+                    ]
+                  : [
+                      { value: 'unpaid', label: `Pendentes (${receivableSubtotals.unpaidCount})` },
+                      { value: 'paid', label: `Recebidas (${receivableSubtotals.paidCount})` },
+                      { value: 'all', label: `Todas (${receivableSubtotals.allCount})` }
+                    ]
+                ).map(option => {
+                  const selected = activeTab === 'pagar' ? payableStatus === option.value : receivableStatus === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => activeTab === 'pagar'
+                        ? setPayableStatus(option.value as 'unpaid' | 'paid' | 'all')
+                        : setReceivableStatus(option.value as 'unpaid' | 'paid' | 'all')}
+                      className={`rounded-lg px-1.5 py-2 text-[10px] font-bold ${selected ? 'bg-[#0B5187] text-white' : 'bg-slate-100 text-slate-600'}`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <select
+                value={activeTab === 'pagar' ? selectedDriverKey : selectedClientFilter}
+                onChange={e => activeTab === 'pagar' ? setSelectedDriverKey(e.target.value) : setSelectedClientFilter(e.target.value)}
+                className="mb-2 w-full rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-2 text-xs text-slate-800"
+              >
+                <option value="all">{activeTab === 'pagar' ? 'Todos os motoristas' : 'Todos os clientes'}</option>
+                {activeTab === 'pagar'
+                  ? availableDrivers.map(d => <option key={d.key} value={d.key}>{d.name}</option>)
+                  : availableClients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="search"
+                  value={searchTerm}
+                  onChange={e => setSearchTerm(e.target.value)}
+                  placeholder="Buscar..."
+                  className="w-full rounded-lg border border-slate-300 bg-slate-50 py-2 pl-8 pr-3 text-xs text-slate-800"
+                />
+              </div>
+              {activeTab === 'pagar' && selectedDriverKey !== 'all' && (
+                <button type="button" onClick={() => handleSendDriverWhatsApp(selectedDriverKey)} className="mt-2 w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">
+                  Enviar resumo do motorista
+                </button>
+              )}
+              {activeTab === 'receber' && selectedClientFilter !== 'all' && (
+                <button type="button" onClick={() => handleSendCustomerWhatsApp(selectedClientFilter)} className="mt-2 w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">
+                  {receivableStatus === 'paid' ? 'Enviar recibo geral' : 'Enviar cobrança geral'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* ========================================================================= */}
         {/* LISTA ULTRA-SLIM E MINIMALISTA COM DADOS DE ALTA DENSIDADE */}
         {/* ========================================================================= */}
-        <div className="flex-1 overflow-y-auto px-2 sm:px-6 py-2 divide-y divide-slate-100">
+        <div
+          className="financial-scroll-area min-w-0 px-2 sm:px-6 py-2 divide-y divide-slate-100"
+          style={{
+            flex: '1 1 0%',
+            height: 0,
+            minHeight: 0,
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
+            overscrollBehaviorY: 'contain',
+            touchAction: 'pan-y',
+          }}
+        >
           {activeTab === 'pagar' ? (
             /* TABELA / LISTA DE CONTAS A PAGAR (MOTORISTAS) */
             filteredPayables.length === 0 ? (
@@ -729,14 +798,14 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                 {filteredPayables.map(item => (
                   <div
                     key={item.id}
-                    className={`flex flex-col sm:flex-row sm:items-center justify-between p-2 sm:py-1.5 sm:px-3 rounded-lg border transition-colors gap-2 ${
+                    className={`flex items-center justify-between p-1.5 sm:py-1.5 sm:px-3 rounded-lg border transition-colors gap-1.5 ${
                       item.paid
                         ? 'bg-slate-50/60 border-slate-200/60 text-slate-600'
                         : 'bg-white border-red-200/70 hover:border-red-300 shadow-2xs'
                     }`}
                   >
                     {/* Linha de Dados: Motorista, Operação, Local, Data */}
-                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
                       {/* Status Indicator */}
                       <span
                         className={`w-2 h-2 rounded-full shrink-0 ${
@@ -778,13 +847,13 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                     </div>
 
                     {/* Preço e Ações */}
-                    <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                    <div className="flex items-center justify-end gap-1 sm:gap-3 shrink-0">
                       {/* Valor do Serviço */}
                       <div className="text-right">
-                        <span className="text-xs sm:text-sm font-black text-slate-900">
+                        <span className="text-[11px] sm:text-sm font-black text-slate-900 whitespace-nowrap">
                           {formatCurrency(item.price)}
                         </span>
-                        <div className="text-[9.5px] font-bold">
+                        <div className="hidden sm:block text-[9.5px] font-bold">
                           {item.paid ? (
                             <span className="text-emerald-700">Baixado</span>
                           ) : (
@@ -846,14 +915,14 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                   return (
                     <div
                       key={item.id}
-                      className={`flex flex-col sm:flex-row sm:items-center justify-between p-2 sm:py-1.5 sm:px-3 rounded-lg border transition-colors gap-2 ${
+                      className={`flex items-center justify-between p-1.5 sm:py-1.5 sm:px-3 rounded-lg border transition-colors gap-1.5 ${
                         isPaid
                           ? 'bg-slate-50/60 border-slate-200/60 text-slate-600'
                           : 'bg-white border-amber-200/70 hover:border-amber-300 shadow-2xs'
                       }`}
                     >
                       {/* Linha de Dados: Pedido, Cliente, Origem ➔ Destino */}
-                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1">
                         <span
                           className={`w-2 h-2 rounded-full shrink-0 ${
                             isPaid ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
@@ -862,14 +931,14 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                         />
 
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-xs font-extrabold text-slate-900 truncate">
+                          <div className="flex items-center gap-1 flex-nowrap">
+                            <span className="text-[11px] sm:text-xs font-extrabold text-slate-900 truncate">
                               {item.client_name}
                             </span>
-                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-blue-50 text-[#0B5187] border border-blue-200/60 font-mono">
+                            <span className="shrink-0 text-[9px] font-bold px-1 py-0.2 rounded bg-blue-50 text-[#0B5187] border border-blue-200/60 font-mono">
                               #{item.code || item.order_id}
                             </span>
-                            <span className="text-[11px] font-semibold text-slate-500">
+                            <span className="hidden sm:inline text-[11px] font-semibold text-slate-500">
                               {item.date}
                             </span>
                             {item.tipo_encomenda && (
@@ -879,7 +948,7 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                             )}
                           </div>
 
-                          <div className="text-[11px] text-slate-600 truncate flex items-center gap-1 mt-0.5">
+                          <div className="hidden sm:flex text-[11px] text-slate-600 truncate items-center gap-1 mt-0.5">
                             {item.orig_name && (
                               <span className="truncate">Coleta: {item.orig_name}</span>
                             )}
@@ -898,13 +967,13 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                       </div>
 
                       {/* Preço e Ações */}
-                      <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                      <div className="flex items-center justify-end gap-1 sm:gap-3 shrink-0">
                         {/* Valor Total */}
                         <div className="text-right">
                           <span className="text-xs sm:text-sm font-black text-slate-900">
                             {formatCurrency(item.total)}
                           </span>
-                          <div className="text-[9.5px] font-bold">
+                          <div className="hidden sm:block text-[9.5px] font-bold">
                             {isPaid ? (
                               <span className="text-emerald-700">Quitado ✓</span>
                             ) : (
@@ -933,7 +1002,7 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                             }`}
                           >
                             <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                            <span>{isPaid ? 'Reverter' : 'Dar Baixa'}</span>
+                            <span className="hidden sm:inline">{isPaid ? 'Reverter' : 'Dar Baixa'}</span>
                           </button>
 
                           {/* Botão WhatsApp: Cobrança (Pendente) ou Recibo Autenticado (Quitado) */}
@@ -954,7 +1023,7 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
                             }`}
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">
+                            <span>
                               {isPaid ? 'Recibo' : 'Cobrar'}
                             </span>
                           </button>
@@ -967,24 +1036,6 @@ export const FinancialModalFullScreen: React.FC<FinancialModalFullScreenProps> =
             )
           )}
         </div>
-
-        {/* ========================================================================= */}
-        {/* RODAPÉ INFORMATIVO */}
-        {/* ========================================================================= */}
-        <footer className="bg-slate-50 px-3 sm:px-6 py-2 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-500 shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>Sistema Financeiro EncomendasZap</span>
-            <span className="text-slate-300">•</span>
-            <span>Recibos com autenticação criptográfica</span>
-          </div>
-
-          <div className="font-semibold text-slate-700">
-            {activeTab === 'pagar'
-              ? `${filteredPayables.length} repasses listados`
-              : `${filteredReceivables.length} pedidos listados`}
-          </div>
-        </footer>
 
         {/* ========================================================================= */}
         {/* MODAL DE CONFIRMAÇÃO DE BAIXA */}

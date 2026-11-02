@@ -80,35 +80,35 @@ export const MainAppContent: React.FC = () => {
   }, [closeCustomerList]);
 
   const handleSaveCustomerFromList = useCallback(async (newCust: Customer) => {
-    const saved = await persistCustomer(newCust);
-    if (!saved) {
+    const savedCustomer = await persistCustomer(newCust);
+    if (!savedCustomer) {
       window.alert('Não foi possível salvar o endereço do cliente no banco de dados.');
       return;
     }
 
     setIsCustomerRegOpen(false);
     if (
-      newCust.coordinates &&
-      typeof newCust.coordinates.lat === 'number' &&
-      typeof newCust.coordinates.lng === 'number' &&
-      (newCust.coordinates.lat !== 0 || newCust.coordinates.lng !== 0)
+      savedCustomer.coordinates &&
+      typeof savedCustomer.coordinates.lat === 'number' &&
+      typeof savedCustomer.coordinates.lng === 'number' &&
+      (savedCustomer.coordinates.lat !== 0 || savedCustomer.coordinates.lng !== 0)
     ) {
       if (mapInstance) {
-        mapInstance.flyTo([newCust.coordinates.lat, newCust.coordinates.lng], 17, { animate: true, duration: 1.2 });
+        mapInstance.flyTo([savedCustomer.coordinates.lat, savedCustomer.coordinates.lng], 17, { animate: true, duration: 1.2 });
       }
-      const rawName = newCust.fullName || 'Cliente';
+      const rawName = savedCustomer.fullName || 'Cliente';
       const placeName = rawName.toLowerCase().startsWith('local de ') ? rawName : `Local de ${rawName}`;
       const newPlace: Place = {
-        id: `cliente-${newCust.id}`,
+        id: `cliente-${savedCustomer.id}`,
         name: placeName,
-        address: newCust.address || 'Goiânia - GO',
+        address: savedCustomer.address || 'Goiânia - GO',
         category: 'Cliente',
-        coordinates: newCust.coordinates,
-        customerName: newCust.fullName,
-        customerPhone: newCust.phone,
-        customerId: newCust.id,
-        customerAddress: newCust.address,
-        customerCoordinates: newCust.coordinates
+        coordinates: savedCustomer.coordinates,
+        customerName: savedCustomer.fullName,
+        customerPhone: savedCustomer.phone,
+        customerId: savedCustomer.id,
+        customerAddress: savedCustomer.address,
+        customerCoordinates: savedCustomer.coordinates
       };
       setSelectedPlace(newPlace);
     } else {

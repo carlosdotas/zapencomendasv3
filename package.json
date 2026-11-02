@@ -16,7 +16,7 @@
     "db:link-clients": "tsx backend/linkOrderClients.ts",
     "db:studio": "prisma studio --schema backend/prisma/schema.prisma",
     "postinstall": "prisma generate --schema backend/prisma/schema.prisma",
-    "test": "tsx --test src/utils/addressUtils.test.ts src/utils/orderSequence.test.ts src/services/apiAdapters.test.ts src/services/imageUploadService.test.ts",
+    "test": "tsx --test backend/access.test.ts backend/mappers.test.ts src/utils/addressUtils.test.ts src/utils/orderIds.test.ts src/utils/orderSequence.test.ts src/services/apiAdapters.test.ts src/services/imageUploadService.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

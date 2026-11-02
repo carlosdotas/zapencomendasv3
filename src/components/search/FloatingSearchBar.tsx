@@ -64,7 +64,7 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
     openNewOrderForm,
     customers,
     updateCustomer,
-    addCustomer,
+    persistCustomer,
     operationsFilter,
     currentRole
   } = useMapStore();
@@ -308,11 +308,15 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
     const addressToSet = pendingPlace.address || finalPlaceName;
     const city = await findCityForPlace(pendingPlace, addressToSet) || normalizeCityName(customer.city || customer.cidade);
 
-    updateCustomer(customer.id, {
+    const saved = await updateCustomer(customer.id, {
       address: addressToSet,
       coordinates: pendingPlace.coordinates,
       ...(city ? { city, cidade: city } : {})
     });
+    if (!saved) {
+      window.alert('Não foi possível salvar o endereço do cliente no banco de dados. Verifique a conexão e tente novamente.');
+      return;
+    }
 
     const updatedPlace: Place = {
       ...pendingPlace,
@@ -352,24 +356,28 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
       : resolveCustomerCity({ ...newCustomer, address: addressToSet });
     const finalCity = city || normalizeCityName(newCustomer.city || newCustomer.cidade);
 
-    addCustomer({
+    const customerToSave: Customer = {
+      ...newCustomer,
       fullName: newCustomer.fullName,
       phone: newCustomer.phone,
       cpf: newCustomer.cpf,
       address: addressToSet,
       coordinates: pendingPlace?.coordinates || newCustomer.coordinates,
       ...(finalCity ? { city: finalCity, cidade: finalCity } : {}),
-      email: newCustomer.email,
-      notes: newCustomer.notes
-    });
+    };
+    const savedCustomer = await persistCustomer(customerToSave);
+    if (!savedCustomer) {
+      window.alert('Não foi possível salvar o cliente no banco de dados. Verifique a conexão e tente novamente.');
+      return;
+    }
 
     const placeForInfo: Place = pendingPlace 
       ? {
           ...pendingPlace,
           name: finalPlaceName,
-          customerName: newCustomer.fullName,
-          customerPhone: newCustomer.phone,
-          customerId: newCustomer.id,
+          customerName: savedCustomer.fullName,
+          customerPhone: savedCustomer.phone,
+          customerId: savedCustomer.id,
           destinationCity: finalCity,
           customerAddress: addressToSet,
           customerCoordinates: pendingPlace.coordinates
@@ -379,18 +387,18 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
           name: finalPlaceName, 
           address: newCustomer.address, 
           coordinates: newCustomer.coordinates || { lat: -16.6869, lng: -49.2648 },
-          customerName: newCustomer.fullName,
-          customerPhone: newCustomer.phone,
-          customerId: newCustomer.id
+          customerName: savedCustomer.fullName,
+          customerPhone: savedCustomer.phone,
+          customerId: savedCustomer.id
         };
 
     setUpdatedCustomerInfo({ 
-      customer: newCustomer, 
+      customer: savedCustomer,
       place: placeForInfo 
     });
     setIsRegistrationOpen(false);
     setIsCustomerSelectorOpen(false);
-    setSuccessToast(`Cliente ${newCustomer.fullName} cadastrado com esta localização!`);
+    setSuccessToast(`Cliente ${savedCustomer.fullName} cadastrado com esta localização!`);
     setTimeout(() => {
       setSuccessToast(null);
       setUpdatedCustomerInfo(null);

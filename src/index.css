@@ -54,6 +54,26 @@ input, textarea, select {
   accent-color: #0B5187;
 }
 
+.config-settings-page input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="hidden"]),
+.config-settings-page textarea,
+.config-settings-page select {
+  color: #0F172A !important;
+  color-scheme: light;
+  background-color: #FFFFFF;
+  border-color: #CBD5E1;
+}
+
+.config-settings-page input::placeholder,
+.config-settings-page textarea::placeholder {
+  color: #94A3B8;
+  opacity: 1;
+}
+
+.config-settings-page option {
+  color: #0F172A;
+  background-color: #FFFFFF;
+}
+
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([class*="bg-"]),
 textarea:not([class*="bg-"]),
 select:not([class*="bg-"]) {

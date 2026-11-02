@@ -295,7 +295,7 @@ const formatClaimDistance = (
   return `${(meters / 1000).toFixed(1).replace('.', ',')} km`;
 };
 
-// Status do motorista exibido dentro da label da maker (admin/atendente/terminal): "Aceito por X" ou "X indo • distância"
+// Status do motorista no marcador: aceite, deslocamento ou direcionamento administrativo.
 type DriverStatusInfo = { text: string; enRoute: boolean };
 const getDriverStatusInfo = (places: Place[], liveDrivers: Array<{ id: string; name?: string; coordinates: { lat: number; lng: number } }>): DriverStatusInfo | null => {
   const assigned = places.filter(p => (p.assignedDriverId || p.assignedDriverName) && p.orderStage !== 'concluido' && !isCollectionCenterPlace(p));
@@ -303,7 +303,14 @@ const getDriverStatusInfo = (places: Place[], liveDrivers: Array<{ id: string; n
   const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
   if (assigned.length > 1) {
     const going = assigned.filter(p => p.driverEnRoute).length;
-    return { text: `${assigned.length} aceitos${going ? ` • ${going} indo` : ''}`, enRoute: going > 0 };
+    const accepted = assigned.filter(p => p.acceptedByDriver).length;
+    const directed = assigned.length - accepted;
+    const states = [
+      accepted ? `${accepted} aceitos` : '',
+      directed ? `${directed} direcionados` : '',
+      going ? `${going} indo` : ''
+    ].filter(Boolean);
+    return { text: states.join(' • '), enRoute: going > 0 };
   }
   const p = assigned[0];
   const digits = (v?: string) => String(v || '').replace(/\D/g, '');
@@ -316,7 +323,10 @@ const getDriverStatusInfo = (places: Place[], liveDrivers: Array<{ id: string; n
     const distance = live ? formatClaimDistance(live.coordinates, p.coordinates) : '';
     return { text: `${name} indo${distance ? ` • ${distance}` : ''}`, enRoute: true };
   }
-  return { text: `Aceito por ${name}`, enRoute: false };
+  return {
+    text: p.acceptedByDriver ? `Aceito por ${name}` : `Direcionado para ${name}`,
+    enRoute: false
+  };
 };
 
 // Place Marker com caixinha 3D ou Foto da Encomenda, risquinho fininho, xizinho na ponta e legenda translúcida
@@ -647,16 +657,14 @@ export const createPlaceMarkerIcon = (
         </div>
 
         <!-- Etiqueta com Fundo Translúcido: NOME DO LOCAL EM CIMA, NOME DO CLIENTE EMBAIXO -->
-        <div class="place-marker-label ${isMultiple ? 'type-multiple is-multiple' : `type-${opType}`} ${placePhoto && !driverStatus ? 'has-photo' : 'no-photo'}">
-          ${driverStatus ? '' : `
+        <div class="place-marker-label ${isMultiple ? 'type-multiple is-multiple' : `type-${opType}`} ${placePhoto ? 'has-photo' : 'no-photo'}">
           <!-- BADGE FLUTUANTE NO CANTO SUPERIOR DIREITO -->
           <span class="place-marker-date-badge badge-${dateBadge.type}">
             ${dateBadge.iconSvg}
             <span>${dateBadge.label}</span>
           </span>
-          `}
 
-          ${driverStatus ? '' : placePhoto ? `
+          ${placePhoto ? `
             <!-- FOTO NO LUGAR DO ÍCONE DA LABEL: TOQUE PARA ABRIR CHEIA NA TELA -->
             <div class="place-marker-label-photo-thumb place-marker-photo-trigger" data-photo-url="${placePhoto}" title="Clique para abrir foto cheia na tela">
               <img src="${placePhoto}" alt="Foto da encomenda" class="place-marker-thumb-img" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=120&auto=format&fit=crop&q=70';" />
@@ -670,7 +678,7 @@ export const createPlaceMarkerIcon = (
 
           <div class="place-marker-text-group">
             <!-- 1. NOME DO LOCAL EM CIMA (EM DESTAQUE) -->
-            ${driverStatus ? '' : `<div class="place-marker-header-row">
+            <div class="place-marker-header-row">
               <span class="place-marker-place">${cleanPlaceName}</span>
               ${isCollectionCenter
                 ? `<span class="place-marker-op-badge" style="background: linear-gradient(135deg, #0F766E, #115E59); border: 1.2px solid #99F6E4; color: #FFFFFF; font-size: 9px; font-weight: 900; padding: 1.5px 5px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.02em;">CENTRAL DE COLETA</span>`
@@ -682,9 +690,9 @@ export const createPlaceMarkerIcon = (
               }
             </div>
             <!-- 2. NOME DO CLIENTE EMBAIXO COM VEÍCULO NA FRENTE OU LISTAGEM COM FUNDO E BORDA -->
-            ${customerContentHtml}`}
+            ${customerContentHtml}
             ${driverStatus ? `
-              <!-- Marker já direcionado a um motorista: label compacta só com o motorista -->
+              <!-- Status do motorista somado às demais informações -->
               <div
                 class="place-marker-driver-status"
                 style="background: ${driverStatus.enRoute ? 'linear-gradient(135deg, #2563EB, #1D4ED8)' : 'linear-gradient(135deg, #10B981, #059669)'}; color: #FFFFFF; font-size: 11px; font-weight: 900; padding: 4px 9px; border-radius: 6px; display: flex; align-items: center; gap: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1.2px solid ${driverStatus.enRoute ? '#93C5FD' : '#6EE7B7'}; letter-spacing: 0.02em; white-space: nowrap; width: fit-content; max-width: 230px; overflow: hidden; text-overflow: ellipsis;"
@@ -705,7 +713,7 @@ export const createPlaceMarkerIcon = (
         </div>
       </div>
     `,
-    iconSize: [360, driverStatus ? 54 : (isMultiple ? (placesAtLocation.length > 2 ? 120 : 96) : (isPublicForDriver ? 104 : isSingleMissing ? 96 : 74))],
+    iconSize: [360, (isMultiple ? (placesAtLocation.length > 2 ? 120 : 96) : (isPublicForDriver ? 104 : isSingleMissing ? 96 : 74)) + (driverStatus ? 28 : 0)],
     iconAnchor: [19, 43],
     popupAnchor: [0, -43]
   });

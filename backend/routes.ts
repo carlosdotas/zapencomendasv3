@@ -24,6 +24,7 @@ export interface RouteDeps {
   saveBase64Image: (dataUrl: string, subfolder?: string) => string | null;
   uploadToPhpServer: (dataUrl: string, tipo?: string) => Promise<string | null>;
   imageServerConfigured: () => boolean;
+  notifyOrdersChanged?: () => void;
 }
 
 export function parseRawJsonBody(req: Request): any {
@@ -534,6 +535,7 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       });
       await logStage(saved.id, 'novo', saved.stage, body.users_id, 'Pedido criado');
       void notifyNewOrder(saved, sessionCaller?.id ?? toInt(body.users_id));
+      deps.notifyOrdersChanged?.();
     }
     res.json({ success: true, data: { id: saved.id }, id: saved.id, message: 'Pedido salvo com sucesso!' });
   });
@@ -1200,15 +1202,21 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
   // ------------------------------------------------------------------
   // MARCADORES DE PEDIDOS NO MAPA
   // ------------------------------------------------------------------
-  route(app, '/tracking/order_markers', async (_req, res, body) => {
+  route(app, '/tracking/order_markers', async (req, res, body) => {
     const date = String(body.date || todaySaoPaulo()).slice(0, 10);
+    const caller = await resolveCaller(req, body);
     const rows = await prisma.orders.findMany({ where: { date } });
-    const ids = pedidoLocationIds(rows);
+    const orderViews = await pedidosToBackend(rows);
+    const visibleOrderIds = new Set(
+      orderViews.filter(order => canCallerSeeOrder(order, caller)).map(order => String(order.id))
+    );
+    const visibleRows = rows.filter(row => visibleOrderIds.has(String(row.id)));
+    const ids = pedidoLocationIds(visibleRows);
     const locations = new Map<number, any>();
     if (ids.length) (await prisma.locations.findMany({ where: { id: { in: ids } } })).forEach(l => locations.set(l.id, l));
 
     const markers: any[] = [];
-    for (const row of rows) {
+    for (const row of visibleRows) {
       const view = pedidoToBackend(row);
       const isExchange = view.tipo_encomenda === 'troca';
       const base = { pedido_id: row.id, etapa: view.etapa, cliente: row.client_name, tipo_encomenda: view.tipo_encomenda, is_exchange: isExchange };
@@ -1496,4 +1504,3 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     });
   });
 }
-
