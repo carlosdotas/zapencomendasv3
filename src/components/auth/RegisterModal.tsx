@@ -56,6 +56,8 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
   onSwitchToLogin,
   canDismiss = false
 }) => {
+  const [accountType, setAccountType] = useState<'motorista' | 'atendente' | null>(null);
+  const isAtendente = accountType === 'atendente';
   const [fullName, setFullName] = useState('');
   const [cpf, setCpf] = useState('');
   const [phone, setPhone] = useState('');
@@ -85,7 +87,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
       return;
     }
 
-    if (!cleanCpf || cleanCpf.length !== 11) {
+    if (!isAtendente && (!cleanCpf || cleanCpf.length !== 11)) {
       setErrorMsg('Por favor, informe um CPF válido com 11 dígitos.');
       return;
     }
@@ -122,7 +124,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
         name_completo: cleanName,
         phone: cleanPhone,
         password: cleanPassword,
-        access_level: 'motorista'
+        access_level: isAtendente ? 'atendente' : 'motorista'
       });
 
       if (regRes && regRes.id) {
@@ -174,19 +176,34 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
           phone: cleanPhone,
           cpf: cleanCpf,
           cidade: 'Goiânia',
-          access_level: 'motorista'
+          access_level: isAtendente ? 'atendente' : 'motorista'
         }),
-        api.saveMotorista({
+        ...(isAtendente ? [] : [api.saveMotorista({
           nome: cleanName,
           telefone: cleanPhone,
           cpf: formatCpf(cleanCpf),
           tipo_veiculo: vehicleType,
           status: 'ativo'
-        })
+        })])
       ]);
     } catch {}
 
-    const newDriverAccount: AuthAccount = {
+    const newDriverAccount: AuthAccount = isAtendente ? {
+      id: String(registeredUserId),
+      phone: formatPhone(cleanPhone),
+      cleanPhone: cleanPhone,
+      code: cleanPassword,
+      role: 'atendente',
+      roleLabel: 'Atendente',
+      name: cleanName,
+      description: 'Atendimento • Pedidos',
+      badgeColor: '#0B5187',
+      avatarUrl: '',
+      department: 'Atendimento',
+      status: 'ativo',
+      lastAccess: 'Agora',
+      permissions: ['Pedidos', 'Clientes']
+    } : {
       id: String(registeredUserId),
       phone: formatPhone(cleanPhone),
       cleanPhone: cleanPhone,
@@ -247,7 +264,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
 
         {/* Botão Voltar para o Login (Garante que nunca abra o sistema sem autenticação) */}
         <button
-          onClick={onSwitchToLogin}
+          onClick={accountType && !isLoading && !isSuccess ? () => { setAccountType(null); setErrorMsg(''); } : onSwitchToLogin}
           type="button"
           aria-label="Voltar para o Login"
           className="absolute top-4 left-4 z-10 p-2 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold"
@@ -267,12 +284,45 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
             Encomendas<span className="text-[#FF5E00]">Zap</span>
           </h1>
           <p className="text-xs text-slate-500 font-medium mt-1">
-            Cadastro de Motorista Parceiro
+            {accountType === null ? 'Como você quer se cadastrar?' : isAtendente ? 'Cadastro de Atendente' : 'Cadastro de Motorista Parceiro'}
           </p>
         </div>
 
-        {/* FEEDBACK DE SUCESSO */}
-        {isSuccess ? (
+        {accountType === null ? (
+          <div className="px-6 pb-6 pt-1 space-y-3">
+            {[
+              { id: 'motorista' as const, label: 'Motorista', desc: 'Faço coletas e entregas', icon: Bike },
+              { id: 'atendente' as const, label: 'Atendente', desc: 'Gerencio pedidos e clientes', icon: User }
+            ].map((opt) => {
+              const Icon = opt.icon;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setAccountType(opt.id)}
+                  className="w-full flex items-center gap-3 p-4 rounded-2xl border-2 border-slate-200 bg-slate-50 hover:border-[#FF5E00] hover:bg-orange-50 active:scale-[0.98] transition-all cursor-pointer text-left"
+                >
+                  <div className="w-11 h-11 rounded-xl bg-white border border-slate-200 flex items-center justify-center shrink-0">
+                    <Icon className="w-5 h-5 text-[#FF5E00]" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm font-black text-slate-800">{opt.label}</div>
+                    <div className="text-xs text-slate-500 font-medium">{opt.desc}</div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-slate-400" />
+                </button>
+              );
+            })}
+            <div className="pt-1 text-center">
+              <span className="text-xs text-slate-500">Já tem conta? </span>
+              <button type="button" onClick={onSwitchToLogin} className="text-xs font-black text-[#0B5187] hover:underline cursor-pointer">
+                Fazer Login
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {accountType === null ? null : isSuccess ? (
           <div className="p-8 text-center flex flex-col items-center justify-center space-y-3">
             <CheckCircle2 className="w-14 h-14 text-emerald-500 animate-bounce" />
             <h3 className="text-lg font-black text-slate-800">Cadastro Concluído!</h3>
@@ -313,6 +363,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
             </div>
 
             {/* CPF do Motorista */}
+            {!isAtendente && (
             <div>
               <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
                 CPF do Motorista
@@ -332,6 +383,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
                 />
               </div>
             </div>
+            )}
 
             {/* WhatsApp / Telefone */}
             <div>
@@ -353,6 +405,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
               </div>
             </div>
 
+            {!isAtendente && (<>
             {/* Tipo de Veículo */}
             <div>
               <label className="block text-[11px] font-black uppercase tracking-wider text-slate-700 mb-1">
@@ -414,6 +467,8 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
               </div>
             </div>
 
+            </>)}
+
             {/* Senha */}
             <div>
               <div className="flex items-center justify-between mb-1">
@@ -460,7 +515,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
                 </div>
               ) : (
                 <>
-                  <span>Concluir Cadastro de Motorista</span>
+                  <span>{isAtendente ? 'Concluir Cadastro de Atendente' : 'Concluir Cadastro de Motorista'}</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -468,7 +523,7 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
 
             {/* Alternar para Login */}
             <div className="pt-1 text-center">
-              <span className="text-xs text-slate-500">Já tem uma conta de motorista? </span>
+              <span className="text-xs text-slate-500">Já tem uma conta? </span>
               <button
                 type="button"
                 onClick={onSwitchToLogin}

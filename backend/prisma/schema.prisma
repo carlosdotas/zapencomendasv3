@@ -354,9 +354,13 @@ model driver_earnings {
   order_key    String    @db.VarChar(64)
   operation    String?   @db.VarChar(20)
   label        String?   @db.VarChar(255)
+  place_name   String?   @db.VarChar(255)
+  customer_name String?  @db.VarChar(255)
   address      String?   @db.VarChar(255)
   status       String    @default("aceito") @db.VarChar(20)
   price        Float     @default(0)
+  paid         Boolean   @default(false)
+  paid_at      DateTime?
   accepted_at  DateTime?
   collected_at DateTime?
   created_at   DateTime  @default(now())
@@ -364,6 +368,22 @@ model driver_earnings {
 
   @@unique([driver_key, day, order_key])
   @@index([driver_key, day])
+}
+
+// Notificações por usuário (novo pedido, aceite, coleta, entrega...)
+model notifications {
+  id           Int       @id @default(autoincrement())
+  user_id      Int
+  type         String    @default("sistema") @db.VarChar(30)
+  title        String    @db.VarChar(160)
+  message      String    @db.Text
+  order_id     Int?
+  created_at   DateTime  @default(now())
+  delivered_at DateTime?
+  read_at      DateTime?
+
+  @@index([user_id, delivered_at])
+  @@index([user_id, created_at])
 }
 
 // Direcionamento de pedidos a motoristas em tempo real

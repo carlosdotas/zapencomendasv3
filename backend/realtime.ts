@@ -3,6 +3,8 @@ import { WebSocket, type WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { parseRawJsonBody } from './routes';
 import { toInt } from './mappers';
+import { notifyOrderProgress, notifyUser } from './notifications';
+import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, assignmentsVisibleTo } from './access';
 
 interface LiveDriverData {
   id: string;
@@ -40,7 +42,7 @@ const TRACKING_HISTORY_INTERVAL_MS = 30 * 1000;
 
 export async function registerRealtime(app: Express, wss: WebSocketServer) {
   const activeDrivers = new Map<string, LiveDriverData>();
-  const activeAssignments = new Map<string, OrderAssignmentData>();
+  const activeAssignments = assignmentStore as unknown as Map<string, OrderAssignmentData>;
   const lastHistoryWrite = new Map<string, number>();
 
   const stored = await prisma.assignments.findMany();
@@ -90,18 +92,17 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
     return driver;
   }
 
+  // Atribuições nunca vão por WebSocket (o canal é aberto a qualquer conexão); só pela API autenticada
   function setAssignment(orderId: string, data: Partial<OrderAssignmentData>) {
     const assignment = { ...data, orderId, assignedAt: Date.now() } as OrderAssignmentData;
     activeAssignments.set(orderId, assignment);
     void persistAssignment(orderId, assignment);
-    broadcast({ type: 'assignment:update', orderId, assignment });
     return assignment;
   }
 
   function clearAssignment(orderId: string) {
     activeAssignments.delete(orderId);
     void removeAssignment(orderId);
-    broadcast({ type: 'assignment:remove', orderId });
   }
 
   setInterval(() => {
@@ -116,14 +117,11 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
 
   wss.on('connection', (ws: WebSocket) => {
     ws.send(JSON.stringify({ type: 'drivers:init', drivers: validDrivers() }));
-    ws.send(JSON.stringify({ type: 'assignments:init', assignments: Object.fromEntries(activeAssignments) }));
 
     ws.on('message', raw => {
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.type === 'driver:update_location' && msg.driver) upsertDriver(msg.driver);
-        else if (msg.type === 'assignment:set' && msg.orderId && msg.assignment) setAssignment(String(msg.orderId), msg.assignment);
-        else if (msg.type === 'assignment:clear' && msg.orderId) clearAssignment(String(msg.orderId));
       } catch {
         // payload inválido é ignorado
       }
@@ -150,24 +148,44 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
     res.json({ success: true, data: upsertDriver(body) });
   });
 
-  app.get('/api/realtime/assignments', (_req: Request, res: Response) => {
+  app.get('/api/realtime/assignments', async (req: Request, res: Response) => {
     noCache(res);
-    res.json({ success: true, data: Object.fromEntries(activeAssignments) });
+    const caller = await resolveCaller(req, parseRawJsonBody(req));
+    res.json({ success: true, data: assignmentsVisibleTo(caller) });
   });
 
-  app.post('/api/realtime/assign-driver', (req: Request, res: Response) => {
-    const { orderId, driverId, driverName, driverPhone, vehicleType, claim } = parseRawJsonBody(req);
+  const opOfKey = (key: string) => key.match(/coleta|entrega|troca|retorno/i)?.[0]?.toLowerCase() || '';
+  const numOfKey = (key: string) => key.match(/\d+/)?.[0] || '';
+
+  app.post('/api/realtime/assign-driver', async (req: Request, res: Response) => {
+    const body = parseRawJsonBody(req);
+    const { orderId, driverId, driverName, driverPhone, vehicleType, claim } = body;
     if (!orderId || !driverId) {
       res.status(400).json({ success: false, message: 'orderId e driverId são obrigatórios' });
       return;
     }
-    // Aceite de pedido público: se outro motorista já aceitou, recusa (evita dois motoristas no mesmo pedido)
-    if (claim) {
-      const current = activeAssignments.get(String(orderId));
+    const caller = await resolveCaller(req, body);
+    if (!caller) {
+      res.status(401).json({ success: false, message: 'Faça login para atribuir pedidos.' });
+      return;
+    }
+    // Motorista só pode aceitar o pedido para si mesmo; quem direciona para outros é admin/atendente
+    if (!isPrivileged(caller) && !(caller.role === 'motorista' && isAssignmentMine({ driverId, driverPhone }, caller))) {
+      res.status(403).json({ success: false, message: 'Sem permissão para atribuir este pedido.' });
+      return;
+    }
+    // Aceite de pedido: se outro motorista já aceitou (em qualquer chave do mesmo pedido/operação), recusa
+    if (claim || !isPrivileged(caller)) {
       const digits = (v: unknown) => String(v ?? '').replace(/\D/g, '') || String(v ?? '');
-      if (current?.driverId && digits(current.driverId) !== digits(driverId)) {
-        res.status(409).json({ success: false, message: 'Este pedido já foi aceito por outro motorista.', data: current });
-        return;
+      const num = numOfKey(String(orderId));
+      const op = opOfKey(String(orderId));
+      for (const [key, current] of activeAssignments) {
+        if (!current?.driverId || digits(current.driverId) === digits(driverId)) continue;
+        const sameOrder = key === String(orderId) || (num && numOfKey(key) === num && (!op || !opOfKey(key) || opOfKey(key) === op));
+        if (sameOrder) {
+          res.status(409).json({ success: false, message: 'Este pedido já foi aceito por outro motorista.' });
+          return;
+        }
       }
     }
     const assignment = setAssignment(String(orderId), {
@@ -176,30 +194,68 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
       driverPhone: driverPhone || undefined,
       vehicleType: vehicleType || undefined
     });
+    const opLabel = opOfKey(String(orderId));
+    const who = driverName || `Motorista ${driverId}`;
+    if (!isPrivileged(caller)) void notifyOrderProgress(
+      numOfKey(String(orderId)),
+      {
+        type: 'aceito',
+        title: `Pedido #${numOfKey(String(orderId))} aceito`,
+        message: `${who} aceitou ${opLabel ? `a ${opLabel} do ` : 'o '}pedido #${numOfKey(String(orderId))}.`
+      },
+      caller.id
+    );
+    // Admin/atendente direcionando para um motorista: avisa o motorista escolhido
+    const targetId = toInt(driverId);
+    if (isPrivileged(caller) && targetId && targetId !== caller.id) {
+      void notifyUser(targetId, {
+        type: 'direcionado',
+        title: 'Pedido direcionado a você',
+        message: `O pedido #${numOfKey(String(orderId))}${opLabel ? ` (${opLabel})` : ''} foi direcionado a você.`,
+        orderId: toInt(numOfKey(String(orderId)))
+      });
+    }
     res.json({ success: true, data: assignment });
   });
 
-  app.post('/api/realtime/en-route', (req: Request, res: Response) => {
-    const { orderIds, enRoute } = parseRawJsonBody(req);
+  app.post('/api/realtime/en-route', async (req: Request, res: Response) => {
+    const body = parseRawJsonBody(req);
+    const { orderIds, enRoute } = body;
     if (!Array.isArray(orderIds)) {
       res.status(400).json({ success: false, message: 'orderIds é obrigatório' });
+      return;
+    }
+    const caller = await resolveCaller(req, body);
+    if (!caller) {
+      res.status(401).json({ success: false, message: 'Faça login para continuar.' });
       return;
     }
     for (const id of orderIds) {
       const current = activeAssignments.get(String(id));
       if (!current) continue;
+      if (!isPrivileged(caller) && !isAssignmentMine(current, caller)) continue;
       const assignment = { ...current, enRoute: Boolean(enRoute) };
       activeAssignments.set(String(id), assignment);
       void persistAssignment(String(id), assignment);
-      broadcast({ type: 'assignment:update', orderId: String(id), assignment });
     }
     res.json({ success: true });
   });
 
-  app.post('/api/realtime/unassign-driver', (req: Request, res: Response) => {
-    const { orderId } = parseRawJsonBody(req);
+  app.post('/api/realtime/unassign-driver', async (req: Request, res: Response) => {
+    const body = parseRawJsonBody(req);
+    const { orderId } = body;
     if (!orderId) {
       res.status(400).json({ success: false, message: 'orderId é obrigatório' });
+      return;
+    }
+    const caller = await resolveCaller(req, body);
+    if (!caller) {
+      res.status(401).json({ success: false, message: 'Faça login para continuar.' });
+      return;
+    }
+    const current = activeAssignments.get(String(orderId));
+    if (current && !isPrivileged(caller) && !isAssignmentMine(current, caller)) {
+      res.status(403).json({ success: false, message: 'Este pedido pertence a outro motorista.' });
       return;
     }
     clearAssignment(String(orderId));

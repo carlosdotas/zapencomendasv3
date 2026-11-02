@@ -217,13 +217,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
 
           {/* Link para Cadastro */}
           <div className="pt-2 pb-4 text-center">
-            <span className="text-xs text-slate-500">É um novo entregador? </span>
+            <span className="text-xs text-slate-500">Quer se cadastrar? </span>
             <button
               type="button"
               onClick={handleOpenRegister}
               className="text-xs font-black text-[#FF5E00] hover:underline cursor-pointer"
             >
-              Cadastrar como Motorista
+              Cadastrar
             </button>
           </div>
         </form>

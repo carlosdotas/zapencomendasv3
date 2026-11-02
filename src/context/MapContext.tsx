@@ -51,7 +51,7 @@ import {
   getOrderDateBadgeFromDate
 } from '../services/apiAdapters';
 import { filterPlacesBySequence } from '../utils/orderSequence';
-import { BackendPedido } from '../services/apiTypes';
+import { BackendPedido, BaixaProximity } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
 
@@ -159,7 +159,8 @@ interface MapContextType {
   /** Pedidos já entregues/finalizados — usados na tela de pedidos (Central de Pedidos) */
   completedOrders: Place[];
   completedWaypointMarks: CompletedWaypointMark[];
-  completePlaceWaypoint: (placeId: string, receiverName?: string, notes?: string) => void;
+  revertCompletedMark: (markId: string) => Promise<boolean>;
+  completePlaceWaypoint: (placeId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity) => void;
   resetWorkflowToColetas: () => void;
   updatePlaceDetails: (placeId: string, partial: Partial<Place>) => void;
   assignPlaceToDriver: (placeId: string, driverId: string | null, driverPhone?: string, driverName?: string) => void;
@@ -2305,7 +2306,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [flyToLocation]);
 
   // Dá baixa em um ponto (coleta, troca ou entrega) e avança para a próxima etapa conforme as regras do EncomendasZap
-  const completePlaceWaypoint = useCallback(async (rawPlaceId: string, receiverName?: string, notes?: string) => {
+  const completePlaceWaypoint = useCallback(async (rawPlaceId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity) => {
     const placeId = resolvePlaceId(rawPlaceId);
     const now = new Date();
     const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -2657,7 +2658,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // 5.1 Marca etapa no servidor
         try {
-          await api.marcarColetaEntrega(targetPedidoId, etapaBackend, cleanUserId, operatorName);
+          await api.marcarColetaEntrega(targetPedidoId, etapaBackend, cleanUserId, operatorName, proximity);
         } catch (err) {
           console.warn('[Baixa] Erro em marcarColetaEntrega:', err);
         }
@@ -2704,6 +2705,30 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSelectedPlace(null);
     refreshServerData();
   }, [refreshServerData]);
+
+  // Admin/atendente desfaz a baixa: o pedido volta ao estado anterior e a marca de concluído some
+  const revertCompletedMark = useCallback(async (markId: string): Promise<boolean> => {
+    const mark = completedWaypointMarks.find(m => m.id === markId);
+    if (!mark) return false;
+    const pedidoId = mark.orderId.match(/pedido-(\d+)/)?.[1] || mark.orderCode?.match(/(\d+)/)?.[1] || mark.orderId.match(/\d+/)?.[0];
+    if (!pedidoId) return false;
+    const res: any = await api.reverterBaixa(pedidoId, mark.operationType);
+    if (!res?.success) {
+      console.warn('[Reverter baixa]', res?.message);
+      return false;
+    }
+    setCompletedWaypointMarks(prev => {
+      const next = prev.filter(m => !(
+        (m.orderId.match(/pedido-(\d+)/)?.[1] || m.orderId) === pedidoId && m.operationType === mark.operationType
+      ));
+      try {
+        localStorage.setItem('encomendaszap_completed_marks', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+    refreshServerData();
+    return true;
+  }, [completedWaypointMarks, refreshServerData]);
 
   const stopUserTracking = useCallback(() => {
     setIsTrackingUser(false);
@@ -3053,6 +3078,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         allPlaces,
         completedOrders,
         completedWaypointMarks,
+        revertCompletedMark,
         completePlaceWaypoint,
         resetWorkflowToColetas,
         updatePlaceDetails,

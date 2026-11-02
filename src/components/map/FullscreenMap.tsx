@@ -1313,6 +1313,7 @@ export const FullscreenMap: React.FC = () => {
     isDriverOnline,
     openPhotoViewer,
     completedWaypointMarks,
+    revertCompletedMark,
     customers,
     openCustomerLocationModal,
     dateRangeFilter,
@@ -1372,6 +1373,22 @@ export const FullscreenMap: React.FC = () => {
       delete (window as any).openCompletedMarkPhoto;
     };
   }, [openPhotoViewer]);
+
+  // Botão "Voltar" da marca finalizada (admin/atendente): desfaz a baixa
+  useEffect(() => {
+    (window as any).revertCompletedMark = async (markId: string, btn?: HTMLButtonElement) => {
+      if (!window.confirm('Voltar esta baixa? O pedido volta ao estado anterior e sai do histórico do motorista.')) return;
+      if (btn) { btn.disabled = true; btn.textContent = 'Voltando...'; }
+      const ok = await revertCompletedMark(markId);
+      if (!ok) {
+        if (btn) { btn.disabled = false; btn.textContent = '↩ Voltar baixa'; }
+        window.alert('Não foi possível voltar esta baixa. A etapa do pedido pode já ter avançado.');
+      }
+    };
+    return () => {
+      delete (window as any).revertCompletedMark;
+    };
+  }, [revertCompletedMark]);
 
   // Ação de confirmar e assumir pedido público pelo motorista
   const handleConfirmClaimPublicOrder = async () => {
@@ -2097,7 +2114,8 @@ export const FullscreenMap: React.FC = () => {
     // Só mostra as baixas feitas pelo próprio usuário logado (nunca as de outros usuários)
     const myId = user?.id ? String(user.id).replace(/\D/g, '') : '';
     const myName = (user?.name || '').trim().toLowerCase();
-    const ownMarks = currentRole === 'admin_geral' ? completedWaypointMarks : completedWaypointMarks.filter(m => {
+    const isStaffViewer = currentRole === 'admin_geral' || currentRole === 'atendente' || (currentRole as string) === 'admin';
+    const ownMarks = isStaffViewer ? completedWaypointMarks : completedWaypointMarks.filter(m => {
       if (m.driverId) return Boolean(myId) && String(m.driverId).replace(/\D/g, '') === myId;
       return Boolean(myName) && (m.driverName || '').trim().toLowerCase() === myName;
     });
@@ -2243,6 +2261,9 @@ export const FullscreenMap: React.FC = () => {
 
             <!-- Fotos -->
             ${photosHtml}
+            ${isStaffViewer ? `
+              <button type="button" onclick="window.revertCompletedMark('${mark.id}', this)" style="margin-top: 10px; width: 100%; padding: 8px 10px; border-radius: 10px; border: 1.5px solid #FDBA74; background: #FFF7ED; color: #C2410C; font-size: 12px; font-weight: 900; cursor: pointer;">↩ Voltar baixa</button>
+            ` : ''}
           </div>
         `;
 
@@ -2294,20 +2315,27 @@ export const FullscreenMap: React.FC = () => {
           if (seen.has(key)) return;
           seen.add(key);
           const name = String(local.name || 'Central de Coletas').replace(/[<>&"]/g, '');
+          // Mesmo formato dos demais pins: a pontinha (X) fica exatamente na coordenada (âncora 19,43)
           const icon = L.divIcon({
             className: 'collection-hub-marker',
-            iconSize: [140, 78],
-            iconAnchor: [70, 76],
+            iconSize: [200, 48],
+            iconAnchor: [19, 43],
             html: `
-              <div style="display:flex;flex-direction:column;align-items:center;width:140px;pointer-events:auto;">
-                <div style="max-width:140px;background:#0F766E;color:#FFFFFF;padding:2px 7px;border-radius:6px;border:1px solid #99F6E4;box-shadow:0 1px 3px rgba(0,0,0,0.3);text-align:center;line-height:1.15;">
+              <div style="position:relative;width:38px;height:48px;cursor:pointer;pointer-events:auto;">
+                <svg width="38" height="48" viewBox="0 0 38 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter:drop-shadow(0 2px 3px rgba(0,0,0,0.3));">
+                  <ellipse cx="19" cy="43" rx="7.5" ry="2.2" fill="rgba(0,0,0,0.28)" />
+                  <path d="M 14 38 L 24 48 M 14 48 L 24 38" stroke="#FFFFFF" stroke-width="3.8" stroke-linecap="round" />
+                  <path d="M 14 38 L 24 48 M 14 48 L 24 38" stroke="#0F766E" stroke-width="2.2" stroke-linecap="round" />
+                  <line x1="19" y1="26" x2="19" y2="43" stroke="#FFFFFF" stroke-width="3.4" stroke-linecap="round" />
+                  <line x1="19" y1="26" x2="19" y2="43" stroke="#0F766E" stroke-width="1.8" stroke-linecap="round" />
+                  <circle cx="19" cy="43" r="1.4" fill="#FFFFFF" />
+                  <rect x="5" y="3" width="28" height="23" rx="6" fill="#0F766E" stroke="#FFFFFF" stroke-width="2.4" />
+                  <g transform="translate(9 5.5) scale(0.83)" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"><path d="M3 21V9l9-5 9 5v12"/><path d="M7 21v-8h10v8"/><path d="M7 16h10"/></g>
+                </svg>
+                <div style="position:absolute;left:42px;top:4px;max-width:150px;background:#0F766E;color:#FFFFFF;padding:2px 7px;border-radius:6px;border:1px solid #99F6E4;box-shadow:0 1px 3px rgba(0,0,0,0.3);line-height:1.15;">
                   <div style="font-size:8.5px;font-weight:900;text-transform:uppercase;letter-spacing:0.03em;white-space:nowrap;opacity:0.9;">Central de Coletas</div>
                   <div style="font-size:10px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</div>
                 </div>
-                <div style="margin-top:3px;width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,#14B8A6,#0F766E);border:2px solid #FFFFFF;box-shadow:0 2px 6px rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;">
-                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V9l9-5 9 5v12"/><path d="M7 21v-8h10v8"/><path d="M7 16h10M7 18.5h10"/></svg>
-                </div>
-                <div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid #0F766E;margin-top:-1px;filter:drop-shadow(0 1px 1px rgba(0,0,0,0.3));"></div>
               </div>
             `
           });
@@ -3047,6 +3075,8 @@ export const FullscreenMap: React.FC = () => {
                       onClick={() => {
                         setDefaultNavApp(app);
                         setShowHubNavChooser(false);
+                        openExternalNavigation(app, hubToNavigate.lat, hubToNavigate.lng);
+                        setHubToNavigate(null);
                       }}
                       className={`w-full flex items-center gap-3 p-2.5 rounded-xl border text-left cursor-pointer transition-all ${
                         defaultNavApp === app ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-400' : 'bg-white border-slate-200 hover:bg-slate-50'
@@ -3068,6 +3098,7 @@ export const FullscreenMap: React.FC = () => {
                   onClick={() => {
                     openExternalNavigation(defaultNavApp || 'google_maps', hubToNavigate.lat, hubToNavigate.lng);
                     setHubToNavigate(null);
+                    setShowHubNavChooser(false);
                   }}
                   className="flex-1 h-full px-4 hover:bg-[#1557b0] font-black text-sm flex items-center justify-center gap-2 cursor-pointer"
                 >

@@ -3,6 +3,13 @@
  * Conforme contratos documentados em src/routes
  */
 
+/** Distância entre o motorista e o local no momento da baixa (registrada quando passa de 1 km). */
+export interface BaixaProximity {
+  distanceM: number;
+  lat?: number;
+  lng?: number;
+}
+
 export interface ApiResponse<T = any> {
   success: boolean;
   logged?: boolean;

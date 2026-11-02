@@ -2,7 +2,7 @@
  * Serviço de Gerenciamento de Pedidos (cliente HTTP do backend /pedidos)
  */
 
-import { BackendPedido, ApiResponse } from './apiTypes';
+import { BackendPedido, ApiResponse, BaixaProximity } from './apiTypes';
 import { uploadImage } from './imageUploadService';
 import { request, getStoredUserRole } from './httpClient';
 
@@ -98,14 +98,20 @@ class OrderService {
     pedidoId: string | number,
     etapa: 'coletado' | 'trocado' | 'entregue',
     userId?: string | number,
-    userName?: string
+    userName?: string,
+    proximity?: BaixaProximity
   ): Promise<ApiResponse<{ pedido_id: string | number; etapa: string }>> {
     return request('/pedidos/marcar_coleta_entrega', 'POST', {
       pedido_id: cleanOrderId(pedidoId) || pedidoId,
       etapa,
       user_id: userId,
-      user_nome: userName
+      user_nome: userName,
+      ...(proximity ? { distancia_m: proximity.distanceM, baixa_lat: proximity.lat, baixa_lng: proximity.lng } : {})
     });
+  }
+
+  public async reverterBaixa(pedidoId: string | number, operacao: string): Promise<ApiResponse> {
+    return request('/pedidos/reverter_baixa', 'POST', { pedido_id: cleanOrderId(pedidoId) || pedidoId, operacao });
   }
 
   /**

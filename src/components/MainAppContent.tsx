@@ -9,6 +9,7 @@ import { LocationButton } from './navigation/LocationButton';
 import { SideMenuDrawer } from './sidebar/SideMenuDrawer';
 import { UserProfilePage } from './profile/UserProfilePage';
 import { PlaceDetailCard } from './place/PlaceDetailCard';
+import { NavigationStatus } from './navigation/NavigationStatus';
 import { DriverDetailCard } from './driver/DriverDetailCard';
 import { LoginModal } from './auth/LoginModal';
 import { RegisterModal } from './auth/RegisterModal';
@@ -219,6 +220,8 @@ export const MainAppContent: React.FC = () => {
 
         {/* Diálogo de Detalhes da Entrega / Marcador */}
         <PlaceDetailCard />
+
+        <NavigationStatus />
 
         {/* Card de Detalhes do Motorista */}
         <DriverDetailCard />

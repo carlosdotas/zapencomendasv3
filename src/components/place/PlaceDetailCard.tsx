@@ -52,9 +52,15 @@ import {
 import { useMapStore } from '../../context/MapContext';
 import { OrderFinalDetailsModal } from '../order/OrderFinalDetailsModal';
 import { isStreetOrAddress, resolveCommercialClosingTime, resolveCommercialOpeningTime } from '../../utils/placeUtils';
-import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
+import { androidBridge } from '../../services/androidBridge';
+import type { BaixaProximity } from '../../services/apiTypes';
 
-import { GoogleMapsIcon, WazeIcon } from '../map/NavAppIcons';
+// Acima dessa distância até o local, a baixa exibe aviso e fica registrada no pedido
+const LIMITE_BAIXA_DISTANTE_M = 1000;
+import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
+import { setNavSession, usePresenceMap, useWaitSeconds, formatDuration } from '../../services/presenceService';
+
+import { GoogleMapsIcon, WazeIcon, openExternalNavigation } from '../map/NavAppIcons';
 import { Place, OperationType, PackageItemType, VehicleCollectionType } from '../../types/map';
 import { CustomerSelectorDrawer } from '../customer/CustomerSelectorDrawer';
 import { CustomerFormFullScreen } from '../customer/CustomerFormFullScreen';
@@ -203,6 +209,24 @@ const formatDistance = (km: number): string => {
     return `${meters} m`;
   }
   return `${km.toFixed(1).replace('.', ',')} km`;
+};
+
+const ArrivalInfo: React.FC<{ placeId: string }> = ({ placeId }) => {
+  const entry = usePresenceMap()[placeId];
+  const waitS = useWaitSeconds(entry);
+  if (!entry || !entry.chegadaEm) return null;
+  const arrivedAt = new Date(entry.chegadaEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const counting = entry.since !== null;
+  return (
+    <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px] font-black">
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800">
+        Chegou às {arrivedAt}
+      </span>
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border ${counting ? 'bg-amber-50 border-amber-200 text-amber-800' : 'bg-slate-100 border-slate-200 text-slate-600'}`}>
+        Espera: {formatDuration(waitS)}{counting ? '' : ' (pausado)'}
+      </span>
+    </div>
+  );
 };
 
 export const PlaceDetailCard: React.FC = () => {
@@ -562,6 +586,7 @@ export const PlaceDetailCard: React.FC = () => {
 
   // Estados do Diálogo de Coleta / Entrega / Troca
   const [showOperationModal, setShowOperationModal] = useState(false);
+  const [farWarning, setFarWarning] = useState<{ proximity: BaixaProximity; proceed: () => void } | null>(null);
   const [operationStatus, setOperationStatus] = useState<'success' | 'failed'>('success');
   const [receiverName, setReceiverName] = useState('');
   const [selectedPackage, setSelectedPackage] = useState<PackageItemType>('caixa');
@@ -1083,14 +1108,29 @@ export const PlaceDetailCard: React.FC = () => {
     e.target.value = '';
   };
 
+  // Distância entre o motorista (GPS ao vivo) e o local; null se a posição real é desconhecida
+  const getBaixaProximity = (): BaixaProximity | null => {
+    const pos = androidBridge.getNativeCoordinates() || userLocation;
+    if (!pos || !selectedPlace) return null;
+    const distanceM = calculateDistanceKm(pos, selectedPlace.coordinates) * 1000;
+    if (!Number.isFinite(distanceM) || distanceM <= LIMITE_BAIXA_DISTANTE_M) return null;
+    return { distanceM: Math.round(distanceM), lat: pos.lat, lng: pos.lng };
+  };
+
   // Finalizar Registro da Operação direto da Câmera
-  const handleFinalizeRegistration = () => {
+  const handleFinalizeRegistration = (confirmedFar?: BaixaProximity) => {
     setPhotoErrorMsg('');
 
     // Validação de foto obrigatória na Coleta em caso de sucesso
     const isColetaOp = selectedPlace?.orderStage === 'coleta' || selectedPlace?.operationType === 'coleta';
     if (isColetaOp && operationStatus === 'success' && customPhotos.length === 0) {
       setPhotoErrorMsg('Foto obrigatória: aponte a câmera e tire a foto da mercadoria para finalizar a coleta.');
+      return;
+    }
+
+    const far = confirmedFar || getBaixaProximity();
+    if (far && !confirmedFar) {
+      setFarWarning({ proximity: far, proceed: () => handleFinalizeRegistration(far) });
       return;
     }
 
@@ -1106,10 +1146,10 @@ export const PlaceDetailCard: React.FC = () => {
     });
 
     if (operationStatus === 'success' && selectedPlace) {
-      completePlaceWaypoint(selectedPlace.id, receiverName, notes);
+      completePlaceWaypoint(selectedPlace.id, receiverName, notes, confirmedFar);
     } else if (operationStatus === 'failed' && selectedPlace) {
       const failureNote = `Tentativa sem sucesso: ${failReason}${notes ? ` - ${notes}` : ''}`;
-      completePlaceWaypoint(selectedPlace.id, `Insucesso: ${failReason}`, failureNote);
+      completePlaceWaypoint(selectedPlace.id, `Insucesso: ${failReason}`, failureNote, confirmedFar);
     }
 
     closeFullScreenCamera();
@@ -1140,8 +1180,13 @@ export const PlaceDetailCard: React.FC = () => {
   };
 
   // Finalizar Registro da Operação
-  const handleSaveOperation = () => {
+  const handleSaveOperation = (confirmedFar?: BaixaProximity) => {
     setPhotoErrorMsg('');
+    const far = confirmedFar || getBaixaProximity();
+    if (far && !confirmedFar) {
+      setFarWarning({ proximity: far, proceed: () => handleSaveOperation(far) });
+      return;
+    }
     const now = new Date();
     const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     
@@ -1154,10 +1199,10 @@ export const PlaceDetailCard: React.FC = () => {
     });
 
     if (operationStatus === 'success' && selectedPlace) {
-      completePlaceWaypoint(selectedPlace.id, receiverName, notes);
+      completePlaceWaypoint(selectedPlace.id, receiverName, notes, confirmedFar);
     } else if (operationStatus === 'failed' && selectedPlace) {
       const failureNote = `Tentativa sem sucesso: ${failReason}${notes ? ` - ${notes}` : ''}`;
-      completePlaceWaypoint(selectedPlace.id, `Insucesso: ${failReason}`, failureNote);
+      completePlaceWaypoint(selectedPlace.id, `Insucesso: ${failReason}`, failureNote, confirmedFar);
     }
 
     setShowOperationModal(false);
@@ -1602,31 +1647,22 @@ ${horarioText}
     // Avisa a central (admin/atendente/terminal) que o motorista está a caminho
     if (isDriverRole) {
       void realtimeAssignmentService.markEnRoute(selectedPlace.id, selectedPlace.operationType, true).catch(() => {});
+      setNavSession({
+        placeId: selectedPlace.id,
+        operationType: selectedPlace.operationType || 'coleta',
+        name: selectedPlace.name || 'Local',
+        lat,
+        lng,
+        startedAt: Date.now()
+      });
     }
     // 2. Fecha o card de detalhes suavemente mantendo a rota visível na tela
     triggerClose();
     setShowNavChooser(false);
 
     // 3. Abre direto na navegação
-    if (targetApp === 'google_maps') {
-      // Abre direto na navegação curva a curva sem precisar clicar em Iniciar (dir_action=navigate)
-      const isAndroid = /Android/i.test(navigator.userAgent);
-      if (isAndroid) {
-        // No Android, o intent google.navigation abre o app nativo diretamente guiando na rota
-        window.location.href = `google.navigation:q=${lat},${lng}&mode=d`;
-        // Fallback web caso não abra o app nativo
-        setTimeout(() => {
-          window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving&dir_action=navigate`, '_blank', 'noopener,noreferrer');
-        }, 800);
-      } else {
-        window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving&dir_action=navigate`, '_blank', 'noopener,noreferrer');
-      }
-      return;
-    }
-
-    if (targetApp === 'waze') {
-      // No Waze, navigate=yes entra direto na rota ativa
-      window.open(`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`, '_blank', 'noopener,noreferrer');
+    if (targetApp === 'google_maps' || targetApp === 'waze') {
+      openExternalNavigation(targetApp, lat, lng);
       return;
     }
   };
@@ -2732,6 +2768,8 @@ ${horarioText}
                 <p className="text-xs text-slate-500 font-medium truncate mt-0.5" title={selectedPlace.address}>
                   {selectedPlace.address}
                 </p>
+
+                {isDriverRole && <ArrivalInfo placeId={selectedPlace.id} />}
 
               {isStreetOrAddress(selectedPlace) ? (
                 <div className="mt-1.5 flex items-center gap-2 text-xs sm:text-sm font-medium flex-wrap">
@@ -4584,7 +4622,7 @@ ${horarioText}
               {/* Botão Finalizar Registro */}
               <button
                 type="button"
-                onClick={handleFinalizeRegistration}
+                onClick={() => handleFinalizeRegistration()}
                 className={`h-[52px] px-4 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-xl backdrop-blur-md transition-all active:scale-95 cursor-pointer shrink-0 ${
                   operationStatus === 'failed'
                     ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/35 border border-rose-400'
@@ -5036,7 +5074,7 @@ ${horarioText}
 
               <button
                 type="button"
-                onClick={handleSaveOperation}
+                onClick={() => handleSaveOperation()}
                 className={`px-5 py-2.5 rounded-xl text-white font-black text-xs sm:text-sm flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all active:scale-95 ${
                   operationStatus === 'success'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
@@ -5048,6 +5086,53 @@ ${horarioText}
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* AVISO: baixa feita longe do local (mais de 1 km) */}
+      {farWarning && (
+        <div
+          className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => setFarWarning(null)}
+        >
+          <div
+            className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl border border-amber-200 space-y-4 text-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 border border-amber-200">
+                <AlertTriangle className="w-5 h-5 stroke-[2.4]" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900">Você está longe do local</h3>
+                <p className="text-xs text-slate-600 mt-1">
+                  Você está a <strong>{formatDistance(farWarning.proximity.distanceM / 1000)}</strong> do local desta
+                  {operationType === 'entrega' ? ' entrega' : operationType === 'troca' ? ' troca' : ' coleta'}.
+                  Se finalizar agora, essa distância ficará registrada no pedido.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setFarWarning(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const proceed = farWarning.proceed;
+                  setFarWarning(null);
+                  proceed();
+                }}
+                className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs shadow-md active:scale-95 transition-all"
+              >
+                Finalizar mesmo assim
+              </button>
+            </div>
           </div>
         </div>
       )}

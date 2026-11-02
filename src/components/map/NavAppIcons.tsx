@@ -25,17 +25,41 @@ export const WazeIcon: React.FC<{ className?: string }> = ({ className = "w-5 h-
   </svg>
 );
 
+// Abre sempre fora da página do app (nova aba/janela ou app nativo), nunca na mesma webview
+const openOutside = (url: string) => {
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+};
+
+// Dispara o app nativo por um iframe oculto: se não existir, a página do app não é substituída
+const launchNativeScheme = (url: string) => {
+  const frame = document.createElement('iframe');
+  frame.style.display = 'none';
+  frame.src = url;
+  document.body.appendChild(frame);
+  setTimeout(() => frame.remove(), 2000);
+};
+
 // Abre a navegação curva a curva no app escolhido
 export const openExternalNavigation = (app: 'google_maps' | 'waze', lat: number, lng: number) => {
   if (app === 'waze') {
-    window.open(`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`, '_blank', 'noopener,noreferrer');
+    openOutside(`https://waze.com/ul?ll=${lat},${lng}&navigate=yes`);
     return;
   }
   const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving&dir_action=navigate`;
   if (/Android/i.test(navigator.userAgent)) {
-    window.location.href = `google.navigation:q=${lat},${lng}&mode=d`;
-    setTimeout(() => window.open(webUrl, '_blank', 'noopener,noreferrer'), 800);
+    launchNativeScheme(`google.navigation:q=${lat},${lng}&mode=d`);
+    // Só abre a versão web se o app nativo não assumiu (a página continua visível)
+    setTimeout(() => {
+      if (!document.hidden) openOutside(webUrl);
+    }, 1200);
   } else {
-    window.open(webUrl, '_blank', 'noopener,noreferrer');
+    openOutside(webUrl);
   }
 };

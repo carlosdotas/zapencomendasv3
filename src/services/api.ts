@@ -5,6 +5,7 @@
 
 import { 
   ApiResponse, 
+  BaixaProximity,
   BackendLoginData, 
   BackendLocal, 
   BackendPedido, 
@@ -244,10 +245,16 @@ export const api = {
     pedidoId: string | number, 
     etapa: 'coletado' | 'trocado' | 'entregue', 
     userId?: string | number, 
-    userName?: string
+    userName?: string,
+    proximity?: BaixaProximity
   ): Promise<ApiResponse<{ pedido_id: string | number; etapa: string }>> {
     const cleanId = String(pedidoId).replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim();
-    return orderService.marcarColetaEntrega(cleanId || pedidoId, etapa, userId, userName);
+    return orderService.marcarColetaEntrega(cleanId || pedidoId, etapa, userId, userName, proximity);
+  },
+
+  async reverterBaixa(pedidoId: string | number, operacao: string): Promise<ApiResponse> {
+    const cleanId = String(pedidoId).replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim() || pedidoId;
+    return orderService.reverterBaixa(cleanId, operacao);
   },
 
   async setEtapa(pedidoId: string | number, userId?: string | number): Promise<ApiResponse> {

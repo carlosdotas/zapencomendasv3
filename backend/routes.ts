@@ -2,6 +2,8 @@ import type { Express, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { prisma } from './db';
+import { resolveCaller, canCallerSeeOrder, isPrivileged } from './access';
+import { notifyNewOrder, notifyOrderProgress, etapaEvent } from './notifications';
 import {
   parseExtra,
   userToBackend,
@@ -127,10 +129,33 @@ const NEXT_ETAPA: Record<string, (tipo: string) => string> = {
   entregando: () => 'entregue'
 };
 
+const LIMITE_DISTANCIA_BAIXA_M = 1000;
+
+const fmtDistance = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1).replace('.', ',')} km` : `${Math.round(m)} m`);
+
 /** Atualiza a etapa do pedido preenchendo os carimbos de tempo correspondentes. */
-async function applyEtapa(existing: any, etapa: string, userId?: unknown, userName?: string) {
+async function applyEtapa(
+  existing: any,
+  etapa: string,
+  userId?: unknown,
+  userName?: string,
+  proximity?: { distance?: unknown; lat?: unknown; lng?: unknown }
+) {
   const nowIso = new Date().toISOString();
   const patch: any = { etapa };
+  const op = etapa === 'coletado' ? 'coleta' : etapa === 'trocado' || etapa === 'troca' ? 'troca' : etapa === 'entregue' ? 'entrega' : '';
+  // Só registra quando a baixa foi feita a mais de 1 km do local
+  const distance = Number(proximity?.distance);
+  const farAway = op && Number.isFinite(distance) && distance > LIMITE_DISTANCIA_BAIXA_M;
+  if (farAway) {
+    patch[`${op}_distancia_m`] = Math.round(distance);
+    const lat = Number(proximity?.lat);
+    const lng = Number(proximity?.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      patch[`${op}_baixa_lat`] = lat;
+      patch[`${op}_baixa_lng`] = lng;
+    }
+  }
   if (etapa === 'coletado') {
     patch.coleta_saida_at = nowIso;
     if (userId) patch.coleta_user_id = userId;
@@ -155,7 +180,21 @@ async function applyEtapa(existing: any, etapa: string, userId?: unknown, userNa
   // Sem pedido existente não cria um novo: isso gerava pedidos "fantasmas" já finalizados.
   if (!existing) return null;
   const updated = await prisma.orders.update({ where: { id: existing.id }, data });
-  await logStage(existing.id, existing.stage, updated.stage, userId);
+  await logStage(
+    existing.id,
+    existing.stage,
+    updated.stage,
+    userId,
+    farAway ? `Baixa feita a ${fmtDistance(distance)} do local` : undefined
+  );
+  if (existing.stage !== updated.stage) {
+    let actor = userName;
+    const actorId = toInt(userId);
+    if (!actor && actorId) actor = (await prisma.users.findUnique({ where: { id: actorId }, select: { name: true } }))?.name;
+    const event = etapaEvent(etapa, existing.id, actor);
+    if (event && farAway) event.message += ` Baixa feita a ${fmtDistance(distance)} do local.`;
+    if (event) void notifyOrderProgress({ id: existing.id, client_id: existing.client_id }, event, actorId);
+  }
   return updated;
 }
 
@@ -407,7 +446,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
         name: String(body.name || '').trim() || 'Usuário',
         phone,
         password: typeof body.password === 'string' && body.password ? hashPassword(body.password) : null,
-        access_level: String(body.access_level || 'cliente').toLowerCase(),
+        access_level: ['motorista', 'atendente'].includes(String(body.access_level || '').toLowerCase())
+          ? String(body.access_level).toLowerCase()
+          : 'cliente',
         city: body.cidade || body.city || null,
         full_name: body.name_completo || body.full_name || String(body.name || '').trim() || 'Usuário',
         extra: JSON.stringify(extra)
@@ -419,7 +460,7 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
   // ------------------------------------------------------------------
   // PEDIDOS
   // ------------------------------------------------------------------
-  route(app, '/pedidos/list_pedidos', async (_req, res, body) => {
+  route(app, '/pedidos/list_pedidos', async (req, res, body) => {
     const where = await searchPedidosWhere(body);
     const etapas: string[] | null = body.etapa
       ? (Array.isArray(body.etapa) ? body.etapa : [body.etapa]).map((e: string) => String(e).toLowerCase())
@@ -427,12 +468,26 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     const limit = Math.min(Math.max(1, parseInt(body.limit, 10) || 2000), 2000);
     const page = Math.max(1, parseInt(body.page, 10) || 1);
 
+    const caller = await resolveCaller(req, body);
     const rows = await prisma.orders.findMany({ where, orderBy: { id: 'desc' } });
     let data = await pedidosToBackend(rows);
+    // Pedido com motorista definido só aparece para esse motorista
+    data = data.filter(o => canCallerSeeOrder(o, caller));
     if (etapas) data = data.filter(o => etapas.includes(String(o.etapa).toLowerCase()));
     const total = data.length;
     res.json({ success: true, data: data.slice((page - 1) * limit, page * limit), total, page, limit, hasMore: page * limit < total });
   });
+
+  // Bloqueia (403) o acesso de um motorista a pedido que pertence a outro motorista
+  const orderForbidden = async (req: Request, res: Response, body: any, row: any): Promise<boolean> => {
+    if (!row) return false;
+    const caller = await resolveCaller(req, body);
+    if (caller && caller.role !== 'motorista') return false;
+    const [view] = await pedidosToBackend([row]);
+    if (canCallerSeeOrder(view, caller)) return false;
+    res.status(403).json({ success: false, message: 'Este pedido pertence a outro motorista.' });
+    return true;
+  };
 
   route(app, '/pedidos/get', async (req, res, body) => {
     const row = await findPedido(body.id ?? body.pedido_id ?? req.query.id);
@@ -440,12 +495,14 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       res.status(404).json({ success: false, message: 'Pedido não encontrado' });
       return;
     }
+    if (await orderForbidden(req, res, body, row)) return;
     res.json({ success: true, data: (await pedidosToBackend([row]))[0] });
   });
 
   route(app, ['/pedidos/save', '/pedidos/save_pedido'], async (req, res, body) => {
     const callerRole = (req.headers['x-user-role'] as string) || body.caller_role || body.userRole || body.user_role;
-    if (callerRole === 'motorista') {
+    const sessionCaller = await resolveCaller(req, body);
+    if (callerRole === 'motorista' || sessionCaller?.role === 'motorista') {
       res.status(403).json({ success: false, message: 'Motoristas não possuem permissão para adicionar ou editar pedidos.' });
       return;
     }
@@ -476,14 +533,20 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
         }
       });
       await logStage(saved.id, 'novo', saved.stage, body.users_id, 'Pedido criado');
+      void notifyNewOrder(saved, sessionCaller?.id ?? toInt(body.users_id));
     }
     res.json({ success: true, data: { id: saved.id }, id: saved.id, message: 'Pedido salvo com sucesso!' });
   });
 
-  route(app, '/pedidos/marcar_coleta_entrega', async (_req, res, body) => {
+  route(app, '/pedidos/marcar_coleta_entrega', async (req, res, body) => {
     const existing = await findPedido(body.pedido_id ?? body.id);
+    if (await orderForbidden(req, res, body, existing)) return;
     const etapa = String(body.etapa || '');
-    const updated = await applyEtapa(existing, etapa, body.user_id, body.usuario_nome || body.user_nome);
+    const updated = await applyEtapa(existing, etapa, body.user_id, body.usuario_nome || body.user_nome, {
+      distance: body.distancia_m,
+      lat: body.baixa_lat,
+      lng: body.baixa_lng
+    });
     if (!updated) {
       res.status(404).json({ success: false, message: 'Pedido não encontrado' });
       return;
@@ -491,8 +554,86 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true, data: { pedido_id: updated.id, etapa } });
   });
 
-  route(app, '/pedidos/set_etapa', async (_req, res, body) => {
+  // Hora de chegada e tempo de espera no local: só conta enquanto o motorista está perto
+  route(app, '/pedidos/presenca', async (req, res, body) => {
     const existing = await findPedido(body.pedido_id ?? body.id);
+    if (!existing) {
+      res.status(404).json({ success: false, message: 'Pedido não encontrado' });
+      return;
+    }
+    if (await orderForbidden(req, res, body, existing)) return;
+    const op = ['coleta', 'troca', 'entrega'].includes(String(body.operacao)) ? String(body.operacao) : 'coleta';
+    const view: any = pedidoToBackend(existing);
+    const now = new Date();
+    let chegada: string | null = view[`${op}_chegada_em`] || null;
+    let espera = Number(view[`${op}_espera_s`]) || 0;
+    const desde = view[`${op}_espera_desde`] ? Date.parse(view[`${op}_espera_desde`]) : NaN;
+    const gapS = Number.isFinite(desde) ? Math.max(0, (now.getTime() - desde) / 1000) : 0;
+    let counting = false;
+    const patch: any = {};
+    if (body.perto === true || body.perto === 'true') {
+      if (!chegada) chegada = now.toISOString();
+      espera += gapS;
+      counting = true;
+      patch[`${op}_espera_desde`] = now.toISOString();
+    } else if (Number.isFinite(desde)) {
+      espera += Math.min(gapS, 90);
+      patch[`${op}_espera_desde`] = '';
+    }
+    if (chegada) patch[`${op}_chegada_em`] = chegada;
+    patch[`${op}_espera_s`] = Math.round(espera);
+    if (Object.keys(patch).length) {
+      await prisma.orders.update({ where: { id: existing.id }, data: pedidoFromBackend(patch, existing) });
+    }
+    res.json({ success: true, data: { chegada_em: chegada, espera_s: Math.round(espera), counting } });
+  });
+
+  // Admin/atendente desfaz a baixa: o pedido volta à etapa anterior e sai do histórico do motorista
+  route(app, '/pedidos/reverter_baixa', async (req, res, body) => {
+    const caller = await resolveCaller(req, body);
+    if (!caller || !isPrivileged(caller)) {
+      res.status(403).json({ success: false, message: 'Somente admin ou atendente pode voltar uma baixa.' });
+      return;
+    }
+    const existing = await findPedido(body.pedido_id ?? body.id);
+    if (!existing) {
+      res.status(404).json({ success: false, message: 'Pedido não encontrado' });
+      return;
+    }
+    const op = ['coleta', 'troca', 'entrega'].includes(String(body.operacao)) ? String(body.operacao) : 'coleta';
+    const target = op === 'coleta' ? 'coletando' : op === 'troca' ? 'trocando' : 'entregando';
+    const allowedFrom: Record<string, string[]> = {
+      coleta: ['coletado', 'trocando', 'entregando'],
+      troca: ['trocado', 'retornando'],
+      entrega: ['entregue', 'finalizado']
+    };
+    const current = String(pedidoToBackend(existing).etapa || '').toLowerCase();
+    if (!allowedFrom[op].includes(current)) {
+      res.status(409).json({ success: false, message: `A etapa atual (${current}) não permite voltar esta baixa.` });
+      return;
+    }
+    const data: any = pedidoFromBackend({ etapa: target }, existing);
+    if (op === 'coleta') {
+      data.collected_at = null;
+      data.collector_id = null;
+    }
+    if (op === 'entrega') {
+      data.delivered_at = null;
+      data.finalized_at = null;
+      data.payment_status = 'nao_pago';
+    }
+    const updated = await prisma.orders.update({ where: { id: existing.id }, data });
+    await logStage(existing.id, existing.stage, updated.stage, caller.id, `Baixa de ${op} desfeita por ${caller.role}`);
+    await prisma.driver_earnings.updateMany({
+      where: { order_key: `${existing.id}_${op}`, status: 'coletado' },
+      data: { status: 'aceito', collected_at: null }
+    });
+    res.json({ success: true, data: { pedido_id: existing.id, etapa: target } });
+  });
+
+  route(app, '/pedidos/set_etapa', async (req, res, body) => {
+    const existing = await findPedido(body.pedido_id ?? body.id);
+    if (await orderForbidden(req, res, body, existing)) return;
     if (existing) {
       const view = pedidoToBackend(existing);
       const next = (NEXT_ETAPA[view.etapa] || (() => 'finalizado'))(view.tipo_encomenda);
@@ -501,8 +642,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true });
   });
 
-  route(app, '/pedidos/finalizar_pedido', async (_req, res, body) => {
+  route(app, '/pedidos/finalizar_pedido', async (req, res, body) => {
     const existing = await findPedido(body.pedido_id ?? body.id);
+    if (await orderForbidden(req, res, body, existing)) return;
     if (existing) await applyEtapa(existing, 'finalizado', body.user_id);
     res.json({ success: true });
   });
@@ -522,8 +664,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true, data: { path: photoPath } });
   });
 
-  route(app, '/pedidos/append_foto', async (_req, res, body) => {
+  route(app, '/pedidos/append_foto', async (req, res, body) => {
     const existing = await findPedido(body.pedido_id ?? body.id);
+    if (await orderForbidden(req, res, body, existing)) return;
     const foto = body.foto;
     const campo = String(body.campo || 'coleta_foto');
     if (existing && foto) {
@@ -541,8 +684,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true, data: { path: foto } });
   });
 
-  route(app, '/pedidos/registrar_presenca', async (_req, res, body) => {
+  route(app, '/pedidos/registrar_presenca', async (req, res, body) => {
     const existing = await findPedido(body.pedido_id ?? body.id);
+    if (await orderForbidden(req, res, body, existing)) return;
     if (existing && body.campo) {
       const ts = body.timestamp || new Date().toISOString();
       await prisma.orders.update({ where: { id: existing.id }, data: pedidoFromBackend({ [body.campo]: ts }, existing) });
@@ -550,8 +694,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true });
   });
 
-  route(app, '/pedidos/ensure_public_token', async (_req, res, body) => {
+  route(app, '/pedidos/ensure_public_token', async (req, res, body) => {
     const existing = await findPedido(body.pedido_id ?? body.id);
+    if (await orderForbidden(req, res, body, existing)) return;
     if (!existing) {
       res.status(404).json({ success: false, message: 'Pedido não encontrado' });
       return;
@@ -564,6 +709,11 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
   });
 
   route(app, '/pedidos/delete', async (req, res, body) => {
+    const caller = await resolveCaller(req, body);
+    if (!caller || caller.role === 'motorista') {
+      res.status(403).json({ success: false, message: 'Sem permissão para excluir pedidos.' });
+      return;
+    }
     const id = toInt(cleanPedidoId(body.pedido_id ?? body.id ?? req.query.id));
     if (!id) {
       res.status(400).json({ success: false, message: 'ID do pedido obrigatório' });
@@ -578,8 +728,19 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
   // ------------------------------------------------------------------
   const earningDay = (v: any) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '').slice(0, 10)) ? String(v).slice(0, 10) : '');
 
-  route(app, '/driver-earnings/list', async (_req, res, body) => {
-    const driverKey = String(body.driver_id || '').trim();
+  // Motorista só acessa os próprios ganhos; sem sessão não há acesso
+  const earningsKey = async (req: Request, res: Response, body: any): Promise<string | null> => {
+    const caller = await resolveCaller(req, body);
+    if (!caller) {
+      res.status(401).json({ success: false, message: 'Faça login para continuar.' });
+      return null;
+    }
+    return caller.role === 'motorista' ? String(caller.id) : String(body.driver_id || '').trim();
+  };
+
+  route(app, '/driver-earnings/list', async (req, res, body) => {
+    const driverKey = await earningsKey(req, res, body);
+    if (driverKey === null) return;
     const day = earningDay(body.day);
     if (!driverKey || !day) {
       res.status(400).json({ success: false, message: 'driver_id e day são obrigatórios' });
@@ -589,8 +750,67 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true, data: rows });
   });
 
-  route(app, '/driver-earnings/save', async (_req, res, body) => {
-    const driverKey = String(body.driver_id || '').trim();
+  // Histórico: resumo por dia (aceitos, coletados, total e se já foi pago)
+  route(app, '/driver-earnings/history', async (req, res, body) => {
+    const driverKey = await earningsKey(req, res, body);
+    if (driverKey === null) return;
+    if (!driverKey) {
+      res.status(400).json({ success: false, message: 'driver_id é obrigatório' });
+      return;
+    }
+    const exclude = earningDay(body.exclude_day);
+    const from = earningDay(body.from);
+    const to = earningDay(body.to);
+    const dayFilter: Record<string, string> = {};
+    if (exclude) dayFilter.not = exclude;
+    if (from) dayFilter.gte = from;
+    if (to) dayFilter.lte = to;
+    const rows = await prisma.driver_earnings.findMany({
+      where: {
+        driver_key: driverKey,
+        ...(body.collected_only ? { status: 'coletado' } : {}),
+        ...(Object.keys(dayFilter).length ? { day: dayFilter } : {})
+      },
+      orderBy: [{ day: 'desc' }, { id: 'asc' }],
+      take: 1000
+    });
+    const days = new Map<string, any>();
+    rows.forEach(r => {
+      const d = days.get(r.day) || { day: r.day, accepted: 0, collected: 0, total: 0, paid_count: 0, paid_at: null as Date | null, items: [] as any[] };
+      d.accepted += 1;
+      if (r.status === 'coletado') d.collected += 1;
+      d.total += r.price || 0;
+      if (r.paid) {
+        d.paid_count += 1;
+        if (r.paid_at && (!d.paid_at || r.paid_at > d.paid_at)) d.paid_at = r.paid_at;
+      }
+      d.items.push(r);
+      days.set(r.day, d);
+    });
+    const data = Array.from(days.values()).map(d => ({ ...d, paid: d.paid_count === d.items.length }));
+    res.json({ success: true, data });
+  });
+
+  // Marca (ou desmarca) o dia inteiro como pago
+  route(app, '/driver-earnings/pay', async (req, res, body) => {
+    const driverKey = await earningsKey(req, res, body);
+    if (driverKey === null) return;
+    const day = earningDay(body.day);
+    if (!driverKey || !day) {
+      res.status(400).json({ success: false, message: 'driver_id e day são obrigatórios' });
+      return;
+    }
+    const paid = body.paid !== false;
+    const r = await prisma.driver_earnings.updateMany({
+      where: { driver_key: driverKey, day },
+      data: { paid, paid_at: paid ? new Date() : null }
+    });
+    res.json({ success: true, data: { updated: r.count, paid } });
+  });
+
+  route(app, '/driver-earnings/save', async (req, res, body) => {
+    const driverKey = await earningsKey(req, res, body);
+    if (driverKey === null) return;
     const day = earningDay(body.day);
     const orderKey = String(body.order_key || '').trim();
     if (!driverKey || !day || !orderKey) {
@@ -602,6 +822,8 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     const common = {
       operation: body.operation ? String(body.operation).slice(0, 20) : null,
       label: body.label ? String(body.label).slice(0, 255) : null,
+      place_name: body.place_name ? String(body.place_name).slice(0, 255) : null,
+      customer_name: body.customer_name ? String(body.customer_name).slice(0, 255) : null,
       address: body.address ? String(body.address).slice(0, 255) : null,
       status,
       price

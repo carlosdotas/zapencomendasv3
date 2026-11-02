@@ -10,6 +10,7 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { registerApiRoutes, parseRawJsonBody } from './routes';
 import { registerRealtime } from './realtime';
+import { registerNotifications } from './notifications';
 import { registerGoogleRoutes } from './google';
 import { prisma } from './db';
 
@@ -223,6 +224,7 @@ registerApiRoutes(app, { saveBase64Image, uploadToPhpServer, imageServerConfigur
 
 async function startServer() {
   await registerRealtime(app, wss);
+  registerNotifications(app);
 
   app.all('/api/*', (req: Request, res: Response) => {
     res.status(404).json({ success: false, message: `Endpoint não encontrado: ${req.path}` });

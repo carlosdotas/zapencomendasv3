@@ -16,9 +16,12 @@ import {
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
 import { useBackButton } from '../../hooks/useBackButton';
+import { notificationService, type ServerNotification } from '../../services/notificationService';
+import { startPolling } from '../../services/httpClient';
 
 export interface NotificationItem {
   id: string;
+  serverId?: number;
   title: string;
   description: string;
   time: string;
@@ -28,49 +31,42 @@ export interface NotificationItem {
   coordinates?: { lat: number; lng: number };
 }
 
-const INITIAL_NOTIFICATIONS: NotificationItem[] = [
-  {
-    id: 'notif-1',
-    title: 'Nova entrega disponível',
-    description: 'Solicitação expressa para coleta a 1,2 km de você na região da Bela Vista.',
-    time: 'Há 5 min',
-    type: 'delivery',
-    read: false,
-    actionText: 'Ver no mapa',
-    coordinates: { lat: -23.561684, lng: -46.655981 }
-  },
-  {
-    id: 'notif-2',
-    title: 'Trânsito fluido na rota',
-    description: 'Av. Paulista e imediações sem congestionamentos para as próximas entregas.',
-    time: 'Há 25 min',
-    type: 'traffic',
-    read: false
-  },
-  {
-    id: 'notif-3',
-    title: 'Local favorito adicionado',
-    description: 'Parque Ibirapuera foi salvo na sua lista rápida de pontos de interesse.',
-    time: 'Há 2 horas',
-    type: 'saved',
-    read: true,
-    coordinates: { lat: -23.587416, lng: -46.657634 }
-  },
-  {
-    id: 'notif-4',
-    title: 'Dica de GPS em tempo real',
-    description: 'Ative o botão "Seguindo" no canto inferior para navegação contínua no mapa.',
-    time: 'Hoje',
-    type: 'tip',
-    read: true
-  }
-];
+const relativeTime = (iso: string) => {
+  const diff = Math.max(0, Date.now() - new Date(iso).getTime());
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return 'Agora';
+  if (min < 60) return `Há ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `Há ${h} h`;
+  return new Date(iso).toLocaleDateString('pt-BR');
+};
+
+const toItem = (n: ServerNotification): NotificationItem => ({
+  id: `srv-${n.id}`,
+  serverId: n.id,
+  title: n.title,
+  description: n.message,
+  time: relativeTime(n.createdAt),
+  type: 'delivery',
+  read: n.read
+});
 
 export const NotificationMenu: React.FC = () => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
-  const [notifications, setNotifications] = useState<NotificationItem[]>(INITIAL_NOTIFICATIONS);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Busca a cada 8 s: novas notificações disparam o alerta nativo e entram na lista
+  useEffect(() => {
+    notificationService.requestWebPermission();
+    return startPolling(async () => {
+      const fresh = await notificationService.pull();
+      fresh.forEach(n => notificationService.alert(n));
+      const all = await notificationService.list();
+      setNotifications(all.map(toItem));
+    }, 8000);
+  }, []);
 
   useBackButton('notification-menu-dropdown', isOpen, () => {
     setIsOpen(false);
@@ -102,19 +98,25 @@ export const NotificationMenu: React.FC = () => {
 
   const markAllAsRead = () => {
     setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    void notificationService.markRead();
   };
 
   const markAsRead = (id: string) => {
+    const serverId = notifications.find(n => n.id === id)?.serverId;
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    if (serverId) void notificationService.markRead([serverId]);
   };
 
   const clearNotification = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const serverId = notifications.find(n => n.id === id)?.serverId;
     setNotifications(prev => prev.filter(n => n.id !== id));
+    if (serverId) void notificationService.clear([serverId]);
   };
 
   const clearAll = () => {
     setNotifications([]);
+    void notificationService.clear();
   };
 
   const handleNotificationClick = (item: NotificationItem) => {
