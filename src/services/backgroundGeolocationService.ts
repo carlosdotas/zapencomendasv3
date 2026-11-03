@@ -43,6 +43,7 @@ class BackgroundGeolocationService {
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private audioKeepAlive: HTMLAudioElement | null = null;
   private currentDriver: Driver | null = null;
+  private nativeTrackingActive: boolean = false;
   private lastCoords: LocationCoordinates | null = null;
   private lastTransmittedAt: number | null = null;
   private transmissionsCount: number = 0;
@@ -161,8 +162,8 @@ class BackgroundGeolocationService {
     this.notifyListeners();
   }
 
-  private configureNativeTracking(driver: Driver) {
-    if (typeof window === 'undefined') return;
+  private configureNativeTracking(driver: Driver): boolean {
+    if (typeof window === 'undefined') return false;
 
     const configuredBaseUrl = getApiBaseUrl();
     const sameOrigin = /^https?:$/i.test(window.location.protocol) ? window.location.origin : '';
@@ -170,10 +171,10 @@ class BackgroundGeolocationService {
 
     if (!baseUrl) {
       this.lastError = 'Configure a URL do servidor para usar rastreamento nativo em segundo plano.';
-      return;
+      return false;
     }
 
-    androidBridge.configureBackgroundTracking(`${baseUrl}/api/tracking/update-driver`, driver);
+    return androidBridge.configureBackgroundTracking(`${baseUrl}/api/tracking/update-driver`, driver);
   }
 
   /**
@@ -209,8 +210,10 @@ class BackgroundGeolocationService {
         lastUpdatedStr: timeStr
       };
 
-      // 1. Envia via DriverTrackingClient (WebSocket + REST Fallback)
-      driverTrackingClient.sendLocation(updatedDriver).catch(() => {});
+      // No APK, o serviço Java é a única origem de telemetria para sobreviver ao WebView fechado.
+      if (!this.nativeTrackingActive) {
+        driverTrackingClient.sendLocation(updatedDriver).catch(() => {});
+      }
 
       // 2. Notifica o Service Worker do PWA para manter cache fresco em background
       if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
@@ -232,8 +235,6 @@ class BackgroundGeolocationService {
    * @param driver Dados do motorista autenticado
    */
   public startBackgroundTracking(driver: Driver) {
-    this.configureNativeTracking(driver);
-
     if (this.isActive) {
       this.currentDriver = driver;
       return;
@@ -242,6 +243,13 @@ class BackgroundGeolocationService {
     this.isActive = true;
     this.currentDriver = driver;
     this.lastError = null;
+    this.nativeTrackingActive = this.configureNativeTracking(driver);
+
+    // O Fused Location Provider e o receiver Java continuam ativos mesmo sem WebView.
+    if (this.nativeTrackingActive) {
+      this.notifyListeners();
+      return;
+    }
 
     // 1. Inicia o Keep-Alive de Áudio e MediaSession (mantém thread viva com tela desligada)
     this.startAudioKeepAlive();
@@ -328,6 +336,7 @@ class BackgroundGeolocationService {
    */
   public stopBackgroundTracking() {
     this.isActive = false;
+    this.nativeTrackingActive = false;
     androidBridge.stopBackgroundTracking();
 
     // Para o observador de GPS

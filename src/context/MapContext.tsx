@@ -1599,6 +1599,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const logout = useCallback(() => {
+    // Logout é um comando explícito para encerrar a sessão persistida no serviço Java.
+    backgroundGeolocationService.stopBackgroundTracking();
+    setIsDriverOnline(false);
     setIsAuthenticated(false);
     setSelectedPlace(null);
     setAllPlaces([]);
@@ -1623,7 +1626,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       avatarUrl: '/logo.svg'
     }));
     setIsLoginModalOpen(true);
-  }, []);
+  }, [setIsDriverOnline]);
 
   /**
    * Permite que o motorista assuma/confirme um pedido público disponível.

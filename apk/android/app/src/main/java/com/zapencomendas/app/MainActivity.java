@@ -74,6 +74,7 @@ public class MainActivity extends BridgeActivity {
         setupWebView();
         requestInitialPermissions();
         checkGpsEnabled();
+        ensureLocationServiceRunning();
         handleIncomingIntent(getIntent());
     }
 
