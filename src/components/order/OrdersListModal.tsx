@@ -41,6 +41,7 @@ import { realtimeAssignmentService } from '../../services/realtimeAssignmentServ
 import { canClaimOrders } from '../../utils/canClaimOrders';
 import { getBaseOrderId } from '../../utils/orderIds';
 import { api } from '../../services/api';
+import { collectOpenBills, buildOpenBillsMessage } from '../../utils/customerBilling';
 
 interface OrdersListModalProps {
   isOpen: boolean;
@@ -351,15 +352,30 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
     }
   };
 
-  const handleWhatsApp = (phone?: string) => {
+  const handleWhatsApp = (phone?: string, message = '') => {
     if (!phone) return;
     let clean = phone.replace(/\D/g, '');
     if (!clean.startsWith('55') && (clean.length === 10 || clean.length === 11)) clean = `55${clean}`;
     if (typeof window !== 'undefined' && (window as any).AndroidApp?.openWhatsApp) {
-      (window as any).AndroidApp.openWhatsApp(clean, '');
+      (window as any).AndroidApp.openWhatsApp(clean, message);
     } else {
-      window.open(`https://wa.me/${clean}`, '_blank');
+      window.open(message ? `https://wa.me/${clean}?text=${encodeURIComponent(message)}` : `https://wa.me/${clean}`, '_blank');
     }
+  };
+
+  const handleSendBilling = (event: React.MouseEvent, order: Place) => {
+    event.stopPropagation();
+    setMenuOrderId(null);
+    if (!order.customerPhone) {
+      setToastMsg('Cliente sem telefone cadastrado.');
+      return;
+    }
+    const items = collectOpenBills(uniqueOrders, order);
+    if (!items.length) {
+      setToastMsg('Cliente sem contas em aberto.');
+      return;
+    }
+    handleWhatsApp(order.customerPhone, buildOpenBillsMessage(order.customerName || order.name || '', items));
   };
 
   const handleCopyTrackingLink = async (event: React.MouseEvent, order: Place) => {
@@ -686,6 +702,11 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
                   {currentRole !== 'motorista' && (
                     <button type="button" onClick={(e) => handleCopyTrackingLink(e, order)} className="w-full px-3 py-2 flex items-center gap-2 hover:bg-slate-50 cursor-pointer">
                       <Link2 className="w-3.5 h-3.5" /> Copiar link de rastreio
+                    </button>
+                  )}
+                  {currentRole !== 'motorista' && clientName && (
+                    <button type="button" onClick={(e) => handleSendBilling(e, order)} className="w-full px-3 py-2 flex items-center gap-2 hover:bg-slate-50 text-emerald-700 cursor-pointer">
+                      <MessageCircle className="w-3.5 h-3.5" /> Enviar cobrança
                     </button>
                   )}
                   {canClaimOrders(currentRole) && isPublicOrder && (
