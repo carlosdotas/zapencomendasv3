@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --clear-screen=false backend/index.ts",
+    "prebuild": "node scripts/update-version-manifest.mjs",
     "build": "vite build",
     "preview": "vite preview --port 3000 --host 0.0.0.0",
     "start": "tsx backend/index.ts --prod",

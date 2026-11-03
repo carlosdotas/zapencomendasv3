@@ -18,6 +18,11 @@ interface LoginModalProps {
   onLoginSuccess: (account: AuthAccount) => void;
 }
 
+interface AppVersionManifest {
+  version: string;
+  apkHash: string;
+}
+
 function formatPhone(val: string): string {
   const digits = val.replace(/\D/g, '').slice(0, 11);
   if (digits.length <= 2) return digits;
@@ -34,6 +39,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [appVersion, setAppVersion] = useState<AppVersionManifest>({ version: 'V.3.0.0', apkHash: '' });
 
 
   useEffect(() => {
@@ -41,6 +47,22 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
       setErrorMsg('');
       setIsLoading(false);
     }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    fetch('/app-version.json', { cache: 'no-store' })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((manifest) => {
+        if (typeof manifest?.version === 'string') {
+          setAppVersion({
+            version: manifest.version,
+            apkHash: typeof manifest.apkHash === 'string' ? manifest.apkHash : ''
+          });
+        }
+      })
+      .catch(() => {});
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -230,15 +252,19 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
           {!(window as any).Capacitor?.isNativePlatform?.() && (
             <div className="pb-4 text-center">
               <a
-                href="/download/zap-encomendas.apk?v=1.0.2"
+                href={`/download/zap-encomendas.apk${appVersion.apkHash ? `?v=${appVersion.apkHash}` : ''}`}
                 download="zap-encomendas.apk"
                 className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-xs font-black text-[#0B5187] hover:bg-slate-50"
               >
-                📱 Baixar aplicativo Android 1.0.2 (APK)
+                📱 Baixar aplicativo Android {appVersion.version} (APK)
               </a>
             </div>
           )}
         </form>
+
+        <footer className="border-t border-slate-100 px-6 py-3 text-center text-[11px] font-semibold text-slate-400">
+          Criado por: Carlos Dotas {appVersion.version}
+        </footer>
 
       </div>
     </div>
