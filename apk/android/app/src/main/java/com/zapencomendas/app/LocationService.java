@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.app.AlarmManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -15,7 +16,10 @@ import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -37,11 +41,25 @@ public class LocationService extends Service implements LocationListener {
     private static final String KEY_ENDPOINT = "endpoint";
     private static final String KEY_DRIVER = "driver";
     private static final long MIN_SEND_INTERVAL_MS = 5000L;
+    private static final long LOCATION_HEALTH_CHECK_MS = 60_000L;
+    private static final long RECOVERY_DELAY_MS = 15_000L;
+    private static final int RECOVERY_REQUEST_CODE = 2027;
 
     private LocationManager locationManager;
     private PowerManager.WakeLock wakeLock;
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private final Handler healthHandler = new Handler(Looper.getMainLooper());
     private long lastSentAt = 0L;
+    private long lastLocationFixAt = 0L;
+    private boolean locationUpdatesRegistered = false;
+    private final Runnable locationHealthCheck = new Runnable() {
+        @Override
+        public void run() {
+            if (!isTrackingEnabled(LocationService.this)) return;
+            startLocationUpdates();
+            healthHandler.postDelayed(this, LOCATION_HEALTH_CHECK_MS);
+        }
+    };
 
     public static double lastLatitude = 0.0;
     public static double lastLongitude = 0.0;
@@ -80,7 +98,38 @@ public class LocationService extends Service implements LocationListener {
 
     public static void stopTracking(Context context) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply();
+        cancelRecovery(context);
         context.stopService(new Intent(context, LocationService.class));
+    }
+
+    private static PendingIntent recoveryPendingIntent(Context context) {
+        Intent intent = new Intent(context, LocationRecoveryReceiver.class);
+        intent.setPackage(context.getPackageName());
+        return PendingIntent.getBroadcast(
+            context,
+            RECOVERY_REQUEST_CODE,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+        );
+    }
+
+    private static void cancelRecovery(Context context) {
+        AlarmManager alarmManager = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        if (alarmManager != null) {
+            alarmManager.cancel(recoveryPendingIntent(context));
+        }
+    }
+
+    private void scheduleRecovery() {
+        if (!isTrackingEnabled(this)) return;
+        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (alarmManager != null) {
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                SystemClock.elapsedRealtime() + RECOVERY_DELAY_MS,
+                recoveryPendingIntent(this)
+            );
+        }
     }
 
     @Override
@@ -93,6 +142,7 @@ public class LocationService extends Service implements LocationListener {
         createNotificationChannel();
         startForegroundWithNotification();
         startLocationUpdates();
+        healthHandler.post(locationHealthCheck);
     }
 
     private void acquireWakeLock() {
@@ -140,6 +190,7 @@ public class LocationService extends Service implements LocationListener {
             .setContentText("Monitoramento de localização permanente em tempo real ativo.")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(pendingIntent)
             .build();
@@ -156,6 +207,11 @@ public class LocationService extends Service implements LocationListener {
         if (locationManager == null) return;
 
         try {
+            if (locationUpdatesRegistered) {
+                locationManager.removeUpdates(this);
+                locationUpdatesRegistered = false;
+            }
+
             // Registra GPS Provider (alta precisão)
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
                 locationManager.requestLocationUpdates(
@@ -164,6 +220,7 @@ public class LocationService extends Service implements LocationListener {
                     0.0f,  // 0 metros
                     this
                 );
+                locationUpdatesRegistered = true;
             }
 
             // Registra Network Provider como fallback
@@ -174,6 +231,7 @@ public class LocationService extends Service implements LocationListener {
                     0.0f,
                     this
                 );
+                locationUpdatesRegistered = true;
             }
         } catch (SecurityException se) {
             Log.e(TAG, "Permissão de localização negada ao iniciar atualizações: " + se.getMessage());
@@ -196,6 +254,7 @@ public class LocationService extends Service implements LocationListener {
     @Override
     public void onLocationChanged(Location location) {
         if (location != null) {
+            lastLocationFixAt = System.currentTimeMillis();
             lastLatitude = location.getLatitude();
             lastLongitude = location.getLongitude();
             lastSpeed = location.getSpeed();
@@ -263,6 +322,7 @@ public class LocationService extends Service implements LocationListener {
     @Override
     public void onProviderEnabled(String provider) {
         Log.d(TAG, "Provedor GPS ativado: " + provider);
+        startLocationUpdates();
     }
 
     @Override
@@ -277,27 +337,23 @@ public class LocationService extends Service implements LocationListener {
             stopSelf();
             return;
         }
-        Log.d(TAG, "App removido dos recentes. Reiniciando serviço para manter monitoramento...");
-        Intent restartServiceIntent = new Intent(getApplicationContext(), this.getClass());
-        restartServiceIntent.setPackage(getPackageName());
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(restartServiceIntent);
-        } else {
-            startService(restartServiceIntent);
-        }
+        Log.d(TAG, "App removido dos recentes. Serviço de GPS permanece ativo em primeiro plano.");
     }
 
     @Override
     public void onDestroy() {
         isRunning = false;
+        healthHandler.removeCallbacks(locationHealthCheck);
         if (locationManager != null) {
             try {
                 locationManager.removeUpdates(this);
             } catch (Exception ignored) {}
         }
+        locationUpdatesRegistered = false;
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
+        scheduleRecovery();
         networkExecutor.shutdownNow();
         super.onDestroy();
         Log.d(TAG, "LocationService destruído.");

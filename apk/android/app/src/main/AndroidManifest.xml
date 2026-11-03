@@ -47,7 +47,13 @@
             android:name=".LocationService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="location" />
+
+        <receiver
+            android:name=".LocationRecoveryReceiver"
+            android:enabled="true"
+            android:exported="false" />
 
         <!-- Receiver para reiniciar serviço de GPS ao reiniciar o aparelho -->
         <receiver
