@@ -1,9 +1,9 @@
 {
   "major": 3,
-  "web": 3,
+  "web": 6,
   "apk": 7,
-  "webHash": "fddd595e2e6808a6790f085473de36e2289dac7086481989cf8c20111fcad1de",
+  "webHash": "66f026ff809f23c57d2ad3067605801932eb885478ef38a4fb36cebbc044dd46",
   "apkHash": "5c21858d4baefd95252bb30251233fcdf3b2a0bc4ff664118a41709fc5ffef53",
-  "updatedAt": "2026-11-03T05:08:50.187Z",
-  "version": "V.3.3.7"
+  "updatedAt": "2026-11-03T05:23:27.143Z",
+  "version": "V.3.6.7"
 }

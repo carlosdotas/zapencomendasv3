@@ -1849,7 +1849,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const startBackgroundGps = useCallback(() => {
     if (currentRole === 'motorista') {
-      const activeLoc = userLocation || currentCoords;
       const driverData: Driver = {
         id: String(user.id || 'driver-me'),
         name: user.name || 'Motorista Parceiro',
@@ -1859,10 +1858,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         vehiclePlate: 'BRA-2025',
         color: '#FF5E00',
         coordinates: {
-          lat: activeLoc?.lat || DEFAULT_COORDS.lat,
-          lng: activeLoc?.lng || DEFAULT_COORDS.lng,
-          heading: activeLoc?.heading,
-          speed: activeLoc?.speed,
+          lat: DEFAULT_COORDS.lat,
+          lng: DEFAULT_COORDS.lng,
           timestamp: Date.now()
         },
         phone: user.phone || '',
@@ -1872,22 +1869,19 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       backgroundGeolocationService.startBackgroundTracking(driverData);
     }
-  }, [currentRole, userLocation, currentCoords, user]);
+  }, [currentRole, user]);
 
   const stopBackgroundGps = useCallback(() => {
     backgroundGeolocationService.stopBackgroundTracking();
   }, []);
 
-  // 1. Telemetria do Motorista Ativo: sincroniza em tempo real com tela ligada ou desligada
+  // 1. A WebView só ativa o serviço Java; GPS e POST não executam no navegador.
   useEffect(() => {
     if (currentRole !== 'motorista' || !isDriverOnline) {
       return;
     }
 
-    const activeLoc = userLocation || currentCoords;
     const now = Date.now();
-    const timeStr = new Date(now).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
     const myDriverData: Driver = {
       id: String(user.id || 'driver-me'),
       name: user.name || 'Motorista Parceiro',
@@ -1897,38 +1891,18 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       vehiclePlate: 'BRA-2025',
       color: '#FF5E00',
       coordinates: {
-        lat: activeLoc?.lat || DEFAULT_COORDS.lat,
-        lng: activeLoc?.lng || DEFAULT_COORDS.lng,
-        heading: activeLoc?.heading,
-        speed: activeLoc?.speed,
+        lat: DEFAULT_COORDS.lat,
+        lng: DEFAULT_COORDS.lng,
         timestamp: now
       },
-      heading: activeLoc?.heading ?? 0,
-      speedKmH: activeLoc?.speed ? Math.round(activeLoc.speed * 3.6) : 0,
       status: 'em_rota',
       phone: user.phone || '',
       avatarUrl: user.avatarUrl,
-      isOnline: true,
-      lastSeenTimestamp: now,
-      lastUpdatedStr: timeStr
+      isOnline: true
     };
 
-    // Inicia rastreamento contínuo em segundo plano (silent audio loop + screen wake lock + dual watcher)
     backgroundGeolocationService.startBackgroundTracking(myDriverData);
-
-    const sendCurrentTelemetry = () => {
-      const liveLoc = userLocation || currentCoords;
-      if (!liveLoc || typeof liveLoc.lat !== 'number' || typeof liveLoc.lng !== 'number') return;
-      backgroundGeolocationService.transmitLocation(liveLoc);
-    };
-
-    sendCurrentTelemetry();
-    const sendInterval = setInterval(sendCurrentTelemetry, 6000);
-
-    return () => {
-      clearInterval(sendInterval);
-    };
-  }, [currentRole, isDriverOnline, userLocation, currentCoords, user.id, user.name, user.phone, user.avatarUrl]);
+  }, [currentRole, isDriverOnline, user.id, user.name, user.phone, user.avatarUrl]);
 
   // 2. Recepção em Tempo Real para Administradores, Terminal e Atendentes
   useEffect(() => {
