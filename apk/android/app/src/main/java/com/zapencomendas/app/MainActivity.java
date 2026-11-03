@@ -429,11 +429,16 @@ public class MainActivity extends BridgeActivity {
             JSONObject json = new JSONObject();
             json.put("raw", rawText);
 
-            // Tenta extrair URL de mapas
+            // Tenta extrair URL de mapas (prefere o link de mapas quando a mensagem tem vários links)
             String mapUrl = "";
-            Matcher urlMatcher = Pattern.compile("https?://\\S+").matcher(rawText);
-            if (urlMatcher.find()) {
-                mapUrl = urlMatcher.group();
+            Matcher urlMatcher = Pattern.compile("https?://[^\\s\"'<>]+").matcher(rawText);
+            while (urlMatcher.find()) {
+                String candidate = urlMatcher.group().replaceAll("[)\\]'\",;.!?]+$", "");
+                if (mapUrl.isEmpty()) mapUrl = candidate;
+                if (candidate.matches("(?i).*(maps\\.app\\.goo\\.gl|goo\\.gl/maps|google\\.[a-z.]+/maps|maps\\.google\\.).*")) {
+                    mapUrl = candidate;
+                    break;
+                }
             }
             json.put("url", mapUrl);
 

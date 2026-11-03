@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { FloatingSearchBar } from '../search/FloatingSearchBar';
 import { useMapStore } from '../../context/MapContext';
+import { extractSharedMapQuery, readShareParams } from '../../utils/sharedMapLink';
 
 interface SharedMapData {
   raw?: string;
@@ -15,7 +16,7 @@ export const BottomSearchBar: React.FC = () => {
 
   useEffect(() => {
     const applySharedMap = (data: SharedMapData) => {
-      const query = data.url?.trim() || (
+      const query = extractSharedMapQuery({ url: data.url, text: data.raw }) || (
         typeof data.lat === 'number' && typeof data.lng === 'number'
           ? `${data.lat}, ${data.lng}`
           : data.raw?.trim()
@@ -41,6 +42,17 @@ export const BottomSearchBar: React.FC = () => {
         applySharedMap(JSON.parse(pendingShare) as SharedMapData);
       } catch {
         window.AndroidApp?.clearLastSharedMap?.();
+      }
+    }
+
+    // PWA instalado: o Android abre o app em /?text=...&url=... ao compartilhar pelo WhatsApp
+    const sharedContent = readShareParams(window.location.search);
+    if (sharedContent) {
+      const query = extractSharedMapQuery(sharedContent);
+      window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+      if (query) {
+        setSearchQuery(query);
+        setHasSharedMap(true);
       }
     }
 

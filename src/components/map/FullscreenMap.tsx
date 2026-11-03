@@ -1353,6 +1353,9 @@ export const FullscreenMap: React.FC = () => {
     toggleRouteSelection
   } = useMapStore();
 
+  // O terminal usa o modo monitor: marcadores próprios, sem labels (MonitorMapLayer)
+  const isMonitorMode = currentRole === 'terminal';
+
   const routeSelectModeRef = useRef(routeSelectMode);
   routeSelectModeRef.current = routeSelectMode;
   const toggleRouteSelectionRef = useRef(toggleRouteSelection);
@@ -1857,6 +1860,12 @@ export const FullscreenMap: React.FC = () => {
   useEffect(() => {
     if (!mapInstance) return;
 
+    if (isMonitorMode) {
+      placeMarkersRef.current.forEach(marker => mapInstance.removeLayer(marker));
+      placeMarkersRef.current.clear();
+      return;
+    }
+
     // Regra para motorista: Ele NÃO pode ver markers que não foram destinados a ele!
     // Apenas vê pontos atribuídos especificamente a ele (assignedDriverId ou assignedDriverPhone)
     const isDriverRole = currentRole === 'motorista';
@@ -2104,7 +2113,7 @@ export const FullscreenMap: React.FC = () => {
         placeMarkersRef.current.set(place.id, marker);
       }
     });
-  }, [mapInstance, savedPlaces, allPlaces, selectedPlace, operationsFilter, flyToLocation, setSelectedPlace, openPhotoViewer, currentRole, completedWaypointMarks, customers, openCustomerLocationModal, dateRangeFilter]);
+  }, [mapInstance, savedPlaces, allPlaces, selectedPlace, operationsFilter, flyToLocation, setSelectedPlace, openPhotoViewer, currentRole, completedWaypointMarks, customers, openCustomerLocationModal, dateRangeFilter, isMonitorMode]);
 
   // Atualiza o status do motorista (aceito/indo + distância) dentro da label quando ele se move
   useEffect(() => {
@@ -2150,6 +2159,12 @@ export const FullscreenMap: React.FC = () => {
   // Sincroniza Marcadores de Baixa no Solo (Apenas um 'X' - e ao clicar abre label com detalhes, fotos, motorista e horário)
   useEffect(() => {
     if (!mapInstance) return;
+
+    if (isMonitorMode) {
+      completedMarkersRef.current.forEach(marker => mapInstance.removeLayer(marker));
+      completedMarkersRef.current.clear();
+      return;
+    }
 
     // Só mostra as baixas feitas pelo próprio usuário logado (nunca as de outros usuários)
     const myId = user?.id ? String(user.id).replace(/\D/g, '') : '';
@@ -2333,11 +2348,11 @@ export const FullscreenMap: React.FC = () => {
         completedMarkersRef.current.set(mark.id, marker);
       }
     });
-  }, [mapInstance, completedWaypointMarks, dateRangeFilter, user?.id, user?.name, currentRole]);
+  }, [mapInstance, completedWaypointMarks, dateRangeFilter, user?.id, user?.name, currentRole, isMonitorMode]);
 
   // Marcadores fixos de galpão para todas as Centrais de Coletas (uma só por local, mesmo se várias cidades usarem a mesma)
   useEffect(() => {
-    if (!mapInstance) return;
+    if (!mapInstance || isMonitorMode) return;
     const layer = L.layerGroup().addTo(mapInstance);
     let cancelled = false;
 
@@ -2398,7 +2413,7 @@ export const FullscreenMap: React.FC = () => {
       window.clearInterval(interval);
       mapInstance.removeLayer(layer);
     };
-  }, [mapInstance]);
+  }, [mapInstance, isMonitorMode]);
 
   // Sincroniza Marcadores dos Motoristas (com mascotes em moto e carro, cores exclusivas e tag com nome)
   useEffect(() => {
@@ -2406,7 +2421,7 @@ export const FullscreenMap: React.FC = () => {
 
     // Regra para motorista: Ele NÃO PODE ver os outros motoristas no mapa!
     // Ele só vê a si próprio através do beacon/localização GPS dele.
-    if (currentRole === 'motorista') {
+    if (currentRole === 'motorista' || isMonitorMode) {
       driverMarkersRef.current.forEach((marker) => {
         mapInstance.removeLayer(marker);
       });
@@ -2488,7 +2503,7 @@ export const FullscreenMap: React.FC = () => {
         driverMarkersRef.current.set(driver.id, marker);
       }
     });
-  }, [mapInstance, drivers, selectedDriver, vehicleFilter, flyToLocation, setSelectedDriver, currentRole]);
+  }, [mapInstance, drivers, selectedDriver, vehicleFilter, flyToLocation, setSelectedDriver, currentRole, isMonitorMode]);
 
   // Selo "Aceito por" nas makers para admin/atendente/terminal; com "Indo" + distância quando o motorista clicou no GPS
   const claimBadgeLayerRef = useRef<L.LayerGroup | null>(null);
@@ -2540,7 +2555,7 @@ export const FullscreenMap: React.FC = () => {
     layer.clearLayers();
 
     const lines = enRouteLinesRef.current;
-    if (currentRole === 'motorista') {
+    if (currentRole === 'motorista' || isMonitorMode) {
       lines.forEach(entry => mapInstance.removeLayer(entry.line));
       lines.clear();
       return;
@@ -2591,7 +2606,7 @@ export const FullscreenMap: React.FC = () => {
         lines.delete(id);
       }
     });
-  }, [mapInstance, allPlaces, drivers, currentRole]);
+  }, [mapInstance, allPlaces, drivers, currentRole, isMonitorMode]);
 
   // Sync selectedPlace marker position (for arbitrary clicks on map)
   useEffect(() => {

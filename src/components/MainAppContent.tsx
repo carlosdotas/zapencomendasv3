@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useMapStore } from '../context/MapContext';
 import { FullscreenMap } from './map/FullscreenMap';
+import { MonitorMapLayer } from './map/MonitorMapLayer';
 import { TopControls } from './navigation/TopControls';
 import { DriverEarningsBar } from './driver/DriverEarningsBar';
 import { RouteDispatchManager } from './driver/RouteDispatchManager';
@@ -195,6 +196,8 @@ export const MainAppContent: React.FC = () => {
         <FullscreenMap />
       </div>
 
+      {isAuthenticated && currentRole === 'terminal' && <MonitorMapLayer />}
+
       {/* Camada protetora semitransparente caso não autenticado */}
       {!isAuthenticated && (
         <div className="absolute inset-0 z-40 bg-slate-900/40 pointer-events-auto backdrop-blur-[1px]" />
@@ -217,10 +220,10 @@ export const MainAppContent: React.FC = () => {
         <RouteDispatchManager />
 
         {/* Botão Flutuante Inferior Direito para Filtros e Centralizar Localização */}
-        <LocationButton />
+        {currentRole !== 'terminal' && <LocationButton />}
 
         {/* Busca Flutuante embaixo */}
-        <BottomSearchBar />
+        {currentRole !== 'terminal' && <BottomSearchBar />}
 
         {/* Diálogo de Detalhes da Entrega / Marcador */}
         <PlaceDetailCard />
