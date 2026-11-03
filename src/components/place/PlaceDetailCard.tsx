@@ -558,14 +558,16 @@ export const PlaceDetailCard: React.FC = () => {
     if (visibility === 'publico') {
       assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined);
     }
+    clearActiveRoute();
     updatePlaceDetails(selectedPlace.id, updates);
-  }, [selectedPlace, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails]);
+  }, [selectedPlace, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails, clearActiveRoute]);
 
   const handleSelectDriverForRoutePoint = useCallback((driverOption: { id: string; phone?: string; name?: string }) => {
     if (!selectedPlace || !routeDriverTarget) return;
     const point = routeDriverTarget;
     const operation = point === 'pickup' ? 'coleta' : 'entrega';
     assignPlaceToDriver(getRouteAssignmentPlaceId(point), driverOption.id, driverOption.phone, driverOption.name);
+    clearActiveRoute();
     updatePlaceDetails(selectedPlace.id, point === 'pickup'
       ? {
           pickupVisibility: 'privado',
@@ -595,11 +597,12 @@ export const PlaceDetailCard: React.FC = () => {
     setRouteDriverTarget(null);
     setDriverToast(`${operation === 'coleta' ? 'Coleta' : 'Entrega'} privada direcionada para ${driverOption.name}!`);
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails]);
+  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails, clearActiveRoute]);
 
   const handleRemoveDriverFromRoutePoint = useCallback((point: 'pickup' | 'delivery' = routeDriverTarget || 'pickup') => {
     if (!selectedPlace) return;
     assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined);
+    clearActiveRoute();
     updatePlaceDetails(selectedPlace.id, point === 'pickup'
       ? {
           pickupVisibility: 'privado',
@@ -629,7 +632,7 @@ export const PlaceDetailCard: React.FC = () => {
     setRouteDriverTarget(null);
     setDriverToast('Motorista desvinculado. O ponto continua privado.');
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails]);
+  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails, clearActiveRoute]);
 
   // Informações do motorista direcionado
   const assignedDriverObj = useMemo(() => {
@@ -643,6 +646,7 @@ export const PlaceDetailCard: React.FC = () => {
   const handleSelectDriverForPlace = useCallback((driverOption: any) => {
     if (!selectedPlace) return;
     assignPlaceToDriver(selectedPlace.id, driverOption.id, driverOption.phone, driverOption.name);
+    clearActiveRoute();
     updatePlaceDetails(selectedPlace.id, {
       orderVisibility: 'privado',
       assignedDriverId: driverOption.id,
@@ -651,11 +655,12 @@ export const PlaceDetailCard: React.FC = () => {
     });
     setDriverToast(`Encomenda privada direcionada para ${driverOption.name}!`);
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails]);
+  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails, clearActiveRoute]);
 
   const handleRemoveDriverFromPlace = useCallback(() => {
     if (!selectedPlace) return;
     assignPlaceToDriver(selectedPlace.id, null, undefined, undefined);
+    clearActiveRoute();
     updatePlaceDetails(selectedPlace.id, {
       assignedDriverId: undefined,
       assignedDriverPhone: undefined,
@@ -663,11 +668,12 @@ export const PlaceDetailCard: React.FC = () => {
     });
     setDriverToast('Motorista desvinculado. Encomenda mantida como Privada.');
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails]);
+  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails, clearActiveRoute]);
 
   const handleSetVisibilityPublic = useCallback(() => {
     if (!selectedPlace) return;
     assignPlaceToDriver(selectedPlace.id, null, undefined, undefined);
+    clearActiveRoute();
     updatePlaceDetails(selectedPlace.id, {
       orderVisibility: 'publico',
       assignedDriverId: undefined,
@@ -676,16 +682,17 @@ export const PlaceDetailCard: React.FC = () => {
     });
     setDriverToast('Visibilidade definida como Público (aparece para todos os motoristas).');
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails]);
+  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails, clearActiveRoute]);
 
   const handleSetVisibilityPrivate = useCallback(() => {
     if (!selectedPlace) return;
+    clearActiveRoute();
     updatePlaceDetails(selectedPlace.id, {
       orderVisibility: 'privado'
     });
     setDriverToast('Visibilidade definida como Privado. Selecione um motorista se desejar.');
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, updatePlaceDetails]);
+  }, [selectedPlace, updatePlaceDetails, clearActiveRoute]);
 
   const [copied, setCopied] = useState(false);
   const [sharedToast, setSharedToast] = useState(false);
@@ -1534,11 +1541,7 @@ export const PlaceDetailCard: React.FC = () => {
         ...updated
       });
 
-      if (resolved.canTraceRoute) {
-        calculateOrderRoute({ ...selectedPlace, ...updated }, customer);
-      } else {
-        clearActiveRoute();
-      }
+      clearActiveRoute();
     } else {
       const updated = {
         managerName: customer.fullName,
@@ -1630,11 +1633,7 @@ export const PlaceDetailCard: React.FC = () => {
           ...updated
         });
 
-        if (resolved.canTraceRoute) {
-          calculateOrderRoute({ ...selectedPlace, ...updated }, savedCustomer);
-        } else {
-          clearActiveRoute();
-        }
+        clearActiveRoute();
       } else {
         const updated = {
           managerName: newCustomer.fullName,
@@ -1953,11 +1952,7 @@ ${horarioText}
     updatePlaceDetails(selectedPlace.id, updated);
     setShowOperationPicker(false);
 
-    if (resolved.canTraceRoute) {
-      calculateOrderRoute({ ...selectedPlace, ...updated });
-    } else {
-      clearActiveRoute();
-    }
+    clearActiveRoute();
   };
 
   // Cria um novo pedido/rascunho a partir do local/POI atualmente visualizado
@@ -2022,6 +2017,7 @@ ${horarioText}
       observations: finalObs
     };
 
+    clearActiveRoute();
     if (resolved.canTraceRoute) {
       if (op === 'coleta') {
         // Coleta: o local de entrega é do cliente
@@ -2056,9 +2052,7 @@ ${horarioText}
           updated.deliveryContact = resolved.summaryDestName;
         }
       }
-      calculateOrderRoute(updated);
     } else {
-      clearActiveRoute();
       if (op === 'coleta') {
         updated.pickupAddress = selectedPlace.address;
         updated.pickupCoordinates = selectedPlace.coordinates;
