@@ -1778,8 +1778,20 @@ export const FullscreenMap: React.FC = () => {
       });
 
       if (nearestMarkerPlace) {
-        // Clicou perto de um marcador existente: seleciona o local existente
-        if (nearestPlacesGroup.length > 1) {
+        const availablePublicPlaces = nearestPlacesGroup.filter(
+          place => !isCollectionCenterPlace(place) && realtimeAssignmentService.isPublicOrder(place)
+        );
+        if (canClaimOrders(currentRoleRef.current) && availablePublicPlaces.length > 0) {
+          if (availablePublicPlaces.length > 1) {
+            setMarkerSelectionModal({
+              placeName: (nearestMarkerPlace as Place).name || 'Local',
+              places: availablePublicPlaces,
+              driverClaimMode: true
+            });
+          } else {
+            setPublicOrderToClaim(availablePublicPlaces[0]);
+          }
+        } else if (nearestPlacesGroup.length > 1) {
           setMarkerSelectionModal({
             placeName: (nearestMarkerPlace as Place).name || 'Local',
             places: nearestPlacesGroup
@@ -2042,10 +2054,10 @@ export const FullscreenMap: React.FC = () => {
           if (canClaimOrders(currentRole)) {
             const availablePublicPlaces = currentGroup.filter(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
             if (availablePublicPlaces.length > 0) {
-              if (currentGroup.length > 1) {
+              if (availablePublicPlaces.length > 1) {
                 setMarkerSelectionModal({
                   placeName: currentPlace.name || 'Local',
-                  places: currentGroup,
+                  places: availablePublicPlaces,
                   driverClaimMode: true
                 });
               } else {

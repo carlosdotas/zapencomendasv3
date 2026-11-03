@@ -776,6 +776,7 @@ export const PlaceDetailCard: React.FC = () => {
   const [editedPickupNotes, setEditedPickupNotes] = useState('');
   const [editedExchangeNotes, setEditedExchangeNotes] = useState('');
   const [editedDeliveryNotes, setEditedDeliveryNotes] = useState('');
+  const [editingRouteComment, setEditingRouteComment] = useState<'pickup' | 'delivery' | null>(null);
 
   // Modal da Etapa Final com Detalhes, Rota, Preços e Compartilhar no Zap
   const [isFinalDetailsOpen, setIsFinalDetailsOpen] = useState(false);
@@ -934,6 +935,7 @@ export const PlaceDetailCard: React.FC = () => {
       setShowVehiclePicker(false);
       setShowPackagePicker(false);
       setIsEditingObservations(false);
+      setEditingRouteComment(null);
       setEditedObservations(selectedPlace.observations || '');
       setEditedPickupNotes(selectedPlace.pickupNotes || '');
       setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
@@ -2080,12 +2082,9 @@ ${horarioText}
     if (isEditingObservations) {
       setIsEditingObservations(false);
     }
+    setEditingRouteComment(null);
     setIsEditingOrder(false);
-    if (resolved.canTraceRoute) {
-      setSaveSuccessToast(!isAlreadySaved ? '✅ Encomenda adicionada e rota traçada no mapa!' : '✅ Alterações salvas com rota ativa!');
-    } else {
-      setSaveSuccessToast(!isAlreadySaved ? '✅ Encomenda adicionada no mapa!' : '✅ Alterações salvas!');
-    }
+    setSaveSuccessToast(!isAlreadySaved ? '✅ Encomenda adicionada no mapa!' : '✅ Alterações salvas!');
     setTimeout(() => setSaveSuccessToast(null), 3500);
 
     // Quando clicar em adicionar pedido o dialog deve fechar
@@ -3606,25 +3605,7 @@ ${horarioText}
             {/* Configurações individuais das paradas quando há rota até o cliente. */}
               <div className="border-t border-slate-200/80 pt-2 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-700">Coleta e entrega</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canEdit) {
-                        handleLockedEditAttempt();
-                        return;
-                      }
-                      setEditedPickupNotes(selectedPlace.pickupNotes || '');
-                      setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
-                      setIsEditingObservations(value => !value);
-                    }}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-100 text-amber-950 border border-amber-300 rounded-lg text-[10px] font-black transition-all cursor-pointer"
-                  >
-                    <Edit3 className="w-3 h-3" />
-                    {isEditingObservations ? 'Fechar edição' : 'Editar comentários'}
-                  </button>
+                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-700">Coleta e entrega</p>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 min-w-0">
@@ -3738,7 +3719,7 @@ ${horarioText}
 
                       <div className="rounded-lg bg-white/80 border border-slate-200 p-2 space-y-1.5">
                         <p className="text-[9px] font-black uppercase tracking-wide text-slate-600">Comentário da {pickup ? 'coleta' : 'entrega'}</p>
-                        {isEditingObservations && canEdit ? (
+                        {editingRouteComment === point ? (
                           <>
                             <textarea
                               value={pickup ? editedPickupNotes : editedDeliveryNotes}
@@ -3754,7 +3735,7 @@ ${horarioText}
                                   ? { pickupNotes: editedPickupNotes }
                                   : { deliveryNotes: editedDeliveryNotes };
                                 updatePlaceDetails(selectedPlace.id, updates);
-                                setIsEditingObservations(false);
+                                setEditingRouteComment(null);
                                 setSaveSuccessToast(`Comentário da ${pickup ? 'coleta' : 'entrega'} salvo.`);
                                 setTimeout(() => setSaveSuccessToast(null), 3000);
                               }}
@@ -3762,11 +3743,32 @@ ${horarioText}
                             >
                               Salvar comentário
                             </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingRouteComment(null)}
+                              className="ml-1 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 text-[9px] font-black"
+                            >
+                              Cancelar
+                            </button>
                           </>
                         ) : (
-                          <p className="text-[11px] text-slate-700 font-semibold whitespace-pre-wrap break-words">
-                            {pointNotes || <span className="text-slate-400 italic font-normal">Sem comentário nesta parada.</span>}
-                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!canEdit) {
+                                handleLockedEditAttempt();
+                                return;
+                              }
+                              if (pickup) setEditedPickupNotes(pointNotes);
+                              else setEditedDeliveryNotes(pointNotes);
+                              setEditingRouteComment(point);
+                            }}
+                            className="w-full text-left text-[11px] text-slate-700 font-semibold whitespace-pre-wrap break-words rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5187]"
+                            aria-label={`Editar comentário da ${pickup ? 'coleta' : 'entrega'}`}
+                            title={canEdit ? 'Toque para adicionar ou editar o comentário' : undefined}
+                          >
+                            {pointNotes || <span className="text-slate-400 italic font-normal">Toque para adicionar um comentário.</span>}
+                          </button>
                         )}
                       </div>
                     </section>

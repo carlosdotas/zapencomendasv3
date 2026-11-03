@@ -52,6 +52,7 @@ import {
 } from '../services/apiAdapters';
 import { filterPlacesBySequence } from '../utils/orderSequence';
 import { excludeCoveredOrders, isTemporaryOrderId } from '../utils/orderIds';
+import { runOncePerKey, shouldApplyOrderSync } from '../utils/orderSync';
 import { sanitizeNewOrderAssignments } from '../utils/newOrderAssignment';
 import { BackendPedido, BackendUser, BaixaProximity } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
@@ -604,6 +605,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const lastCustomersSyncAt = useRef(0);
   const customerMutationVersion = useRef(0);
+  const orderSyncRequestVersion = useRef(0);
+  const orderMutationVersion = useRef(0);
+  const pendingOrderCreations = useRef(new Map<string, Promise<boolean>>());
 
   useEffect(() => {
     try {
@@ -626,6 +630,10 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Busca todos os dados reais do servidor Express (locais, pedidos, clientes, motoristas)
   const refreshServerData = useCallback(async (opts?: { silent?: boolean }) => {
+    const orderSyncSnapshot = {
+      requestVersion: ++orderSyncRequestVersion.current,
+      mutationVersion: orderMutationVersion.current
+    };
     const silent = opts?.silent === true;
     if (!silent) {
       setIsSyncingServer(true);
@@ -840,6 +848,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Encomendas finalizadas/entregues são estritamente excluídas
       if (pedidosRes.success && Array.isArray(pedidosRes.data)) {
         setAllPlaces(prev => {
+          if (!shouldApplyOrderSync(
+            orderSyncSnapshot,
+            orderSyncRequestVersion.current,
+            orderMutationVersion.current
+          )) {
+            return prev;
+          }
+
           // Preserva quaisquer encomendas criadas localmente que ainda estejam sendo salvas
           // Preserva só encomendas criadas localmente nos últimos 2 minutos (ainda sendo salvas); as antigas são fantasmas
           const freshLocalWindowMs = 2 * 60 * 1000;
@@ -2421,7 +2437,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [currentRole, user, flyToLocation]);
 
-  const addNewOrder = useCallback(async (rawPlace: Place): Promise<boolean> => {
+  const saveNewOrder = useCallback(async (rawPlace: Place): Promise<boolean> => {
     const newPlace = sanitizeNewOrderAssignments(rawPlace);
     // Regra de permissão: Motorista NÃO PODE adicionar pedidos
     if (currentRole === 'motorista' || user?.userRole === 'motorista') {
@@ -2434,7 +2450,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const hasPersistedId = Boolean(persistedIdMatch && Number(persistedIdMatch[1]) < 1_000_000_000_000);
     const isExistingOrder = !isTemporaryOrderId(newPlace.id) && hasPersistedId;
     if (isExistingOrder) {
-      updatePlaceDetails(rawPlace.id, rawPlace);
+      return updatePlaceDetails(rawPlace.id, newPlace);
     }
 
     // Regra EncomendasZap: "ao add, e o cliente nao tiver local setado, deve add apenas um maker."
@@ -2585,6 +2601,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const savedId = String(res.data.id);
       const serverPlaceId = `pedido-${savedId}`;
       const serverOrderCode = `EZ-${savedId}-GO`;
+      orderMutationVersion.current += 1;
       tempPedidoIdMap.set(newPlace.id, serverPlaceId);
       const persistedPlace: Place = { ...newPlace, id: serverPlaceId, orderCode: serverOrderCode };
       // Remove o rascunho e qualquer cópia já trazida pela atualização do servidor para nunca duplicar
@@ -2597,6 +2614,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       setSavedPlaces(prev => [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId)]);
       setSelectedPlace(prev => (!prev || prev.id === newPlace.id) ? persistedPlace : prev);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('zap:refresh-orders'));
+      }
       flyToLocation(persistedPlace.coordinates, 16);
       if (newPlace.customerPhone || newPlace.customerName || newPlace.customerId) {
         const customerStatsRecord = {
@@ -2625,6 +2645,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
   }, [flyToLocation, updatePlaceDetails, currentRole, user]);
+
+  const addNewOrder = useCallback((rawPlace: Place): Promise<boolean> => {
+    return runOncePerKey(
+      pendingOrderCreations.current,
+      rawPlace.id,
+      () => saveNewOrder(rawPlace)
+    );
+  }, [saveNewOrder]);
 
   // Dá baixa em um ponto (coleta, troca ou entrega) e avança para a próxima etapa conforme as regras do EncomendasZap
   const completePlaceWaypoint = useCallback(async (rawPlaceId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity) => {
