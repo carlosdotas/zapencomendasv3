@@ -18,6 +18,8 @@
 import { Driver, LocationCoordinates } from '../types/map';
 import { driverTrackingClient } from './driverTrackingClient';
 import { screenWakeLockService } from './screenWakeLockService';
+import { getApiBaseUrl } from './httpClient';
+import { androidBridge } from './androidBridge';
 
 // Áudio WAV minúsculo de 1 segundo de silêncio absoluto codificado em Base64
 const SILENT_WAV_BASE64 = 
@@ -159,6 +161,21 @@ class BackgroundGeolocationService {
     this.notifyListeners();
   }
 
+  private configureNativeTracking(driver: Driver) {
+    if (typeof window === 'undefined') return;
+
+    const configuredBaseUrl = getApiBaseUrl();
+    const sameOrigin = /^https?:$/i.test(window.location.protocol) ? window.location.origin : '';
+    const baseUrl = (configuredBaseUrl || sameOrigin).replace(/\/+$/, '');
+
+    if (!baseUrl) {
+      this.lastError = 'Configure a URL do servidor para usar rastreamento nativo em segundo plano.';
+      return;
+    }
+
+    androidBridge.configureBackgroundTracking(`${baseUrl}/api/tracking/update-driver`, driver);
+  }
+
   /**
    * Transmite as coordenadas do motorista para a central e para o backend
    */
@@ -215,6 +232,8 @@ class BackgroundGeolocationService {
    * @param driver Dados do motorista autenticado
    */
   public startBackgroundTracking(driver: Driver) {
+    this.configureNativeTracking(driver);
+
     if (this.isActive) {
       this.currentDriver = driver;
       return;
@@ -309,6 +328,7 @@ class BackgroundGeolocationService {
    */
   public stopBackgroundTracking() {
     this.isActive = false;
+    androidBridge.stopBackgroundTracking();
 
     // Para o observador de GPS
     if (this.watchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {

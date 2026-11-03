@@ -12,6 +12,8 @@ export interface AndroidAppBridge {
   vibrate?: (ms: number) => void;
   getLatitude?: () => number;
   getLongitude?: () => number;
+  configureBackgroundTracking?: (endpoint: string, driverJson: string) => boolean;
+  stopBackgroundTracking?: () => void;
   getLastSharedMap?: () => string | null;
   clearLastSharedMap?: () => void;
   openWhatsApp?: (phone: string, message: string) => void;
@@ -82,6 +84,23 @@ export const androidBridge = {
       } catch {}
     }
     return null;
+  },
+
+  configureBackgroundTracking(endpoint: string, driver: unknown): boolean {
+    if (!endpoint || typeof window === 'undefined' || !window.AndroidApp?.configureBackgroundTracking) {
+      return false;
+    }
+    try {
+      return window.AndroidApp.configureBackgroundTracking(endpoint, JSON.stringify(driver));
+    } catch {
+      return false;
+    }
+  },
+
+  stopBackgroundTracking(): void {
+    try {
+      window.AndroidApp?.stopBackgroundTracking?.();
+    } catch {}
   },
 
   /**

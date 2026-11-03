@@ -564,7 +564,8 @@ public class MainActivity extends BridgeActivity {
 
     private void ensureLocationServiceRunning() {
         try {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            if (LocationService.isTrackingEnabled(this)
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                 Intent serviceIntent = new Intent(this, LocationService.class);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     ContextCompat.startForegroundService(this, serviceIntent);

@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.location.Location;
 import android.location.LocationListener;
@@ -18,20 +19,69 @@ import android.os.PowerManager;
 import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import org.json.JSONObject;
 
 public class LocationService extends Service implements LocationListener {
 
     private static final String TAG = "EncomendasZapGPS";
     public static final String CHANNEL_ID = "zap_location_channel";
     public static final int NOTIFICATION_ID = 2026;
+    private static final String PREFS_NAME = "background_tracking";
+    private static final String KEY_ENABLED = "enabled";
+    private static final String KEY_ENDPOINT = "endpoint";
+    private static final String KEY_DRIVER = "driver";
+    private static final long MIN_SEND_INTERVAL_MS = 5000L;
 
     private LocationManager locationManager;
     private PowerManager.WakeLock wakeLock;
+    private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private long lastSentAt = 0L;
 
     public static double lastLatitude = 0.0;
     public static double lastLongitude = 0.0;
     public static float lastSpeed = 0.0f;
     public static boolean isRunning = false;
+
+    public static boolean isTrackingEnabled(Context context) {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, false);
+    }
+
+    public static boolean configureTracking(Context context, String endpoint, String driverJson) {
+        if (endpoint == null || !endpoint.startsWith("http") || driverJson == null || driverJson.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            new JSONObject(driverJson);
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_ENABLED, true)
+                .putString(KEY_ENDPOINT, endpoint)
+                .putString(KEY_DRIVER, driverJson)
+                .apply();
+
+            Intent serviceIntent = new Intent(context, LocationService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent);
+            } else {
+                context.startService(serviceIntent);
+            }
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "Configuração de rastreamento inválida", e);
+            return false;
+        }
+    }
+
+    public static void stopTracking(Context context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply();
+        context.stopService(new Intent(context, LocationService.class));
+    }
 
     @Override
     public void onCreate() {
@@ -145,7 +195,61 @@ public class LocationService extends Service implements LocationListener {
             lastLongitude = location.getLongitude();
             lastSpeed = location.getSpeed();
             Log.d(TAG, "GPS fix: " + lastLatitude + ", " + lastLongitude + " | precisão: " + location.getAccuracy() + "m");
+            transmitLocation(location);
         }
+    }
+
+    private void transmitLocation(Location location) {
+        long now = System.currentTimeMillis();
+        if (now - lastSentAt < MIN_SEND_INTERVAL_MS) return;
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        if (!prefs.getBoolean(KEY_ENABLED, false)) return;
+
+        String endpoint = prefs.getString(KEY_ENDPOINT, null);
+        String savedDriver = prefs.getString(KEY_DRIVER, null);
+        if (endpoint == null || savedDriver == null) return;
+
+        lastSentAt = now;
+        networkExecutor.execute(() -> {
+            HttpURLConnection connection = null;
+            try {
+                JSONObject driver = new JSONObject(savedDriver);
+                JSONObject coordinates = new JSONObject();
+                coordinates.put("lat", location.getLatitude());
+                coordinates.put("lng", location.getLongitude());
+                coordinates.put("heading", location.hasBearing() ? location.getBearing() : JSONObject.NULL);
+                coordinates.put("speed", location.hasSpeed() ? location.getSpeed() : JSONObject.NULL);
+                coordinates.put("timestamp", location.getTime() > 0 ? location.getTime() : System.currentTimeMillis());
+                driver.put("coordinates", coordinates);
+                driver.put("heading", location.hasBearing() ? location.getBearing() : 0);
+                driver.put("speedKmH", location.hasSpeed() ? Math.round(location.getSpeed() * 3.6f) : 0);
+                driver.put("status", "em_rota");
+                driver.put("isOnline", true);
+                driver.put("lastSeenTimestamp", System.currentTimeMillis());
+
+                connection = (HttpURLConnection) new URL(endpoint).openConnection();
+                connection.setRequestMethod("POST");
+                connection.setConnectTimeout(10000);
+                connection.setReadTimeout(10000);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                connection.setRequestProperty("Accept", "application/json");
+                byte[] body = driver.toString().getBytes(StandardCharsets.UTF_8);
+                connection.setFixedLengthStreamingMode(body.length);
+                try (OutputStream output = connection.getOutputStream()) {
+                    output.write(body);
+                }
+                int status = connection.getResponseCode();
+                if (status < 200 || status >= 300) {
+                    Log.w(TAG, "Servidor de rastreamento respondeu HTTP " + status);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Falha ao enviar localização ao servidor: " + e.getMessage());
+            } finally {
+                if (connection != null) connection.disconnect();
+            }
+        });
     }
 
     @Override
@@ -185,6 +289,7 @@ public class LocationService extends Service implements LocationListener {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
+        networkExecutor.shutdownNow();
         super.onDestroy();
         Log.d(TAG, "LocationService destruído.");
     }

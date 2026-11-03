@@ -13,6 +13,9 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         if (Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction()) ||
             "android.intent.action.QUICKBOOT_POWERON".equals(intent.getAction())) {
+            if (!LocationService.isTrackingEnabled(context)) {
+                return;
+            }
             Log.d(TAG, "Dispositivo inicializado. Iniciando serviço de GPS permanente...");
             try {
                 Intent serviceIntent = new Intent(context, LocationService.class);

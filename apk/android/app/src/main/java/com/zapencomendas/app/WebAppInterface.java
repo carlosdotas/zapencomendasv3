@@ -46,6 +46,16 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
+    public boolean configureBackgroundTracking(String endpoint, String driverJson) {
+        return LocationService.configureTracking(activity, endpoint, driverJson);
+    }
+
+    @JavascriptInterface
+    public void stopBackgroundTracking() {
+        LocationService.stopTracking(activity);
+    }
+
+    @JavascriptInterface
     public void vibrate(long milliseconds) {
         try {
             Vibrator v = (Vibrator) activity.getSystemService(Context.VIBRATOR_SERVICE);
