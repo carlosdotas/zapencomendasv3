@@ -47,7 +47,11 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public boolean configureBackgroundTracking(String endpoint, String driverJson) {
-        return LocationService.configureTracking(activity, endpoint, driverJson);
+        boolean configured = LocationService.configureTracking(activity, endpoint, driverJson);
+        if (configured) {
+            activity.runOnUiThread(activity::requestTrackingBatteryOptimizationExemption);
+        }
+        return configured;
     }
 
     @JavascriptInterface
