@@ -6,6 +6,21 @@ import { BackendPedido, ApiResponse, BaixaProximity } from './apiTypes';
 import { uploadImage } from './imageUploadService';
 import { request, getStoredUserRole } from './httpClient';
 
+export interface PedidoListFilters {
+  data_ini?: string;
+  data_fim?: string;
+  tipo_veiculo?: string;
+  tipo_encomenda?: string;
+  status_pagamento?: string;
+  etapa?: string | string[];
+  nome?: string;
+  id?: string | number;
+  motorista_id?: string | number;
+  cidade?: string;
+  limit?: number;
+  page?: number;
+}
+
 const cleanOrderId = (id: string | number): string =>
   String(id ?? '').replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim();
 
@@ -13,20 +28,7 @@ class OrderService {
   /**
    * Lista pedidos com suporte a filtros completos (data, status, motorista, tipo, etc.)
    */
-  public async listPedidos(filters?: {
-    data_ini?: string;
-    data_fim?: string;
-    tipo_veiculo?: string;
-    tipo_encomenda?: string;
-    status_pagamento?: string;
-    etapa?: string | string[];
-    nome?: string;
-    id?: string | number;
-    motorista_id?: string | number;
-    cidade?: string;
-    limit?: number;
-    page?: number;
-  }): Promise<ApiResponse<BackendPedido[]>> {
+  public async listPedidos(filters?: PedidoListFilters): Promise<ApiResponse<BackendPedido[]>> {
     const res = await request<BackendPedido[]>('/pedidos/list_pedidos', 'POST', { limit: 2000, ...(filters || {}) }, 30000);
     if (!res.success || !Array.isArray(res.data)) {
       return { success: false, data: [], total: 0, message: res.message || 'Não foi possível listar os pedidos.' };
@@ -36,6 +38,30 @@ class OrderService {
       page: filters?.page || 1,
       limit: filters?.limit || 2000
     };
+  }
+
+  public async listAllPedidos(
+    filters?: Omit<PedidoListFilters, 'page'>
+  ): Promise<ApiResponse<BackendPedido[]>> {
+    const limit = Math.min(Math.max(1, filters?.limit || 2000), 2000);
+    const pedidos: BackendPedido[] = [];
+    let page = 1;
+
+    while (true) {
+      const response = await this.listPedidos({ ...filters, limit, page });
+      if (!response.success || !Array.isArray(response.data)) {
+        return { ...response, success: false, data: [], message: response.message || 'Não foi possível carregar todos os pedidos.' };
+      }
+
+      pedidos.push(...response.data);
+      if (!(response.hasMore ?? (response.total !== undefined && page * limit < response.total))) {
+        return { ...response, data: pedidos, total: response.total ?? pedidos.length, page: 1, limit };
+      }
+      if (response.data.length === 0) {
+        return { ...response, success: false, data: [], message: 'A paginação dos pedidos não avançou; a lista não foi atualizada.' };
+      }
+      page += 1;
+    }
   }
 
   /**

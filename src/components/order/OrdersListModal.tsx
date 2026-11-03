@@ -39,6 +39,7 @@ import { CalendarFilterModal } from '../navigation/CalendarFilterModal';
 import { DateRangeFilter } from '../../types/map';
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
 import { canClaimOrders } from '../../utils/canClaimOrders';
+import { getBaseOrderId } from '../../utils/orderIds';
 import { api } from '../../services/api';
 
 interface OrdersListModalProps {
@@ -169,11 +170,11 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
     [...allPlaces, ...savedPlaces].forEach(p => {
       if (p && p.id) map.set(p.id, p);
     });
+    const activeOrderIds = new Set(Array.from(map.keys(), getBaseOrderId));
     (completedOrders || []).forEach(p => {
       if (p && p.id) {
-        const baseId = p.id.replace(/-coleta$|-entrega$|-troca$|-retorno$/, '');
-        const alreadyActive = Array.from(map.keys()).some(k => k.startsWith(baseId));
-        if (!alreadyActive) map.set(p.id, p);
+        const baseId = getBaseOrderId(p.id);
+        if (!activeOrderIds.has(baseId)) map.set(p.id, p);
       }
     });
     return Array.from(map.values());

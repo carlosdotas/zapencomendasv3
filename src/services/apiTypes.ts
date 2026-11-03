@@ -289,6 +289,7 @@ export interface BackendOrderMarker {
   pedido_id: number | string;
   etapa: 'pendente' | 'aprovado' | 'coletando' | 'coletado' | 'trocando' | 'trocado' | 'entregando' | 'entregue' | 'finalizado' | 'cancelado' | string;
   cliente: string;
+  data?: string;
   tipo: 'coleta' | 'entrega' | 'troca' | string;
   local_id?: number | string;
   local_name?: string;

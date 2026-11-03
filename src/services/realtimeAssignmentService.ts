@@ -5,7 +5,7 @@
  * todos os clientes conectados (incluindo o motorista logado) atualizados periodicamente.
  */
 
-import { Place, UserProfile } from '../types/map';
+import { Place, UserProfile, OperationType } from '../types/map';
 import { request, startPolling } from './httpClient';
 
 const POLL_INTERVAL_MS = 5000;
@@ -215,6 +215,28 @@ class RealtimeAssignmentService {
     await Promise.all(assignmentKeys.map(key =>
       request('/api/realtime/unassign-driver', 'POST', { orderId: key })
     ));
+  }
+
+  public async declineClaimedOrder(
+    orderId: string | number,
+    operation: OperationType,
+    reason: string
+  ): Promise<{ success: boolean; message?: string }> {
+    const res = await request('/api/realtime/decline-order', 'POST', {
+      orderId: String(orderId),
+      operation,
+      reason
+    });
+    if (!res.success) return { success: false, message: res.message };
+
+    const numericId = String(orderId).replace(/\D/g, '');
+    for (const key of Object.keys(this.assignments)) {
+      const keyId = key.match(/\d+/)?.[0];
+      const keyOperation = key.match(/(?:^|[-_])(coleta|troca|entrega|retorno)$/i)?.[1]?.toLowerCase();
+      if (keyId === numericId && keyOperation === operation) delete this.assignments[key];
+    }
+    this.notifyListeners();
+    return { success: true };
   }
 
   /**

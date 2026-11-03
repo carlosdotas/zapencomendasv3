@@ -18,6 +18,7 @@ import {
 import { uploadImage } from './imageUploadService';
 import { userService } from './userService';
 import { orderService } from './orderService';
+import type { PedidoListFilters } from './orderService';
 import { placeService } from './placeService';
 import { request, getAuthToken, setAuthToken, getApiBaseUrl, setApiBaseUrl, getStoredUserRole } from './httpClient';
 
@@ -200,19 +201,12 @@ export const api = {
   // ==========================================
   // PEDIDOS (/pedidos)
   // ==========================================
-  async listPedidos(filters?: {
-    data_ini?: string;
-    data_fim?: string;
-    tipo_veiculo?: string;
-    tipo_encomenda?: string;
-    status_pagamento?: string;
-    etapa?: string | string[];
-    nome?: string;
-    id?: string | number;
-    motorista_id?: string | number;
-    cidade?: string;
-  }): Promise<ApiResponse<BackendPedido[]>> {
+  async listPedidos(filters?: PedidoListFilters): Promise<ApiResponse<BackendPedido[]>> {
     return orderService.listPedidos(filters);
+  },
+
+  async listAllPedidos(filters?: Omit<PedidoListFilters, 'page'>): Promise<ApiResponse<BackendPedido[]>> {
+    return orderService.listAllPedidos(filters);
   },
 
   async getPedido(id: string | number): Promise<ApiResponse<BackendPedido>> {
@@ -456,6 +450,10 @@ export const api = {
     return request<BackendOrderMarker[]>('/tracking/order_markers', 'POST', { date });
   },
 
+  async getOrderMarkersInRange(from: string, to: string): Promise<ApiResponse<BackendOrderMarker[]>> {
+    return request<BackendOrderMarker[]>('/tracking/order_markers', 'POST', { data_ini: from, data_fim: to });
+  },
+
   /**
    * Busca as markers ativas de Hoje e Dias Anteriores no endpoint /tracking/order_markers:
    * 1. Hoje: traz todas não finalizadas (coletas não coletadas, trocas e entregas ativas).
@@ -469,16 +467,9 @@ export const api = {
   }> {
     const now = new Date();
     const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
-
-    // Consulta os últimos 30 dias (Hoje + 29 dias anteriores) para cobrir todas as markers
-    const datesToFetch: { dateStr: string; isToday: boolean }[] = [];
-    for (let i = 0; i <= 29; i++) {
-      const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-      datesToFetch.push({
-        dateStr: d.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }),
-        isToday: i === 0
-      });
-    }
+    const start = new Date(`${todayStr}T12:00:00Z`);
+    start.setUTCDate(start.getUTCDate() - 29);
+    const startDate = start.toISOString().slice(0, 10);
 
     // Regra explícita: "as que já foi entregue, que acabou, não, não, não pode buscar não"
     const isFinalized = (m: BackendOrderMarker) => {
@@ -524,40 +515,35 @@ export const api = {
     };
 
     try {
-      const responses = await Promise.all(
-        datesToFetch.map(item => this.getOrderMarkers(item.dateStr).catch(() => ({ success: false, data: [] })))
-      );
-
       const todayList: BackendOrderMarker[] = [];
       const previousDaysList: BackendOrderMarker[] = [];
       const allActive: BackendOrderMarker[] = [];
       const seenMarkerKeys = new Set<string>();
 
-      responses.forEach((res, index) => {
-        const item = datesToFetch[index];
-        if (res && res.success && Array.isArray(res.data)) {
-          const activeForDate = res.data.filter(isMarkerActive);
-          activeForDate.forEach(m => {
-            const key = `${m.pedido_id}_${m.tipo}`;
-            if (!seenMarkerKeys.has(key)) {
-              seenMarkerKeys.add(key);
-              allActive.push(m);
-              if (item.isToday) {
-                todayList.push(m);
-              } else {
-                previousDaysList.push(m);
-              }
-            }
-          });
-        }
-      });
+      const response = await this.getOrderMarkersInRange(startDate, todayStr);
+      if (response.success && Array.isArray(response.data)) {
+        response.data.filter(isMarkerActive).forEach(marker => {
+          const key = `${marker.pedido_id}_${marker.tipo}`;
+          if (seenMarkerKeys.has(key)) return;
+          seenMarkerKeys.add(key);
+          allActive.push(marker);
+          if (marker.data === todayStr) {
+            todayList.push(marker);
+          } else {
+            previousDaysList.push(marker);
+          }
+        });
+      } else {
+        console.warn('[Orders] Não foi possível carregar marcadores do intervalo:', response.message);
+      }
 
       return {
         todayMarkers: todayList,
         yesterdayPendingMarkers: previousDaysList,
         allActiveMarkers: allActive
       };
-    } catch {
+    } catch (error) {
+      console.error('[Orders] Erro ao processar marcadores do intervalo:', error);
       return {
         todayMarkers: [],
         yesterdayPendingMarkers: [],

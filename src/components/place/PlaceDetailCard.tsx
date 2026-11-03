@@ -1013,27 +1013,27 @@ export const PlaceDetailCard: React.FC = () => {
 
     try {
       const fullReasonText = justification.startsWith(refusalReason) ? justification : `${refusalReason} - ${justification}`;
-      const driverUserId = parseInt(String(user?.id ?? '').replace(/\D/g, ''), 10);
+      const operation = selectedPlace.operationType || 'coleta';
+      const numericPedidoId = selectedPlace.id.match(/pedido-(\d+)/)?.[1] || selectedPlace.id.match(/\d+/)?.[0];
+      if (!numericPedidoId) throw new Error('Não foi possível identificar o pedido recusado.');
 
-      // 1. Desvincula o motorista e devolve o pedido ao público para a central reatribuir
-      assignPlaceToDriver(selectedPlace.id, null, undefined, undefined);
-      updatePlaceDetails(selectedPlace.id, {
+      const response = await realtimeAssignmentService.declineClaimedOrder(
+        numericPedidoId,
+        operation,
+        fullReasonText
+      );
+      if (!response.success) {
+        throw new Error(response.message || 'Não foi possível devolver o pedido ao público.');
+      }
+
+      // Atualiza imediatamente o estado local após a confirmação do servidor.
+      await updatePlaceDetails(selectedPlace.id, {
+        operationType: operation,
         orderVisibility: 'publico',
         assignedDriverId: undefined,
         assignedDriverPhone: undefined,
         assignedDriverName: undefined
       });
-
-      // 2. Grava a justificativa nos campos próprios do pedido (/pedidos/save)
-      const numericPedidoId = selectedPlace.id.match(/pedido-(\d+)/)?.[1] || selectedPlace.id.match(/\d+/)?.[0];
-      if (numericPedidoId && Number(numericPedidoId) <= 2147483647) {
-        await api.savePedido({
-          id: numericPedidoId,
-          motorista_cancel_motivo: fullReasonText,
-          motorista_cancel_em: new Date().toISOString(),
-          motorista_cancel_user_id: Number.isFinite(driverUserId) ? driverUserId : null
-        } as any).catch(() => {});
-      }
 
       setDriverToast('Pedido cancelado. A central foi notificada.');
       setTimeout(() => setDriverToast(null), 4000);
@@ -1045,10 +1045,12 @@ export const PlaceDetailCard: React.FC = () => {
       triggerClose();
     } catch (e) {
       console.warn('Erro ao recusar rota:', e);
+      setDriverToast(e instanceof Error ? e.message : 'Não foi possível devolver o pedido ao público.');
+      setTimeout(() => setDriverToast(null), 5000);
     } finally {
       setIsSubmittingRefusal(false);
     }
-  }, [selectedPlace, refusalReason, refusalNotes, user, assignPlaceToDriver, updatePlaceDetails, triggerClose]);
+  }, [selectedPlace, refusalReason, refusalNotes, updatePlaceDetails, triggerClose]);
 
   // Gestos de toque (Touch) para arrastar para baixo e fechar
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -3454,7 +3456,7 @@ ${horarioText}
 
             {/* Rota, pontos e configurações em um único painel compacto. */}
             {hasCustomerRoute ? (
-              <div className="w-full rounded-2xl p-3 bg-gradient-to-br from-slate-50 via-blue-50/20 to-slate-50 border border-slate-200/90 shadow-2xs space-y-2.5 shrink-0">
+              <div className="w-full min-w-0 rounded-2xl p-3 bg-gradient-to-br from-slate-50 via-blue-50/20 to-slate-50 border border-slate-200/90 shadow-2xs space-y-2.5 shrink-0">
                 {/* Cabeçalho da Rota com Tipo de Operação */}
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 min-w-0">
@@ -3483,7 +3485,7 @@ ${horarioText}
                           1
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 leading-tight">
+                          <p className="min-w-0 font-bold text-slate-800 leading-tight break-words [overflow-wrap:anywhere]">
                             Coleta no Local: <span className="text-slate-600 font-normal">{orderResolvedLocations.summaryOriginName}</span>
                           </p>
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
@@ -3496,7 +3498,7 @@ ${horarioText}
                           2
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 leading-tight">
+                          <p className="min-w-0 font-bold text-slate-800 leading-tight break-words [overflow-wrap:anywhere]">
                             Entrega no Cliente: <span className="text-slate-600 font-normal">{orderResolvedLocations.summaryDestName}</span>
                           </p>
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
@@ -3514,7 +3516,7 @@ ${horarioText}
                           1
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 leading-tight">
+                          <p className="min-w-0 font-bold text-slate-800 leading-tight break-words [overflow-wrap:anywhere]">
                             Coleta no Cliente: <span className="text-slate-600 font-normal">{orderResolvedLocations.summaryOriginName}</span>
                           </p>
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
@@ -3527,7 +3529,7 @@ ${horarioText}
                           2
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 leading-tight">
+                          <p className="min-w-0 font-bold text-slate-800 leading-tight break-words [overflow-wrap:anywhere]">
                             Entrega no Local: <span className="text-slate-600 font-normal">{orderResolvedLocations.summaryDestName}</span>
                           </p>
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
@@ -3545,7 +3547,7 @@ ${horarioText}
                           1
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 leading-tight">
+                          <p className="min-w-0 font-bold text-slate-800 leading-tight break-words [overflow-wrap:anywhere]">
                             1. Coleta no Cliente: <span className="text-slate-600 font-normal">{orderResolvedLocations.summaryOriginName}</span>
                           </p>
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
@@ -3558,7 +3560,7 @@ ${horarioText}
                           2
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 leading-tight">
+                          <p className="min-w-0 font-bold text-slate-800 leading-tight break-words [overflow-wrap:anywhere]">
                             2. Troca no Local: <span className="text-slate-600 font-normal">{orderResolvedLocations.exchangeName}</span>
                           </p>
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
@@ -3571,7 +3573,7 @@ ${horarioText}
                           3
                         </span>
                         <div className="min-w-0 flex-1">
-                          <p className="font-bold text-slate-800 leading-tight">
+                          <p className="min-w-0 font-bold text-slate-800 leading-tight break-words [overflow-wrap:anywhere]">
                             3. Retorno no Cliente: <span className="text-slate-600 font-normal">{orderResolvedLocations.summaryDestName}</span>
                           </p>
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
@@ -3631,7 +3633,7 @@ ${horarioText}
                   </button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 min-w-0">
                 {(['pickup', 'delivery'] as const).map(point => {
                   const pickup = point === 'pickup';
                   const operation = pickup ? 'coleta' : 'entrega';

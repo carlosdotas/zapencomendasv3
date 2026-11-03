@@ -1821,11 +1821,6 @@ export const NewOrderModal: React.FC = () => {
     if (!deliveryDate) setDeliveryDate(today);
     if (operationType === 'troca' && !exchangeDate) setExchangeDate(today);
 
-    if (!responsibleName.trim() || responsibleName === 'Central EncomendasZap') {
-      setResponsibleName(pickupContact || deliveryContact || selectedCustomer?.fullName || 'Responsável');
-      setResponsiblePhone(pickupPhone || deliveryPhone || selectedCustomer?.phone || '');
-    }
-
     if (!observations.trim()) {
       const parts = [
         pickupNotes.trim() ? `Coleta: ${pickupNotes.trim()}` : '',
@@ -1844,8 +1839,8 @@ export const NewOrderModal: React.FC = () => {
   // Avançar da Etapa 3 (Volume / Carga) para a Etapa 4 (Rota, Preço & Finalização)
   const handleProceedToStep4 = async () => {
     if (!responsibleName.trim()) {
-      setResponsibleName(pickupContact || deliveryContact || selectedCustomer?.fullName || 'Responsável');
-      setResponsiblePhone(pickupPhone || deliveryPhone || selectedCustomer?.phone || '');
+      setResponsibleName('Central EncomendasZap');
+      setResponsiblePhone('(62) 3999-8800');
     }
 
     setStepErrors({});

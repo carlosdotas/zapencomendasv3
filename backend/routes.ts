@@ -1222,9 +1222,13 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
   // MARCADORES DE PEDIDOS NO MAPA
   // ------------------------------------------------------------------
   route(app, '/tracking/order_markers', async (req, res, body) => {
-    const date = String(body.date || todaySaoPaulo()).slice(0, 10);
+    const from = body.data_ini ? String(body.data_ini).slice(0, 10) : null;
+    const to = body.data_fim ? String(body.data_fim).slice(0, 10) : null;
+    const where = from || to
+      ? { date: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+      : { date: String(body.date || todaySaoPaulo()).slice(0, 10) };
     const caller = await resolveCaller(req, body);
-    const rows = await prisma.orders.findMany({ where: { date } });
+    const rows = await prisma.orders.findMany({ where });
     const orderViews = await pedidosToBackend(rows);
     const visibleOrderIds = new Set(
       orderViews.filter(order => canCallerSeeOrder(order, caller)).map(order => String(order.id))
@@ -1238,7 +1242,7 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     for (const row of visibleRows) {
       const view = pedidoToBackend(row);
       const isExchange = view.tipo_encomenda === 'troca';
-      const base = { pedido_id: row.id, etapa: view.etapa, cliente: row.client_name, tipo_encomenda: view.tipo_encomenda, is_exchange: isExchange };
+      const base = { pedido_id: row.id, etapa: view.etapa, cliente: row.client_name, data: row.date, tipo_encomenda: view.tipo_encomenda, is_exchange: isExchange };
       const push = (tipo: string, locationId: number | null) => {
         const loc = locationId ? locations.get(locationId) : null;
         if (!loc || loc.lat == null || loc.lng == null) return;

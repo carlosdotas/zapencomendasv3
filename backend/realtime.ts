@@ -2,7 +2,7 @@ import type { Express, Request, Response } from 'express';
 import { WebSocket, type WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { parseRawJsonBody } from './routes';
-import { toInt } from './mappers';
+import { parseExtra, toInt } from './mappers';
 import { notifyOrderProgress, notifyUser } from './notifications';
 import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, isConfirmedDriverClaim, assignmentsVisibleTo } from './access';
 
@@ -266,6 +266,87 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
     }
     clearAssignment(String(orderId));
     res.json({ success: true });
+  });
+
+  app.post('/api/realtime/decline-order', async (req: Request, res: Response) => {
+    const body = parseRawJsonBody(req);
+    const orderId = toInt(body.orderId);
+    const operation = String(body.operation || '').toLowerCase();
+    const reason = String(body.reason || '').trim();
+    if (!orderId || !['coleta', 'troca', 'entrega'].includes(operation) || reason.length < 5) {
+      res.status(400).json({ success: false, message: 'Pedido, etapa e justificativa são obrigatórios.' });
+      return;
+    }
+
+    const caller = await resolveCaller(req, body);
+    if (!caller || caller.role !== 'motorista') {
+      res.status(403).json({ success: false, message: 'Somente o motorista pode recusar o pedido aceito.' });
+      return;
+    }
+
+    const matchingAssignments = Array.from(activeAssignments.entries()).filter(([key, assignment]) =>
+      numOfKey(key) === String(orderId) &&
+      opOfKey(key) === operation &&
+      Boolean(assignment?.driverId)
+    );
+    const callerClaims = matchingAssignments.filter(([, assignment]) =>
+      isAssignmentMine(assignment, caller) && assignment.acceptedByDriver === true
+    );
+    if (!callerClaims.length) {
+      res.status(409).json({ success: false, message: 'O pedido não está mais aceito por este motorista.' });
+      return;
+    }
+    if (matchingAssignments.some(([, assignment]) => !isAssignmentMine(assignment, caller))) {
+      res.status(409).json({ success: false, message: 'O pedido possui outra atribuição ativa.' });
+      return;
+    }
+
+    const order = await prisma.orders.findUnique({ where: { id: orderId } });
+    if (!order) {
+      res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
+      return;
+    }
+
+    const extra = parseExtra(order.extra);
+    const point = operation === 'coleta' ? 'pickup' : operation === 'troca' ? 'exchange' : 'delivery';
+    extra[`${point}Visibility`] = 'publico';
+    for (const suffix of ['AssignedDriverId', 'AssignedDriverName', 'AssignedDriverPhone']) {
+      delete extra[`${point}${suffix}`];
+    }
+    extra.orderVisibility = 'publico';
+    delete extra.assignedDriverId;
+    delete extra.assignedDriverName;
+    delete extra.assignedDriverPhone;
+    delete extra.motorista_id;
+    delete extra.motorista_nome;
+    delete extra.motorista_telefone;
+
+    const orderPatch: Record<string, unknown> = {
+      driver_cancel_reason: reason,
+      driver_cancel_at: new Date(),
+      driver_cancel_user_id: caller.id
+    };
+    if (operation === 'coleta' || operation === 'troca') {
+      delete extra.coleta_user_id;
+      delete extra.coleta_user_nome;
+      orderPatch.collector_id = null;
+      orderPatch.orig_drivers = '[]';
+    }
+    if (operation === 'entrega' || operation === 'troca') {
+      delete extra.entrega_user_id;
+      delete extra.entrega_user_nome;
+      orderPatch.dest_drivers = '[]';
+    }
+    orderPatch.extra = JSON.stringify(extra);
+
+    await prisma.orders.update({ where: { id: orderId }, data: orderPatch });
+
+    const keysToClear = matchingAssignments.map(([key]) => key);
+    keysToClear.forEach(key => activeAssignments.delete(key));
+    if (keysToClear.length) {
+      await prisma.assignments.deleteMany({ where: { order_key: { in: keysToClear } } });
+    }
+    res.json({ success: true, data: { orderId, operation } });
   });
 
   // Endpoints de rastreamento no formato legado (/tracking/*), usados pelo app dos motoristas

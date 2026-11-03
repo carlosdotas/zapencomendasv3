@@ -51,7 +51,7 @@ import {
   getOrderDateBadgeFromDate
 } from '../services/apiAdapters';
 import { filterPlacesBySequence } from '../utils/orderSequence';
-import { isTemporaryOrderId } from '../utils/orderIds';
+import { excludeCoveredOrders, isTemporaryOrderId } from '../utils/orderIds';
 import { sanitizeNewOrderAssignments } from '../utils/newOrderAssignment';
 import { BackendPedido, BackendUser, BaixaProximity } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
@@ -649,18 +649,20 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // - Finalizados/Entregues: NUNCA aparecem como marcadores ativos no mapa
       const now = new Date();
       const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
-      const hasDateFilter = Boolean(dateRangeFilter.startDate || dateRangeFilter.endDate);
-      const listParams = hasDateFilter 
-        ? { 
-            data_ini: dateRangeFilter.startDate || undefined, 
-            data_fim: dateRangeFilter.endDate || undefined,
-            limit: 2000 
-          }
-        : { limit: 2000 };
 
       const [markersData, pedidosRes, locaisRes] = await Promise.all([
-        api.getActiveOrderMarkersTodayAndYesterday().catch(() => ({ todayMarkers: [], yesterdayPendingMarkers: [], allActiveMarkers: [] })),
-        api.listPedidos(listParams).catch(() => ({ success: false, data: [] })),
+        api.getActiveOrderMarkersTodayAndYesterday().catch(error => {
+          console.error('[Orders] Falha ao carregar os marcadores:', error);
+          return { todayMarkers: [], yesterdayPendingMarkers: [], allActiveMarkers: [] };
+        }),
+        api.listAllPedidos({ limit: 2000 }).catch(error => {
+          console.error('[Orders] Falha ao carregar a lista completa de pedidos:', error);
+          return {
+            success: false,
+            data: [],
+            message: error instanceof Error ? error.message : 'Não foi possível carregar os pedidos.'
+          };
+        }),
         api.getLocais({ limit: 100 }).catch(() => ({ success: false, data: [] }))
       ]);
 
@@ -672,10 +674,12 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Busca os detalhes completos dos pedidos ativos do banco (/pedidos/get)
       // Isso garante a leitura de coleta_user_id, coleta_user_nome, coleta_motoristas, etc.
-      const activePedidoIds = Array.from(new Set([
-        ...markersData.todayMarkers.map(m => m.pedido_id),
-        ...markersData.yesterdayPendingMarkers.map(m => m.pedido_id)
-      ].filter(Boolean)));
+      const activePedidoIds = pedidosRes.success
+        ? Array.from(new Set([
+            ...markersData.todayMarkers.map(m => m.pedido_id),
+            ...markersData.yesterdayPendingMarkers.map(m => m.pedido_id)
+          ].filter(Boolean).filter(id => !pedidosMap.has(String(id)))))
+        : [];
 
       if (activePedidoIds.length > 0) {
         const fullOrders = await Promise.all(
@@ -686,6 +690,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             pedidosMap.set(String(p.id), p);
           }
         });
+      }
+
+      if (!pedidosRes.success || !Array.isArray(pedidosRes.data)) {
+        console.warn(
+          '[Orders] A lista completa de pedidos não foi carregada; mantendo os pedidos locais até a próxima sincronização.',
+          pedidosRes.message
+        );
       }
 
       // Converte markers de Hoje
@@ -724,42 +735,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return et !== 'entregue' && et !== 'finalizado' && et !== 'concluido' && et !== 'cancelado';
         });
 
-        const processedOrderIds = new Set<string>();
-
-        activePedidosList.forEach((p: any) => {
-          const strId = String(p.id);
-          if (coveredOrderIds.has(strId) || processedOrderIds.has(strId)) return;
-
-          const numId = Number(p.id);
-          let mergedOrder = { ...p };
-
-          if (!isNaN(numId)) {
-            const twin = activePedidosList.find((other: any) => {
-              const oId = String(other.id);
-              if (oId === strId) return false;
-              const oNum = Number(other.id);
-              return Math.abs(oNum - numId) === 1 && (other.cliente === p.cliente || other.coleta_endereco === p.coleta_endereco);
-            });
-
-            if (twin) {
-              processedOrderIds.add(String(twin.id));
-              mergedOrder = {
-                ...twin,
-                ...mergedOrder,
-                coleta_lat: mergedOrder.coleta_lat || twin.coleta_lat,
-                coleta_lng: mergedOrder.coleta_lng || twin.coleta_lng,
-                entrega_lat: mergedOrder.entrega_lat || twin.entrega_lat,
-                entrega_lng: mergedOrder.entrega_lng || twin.entrega_lng,
-                coleta_nome: mergedOrder.coleta_nome || twin.coleta_nome,
-                entrega_nome: mergedOrder.entrega_nome || twin.entrega_nome,
-                coleta_endereco: mergedOrder.coleta_endereco || twin.coleta_endereco,
-                entrega_endereco: mergedOrder.entrega_endereco || twin.entrega_endereco,
-              };
-            }
-          }
-
-          processedOrderIds.add(strId);
-          const placesFromPedido = backendPedidoToPlaces(mergedOrder);
+        excludeCoveredOrders(activePedidosList, coveredOrderIds).forEach((p: any) => {
+          const placesFromPedido = backendPedidoToPlaces(p);
           additionalActivePlaces.push(...placesFromPedido);
         });
       }
@@ -861,32 +838,34 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Atualiza allPlaces: apenas com markers ativas (coletas não coletadas, entregas não entregues e trocas)
       // Encomendas finalizadas/entregues são estritamente excluídas
-      setAllPlaces(prev => {
-        // Preserva quaisquer encomendas criadas localmente que ainda estejam sendo salvas
-        // Preserva só encomendas criadas localmente nos últimos 2 minutos (ainda sendo salvas); as antigas são fantasmas
-        const freshLocalWindowMs = 2 * 60 * 1000;
-        const locallyCreatedPending = prev.filter(p => {
-          if (!p.id.startsWith('pedido-')) return false;
-          const stamp = Number(p.id.replace('pedido-', '').split('-')[0]);
-          return stamp > 1000000000 && Date.now() - stamp < freshLocalWindowMs;
-        });
-        const finalPlaces = [...allCombinedActivePlaces];
-        locallyCreatedPending.forEach(lp => {
-          if (!finalPlaces.some(fp => fp.id === lp.id || (lp.orderCode && fp.orderCode === lp.orderCode))) {
-            finalPlaces.unshift(lp);
-          }
-        });
+      if (pedidosRes.success && Array.isArray(pedidosRes.data)) {
+        setAllPlaces(prev => {
+          // Preserva quaisquer encomendas criadas localmente que ainda estejam sendo salvas
+          // Preserva só encomendas criadas localmente nos últimos 2 minutos (ainda sendo salvas); as antigas são fantasmas
+          const freshLocalWindowMs = 2 * 60 * 1000;
+          const locallyCreatedPending = prev.filter(p => {
+            if (!p.id.startsWith('pedido-')) return false;
+            const stamp = Number(p.id.replace('pedido-', '').split('-')[0]);
+            return stamp > 1000000000 && Date.now() - stamp < freshLocalWindowMs;
+          });
+          const finalPlaces = [...allCombinedActivePlaces];
+          locallyCreatedPending.forEach(lp => {
+            if (!finalPlaces.some(fp => fp.id === lp.id || (lp.orderCode && fp.orderCode === lp.orderCode))) {
+              finalPlaces.unshift(lp);
+            }
+          });
 
-        const prevKey = prev.map(p => `${p.id}_${p.orderStage}_${p.name}_${p.imageUrl || ''}`).sort().join('|');
-        const nextKey = finalPlaces.map(p => `${p.id}_${p.orderStage}_${p.name}_${p.imageUrl || ''}`).sort().join('|');
-        if (prevKey === nextKey && prev.length === finalPlaces.length) {
-          return prev;
-        }
-        try {
-          localStorage.setItem('encomendaszap_all_places', JSON.stringify(finalPlaces));
-        } catch {}
-        return finalPlaces;
-      });
+          const prevKey = prev.map(p => `${p.id}_${p.orderStage}_${p.name}_${p.imageUrl || ''}`).sort().join('|');
+          const nextKey = finalPlaces.map(p => `${p.id}_${p.orderStage}_${p.name}_${p.imageUrl || ''}`).sort().join('|');
+          if (prevKey === nextKey && prev.length === finalPlaces.length) {
+            return prev;
+          }
+          try {
+            localStorage.setItem('encomendaszap_all_places', JSON.stringify(finalPlaces));
+          } catch {}
+          return finalPlaces;
+        });
+      }
 
       // Coleta pedidos concluídos/entregues para exibição na Central de Pedidos (sem aparecer no mapa)
       if (pedidosRes && pedidosRes.success && Array.isArray(pedidosRes.data)) {
@@ -960,32 +939,35 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } finally {
       if (!silent) setIsSyncingServer(false);
     }
-  }, [dateRangeFilter]);
+  }, []);
 
   // Atualização periódica dos pedidos (só com a aba visível) e imediata ao chegar uma notificação
   useEffect(() => {
     let running = false;
     let queued = false;
-    const run = async () => {
+    const run = async (queueIfRunning = false) => {
       if (document.visibilityState !== 'visible') return;
-      if (running) { queued = true; return; }
+      if (running) {
+        if (queueIfRunning) queued = true;
+        return;
+      }
       running = true;
       try {
-        await realtimeAssignmentService.fetchServerAssignments().catch(() => {});
         await refreshServerData({ silent: true });
       } finally {
         running = false;
-        if (queued) { queued = false; void run(); }
+        if (queued) { queued = false; void run(true); }
       }
     };
-    const silentRefresh = () => { void run(); };
-    const timer = window.setInterval(silentRefresh, 10000);
-    window.addEventListener('zap:refresh-orders', silentRefresh);
-    document.addEventListener('visibilitychange', silentRefresh);
+    const periodicRefresh = () => { void run(); };
+    const immediateRefresh = () => { void run(true); };
+    const timer = window.setInterval(periodicRefresh, 30000);
+    window.addEventListener('zap:refresh-orders', immediateRefresh);
+    document.addEventListener('visibilitychange', immediateRefresh);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('zap:refresh-orders', silentRefresh);
-      document.removeEventListener('visibilitychange', silentRefresh);
+      window.removeEventListener('zap:refresh-orders', immediateRefresh);
+      document.removeEventListener('visibilitychange', immediateRefresh);
     };
   }, [refreshServerData]);
 
@@ -996,6 +978,53 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Sincronização em tempo real de atribuições (REST + polling)
   useEffect(() => {
+    const canSeeReleasedClaim = (place: Place) => {
+      const role = String(currentRole || localStorage.getItem('encomendaszap_user_role') || '').toLowerCase();
+      if (['admin', 'admin_geral', 'atendente', 'terminal'].includes(role)) return true;
+      if (role !== 'motorista') return false;
+      try {
+        const account = JSON.parse(localStorage.getItem('encomendaszap_logged_account') || '{}');
+        const assignedId = String(place.assignedDriverId || '').replace(/\D/g, '');
+        const accountId = String(account.id || '').replace(/\D/g, '');
+        const assignedPhone = String(place.assignedDriverPhone || '').replace(/\D/g, '');
+        const accountPhone = String(account.phone || '').replace(/\D/g, '');
+        return Boolean(
+          (assignedId && accountId && assignedId === accountId) ||
+          (assignedPhone.length >= 8 && accountPhone.length >= 8 && assignedPhone.slice(-8) === accountPhone.slice(-8))
+        );
+      } catch {
+        return false;
+      }
+    };
+
+    const clearAcceptedAssignment = (place: Place): Place => {
+      const released: Place = {
+        ...place,
+        assignedDriverId: undefined,
+        assignedDriverName: undefined,
+        assignedDriverPhone: undefined,
+        acceptedByDriver: false,
+        orderVisibility: 'publico'
+      };
+      if (place.operationType === 'coleta') {
+        released.pickupAssignedDriverId = undefined;
+        released.pickupAssignedDriverName = undefined;
+        released.pickupAssignedDriverPhone = undefined;
+        released.pickupVisibility = 'publico';
+      } else if (place.operationType === 'troca') {
+        released.exchangeAssignedDriverId = undefined;
+        released.exchangeAssignedDriverName = undefined;
+        released.exchangeAssignedDriverPhone = undefined;
+        released.exchangeVisibility = 'publico';
+      } else {
+        released.deliveryAssignedDriverId = undefined;
+        released.deliveryAssignedDriverName = undefined;
+        released.deliveryAssignedDriverPhone = undefined;
+        released.deliveryVisibility = 'publico';
+      }
+      return released;
+    };
+
     const unsubscribe = realtimeAssignmentService.subscribe((assignments) => {
       setAllPlaces(prev => {
         let hasChanges = false;
@@ -1016,6 +1045,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 acceptedByDriver: Boolean(assignment.acceptedByDriver)
               };
             }
+          } else if (p.acceptedByDriver && canSeeReleasedClaim(p)) {
+            hasChanges = true;
+            return clearAcceptedAssignment(p);
           }
           return p;
         });
@@ -1027,6 +1059,22 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return next;
         }
         return prev;
+      });
+
+      setSavedPlaces(prev => {
+        const next = prev.map(place => {
+          if (!place.acceptedByDriver || !canSeeReleasedClaim(place)) return place;
+          const numId = place.id.match(/\d+/)?.[0] || (place.orderCode ? place.orderCode.match(/\d+/)?.[0] : null);
+          const assignment = assignments[place.id] ||
+            (place.operationType && numId ? assignments[`${numId}_${place.operationType}`] : null) ||
+            (place.operationType && numId ? assignments[`pedido-${numId}-${place.operationType}`] : null);
+          return assignment?.driverId ? place : clearAcceptedAssignment(place);
+        });
+        if (next.every((place, index) => place === prev[index])) return prev;
+        try {
+          localStorage.setItem('encomendaszap_saved_places', JSON.stringify(next));
+        } catch {}
+        return next;
       });
 
       setSelectedPlace(prev => {
@@ -1045,6 +1093,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             acceptedByDriver: Boolean(assignment.acceptedByDriver)
           };
         }
+        if (!assignment?.driverId && prev.acceptedByDriver && canSeeReleasedClaim(prev)) return clearAcceptedAssignment(prev);
         return prev;
       });
     });
@@ -1052,7 +1101,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [currentRole]);
 
   const persistCustomer = useCallback(async (customer: Customer): Promise<Customer | null> => {
     const normalizedId = customer.id.trim().replace(/^db-user-/, '');

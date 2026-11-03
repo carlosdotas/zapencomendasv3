@@ -94,3 +94,21 @@ test('applies real-time assignments only to the matching active stop', () => {
   assert.equal(canCallerSeeOrder(order, deliveryDriver), true);
   assert.equal(canCallerSeeOrder(order, pickupDriver), false);
 });
+
+test('makes a publicly claimed order available again after its assignment is removed', () => {
+  const order = {
+    id: 306,
+    etapa: 'pendente',
+    tipo_encomenda: 'coleta',
+    pickupVisibility: 'publico'
+  };
+  assignmentStore.set('306_coleta', {
+    orderId: '306_coleta',
+    driverId: String(pickupDriver.id),
+    acceptedByDriver: true
+  });
+
+  assert.equal(canCallerSeeOrder(order, deliveryDriver), false);
+  assignmentStore.delete('306_coleta');
+  assert.equal(canCallerSeeOrder(order, deliveryDriver), true);
+});
