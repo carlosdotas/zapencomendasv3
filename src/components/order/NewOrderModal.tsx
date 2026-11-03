@@ -81,6 +81,9 @@ import { companyService } from '../../services/companyService';
 import { customerOrderStatsService } from '../../services/customerOrderStatsService';
 import { customersRepresentSamePerson, mergeCustomerLists, normalizeCustomerPhone } from '../../utils/customerIdentity';
 import { normalizeCityName, resolveCustomerCity } from '../../utils/addressUtils';
+import { calculateTablePrices } from '../../utils/cityPricing';
+import { settingsService, CityPriceTable, DEFAULT_CITY_PRICE_TABLE } from '../../services/settingsService';
+import { cityService, CityRecord } from '../../services/cityService';
 
 // Mini mapa da rota usando Leaflet
 import L from 'leaflet';
@@ -163,6 +166,7 @@ export const NewOrderModal: React.FC = () => {
   } = useMapStore();
 
   const isDriverRole = currentRole === 'motorista' || user?.userRole === 'motorista';
+  const canSeeOrderPrice = currentRole === 'admin_geral' || currentRole === 'atendente';
 
   // Motorista NÃO PODE nem adicionar pedidos, nem editar
   useEffect(() => {
@@ -588,6 +592,21 @@ export const NewOrderModal: React.FC = () => {
     isRemovable?: boolean;
   }>>(() => generateDefaultPriceItems('coleta', 0));
 
+  // Tabela de preços por cidade (Configurações > Tabela de preços)
+  const [cityPriceTable, setCityPriceTable] = useState<CityPriceTable>(
+    () => settingsService.getSettings().cityPriceTable || DEFAULT_CITY_PRICE_TABLE
+  );
+  const [priceCities, setPriceCities] = useState<CityRecord[]>([]);
+  const manuallyEditedPriceIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = settingsService.subscribe(settings => {
+      if (active) setCityPriceTable(settings.cityPriceTable || DEFAULT_CITY_PRICE_TABLE);
+    });
+    cityService.listCities().then(rows => { if (active) setPriceCities(rows); }).catch(() => {});
+    return () => { active = false; unsubscribe(); };
+  }, []);
   const [discountItems, setDiscountItems] = useState<{
     id: string;
     name: string;
@@ -2107,8 +2126,46 @@ export const NewOrderModal: React.FC = () => {
 
   // Manipulação dos itens de preço discriminados
   const handleUpdatePriceItem = (id: string, updates: Partial<{ name: string; value: number }>) => {
+    if (updates.value !== undefined) manuallyEditedPriceIds.current.add(id);
     setPriceItems(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
   };
+
+  // Aplica a tabela de preços por cidade aos itens padrão, sem sobrescrever o que o usuário editou
+  useEffect(() => {
+    if (!selectedCustomer) {
+      manuallyEditedPriceIds.current.clear();
+      return;
+    }
+    if (!priceCities.length) return;
+    const prices = calculateTablePrices({
+      table: cityPriceTable,
+      cities: priceCities,
+      originCity: resolveCustomerCity({ address: pickupAddress }),
+      destinationCity: resolveCustomerCity({ address: deliveryAddress }),
+      vehicle: vehicleType,
+      distanceKm: calculatedRoute?.distanceKm || 0,
+      volumes: Number.parseFloat(volumesCount) || 1
+    });
+    const parts = [prices.coleta, prices.transporte, prices.entrega].filter((v): v is number => v !== undefined);
+    if (!parts.length) return;
+    const freight = Math.round(parts.reduce((a, b) => a + b, 0) * 100) / 100;
+
+    setPriceItems(prev => {
+      let changed = false;
+      const next = prev.map(item => {
+        if (item.isRemovable || manuallyEditedPriceIds.current.has(item.id)) return item;
+        const value = item.id === 'frete' ? freight
+          : item.id === 'coleta' ? prices.coleta
+          : item.id === 'transporte' ? prices.transporte
+          : item.id === 'entrega' ? prices.entrega
+          : undefined;
+        if (value === undefined || value === item.value) return item;
+        changed = true;
+        return { ...item, value };
+      });
+      return changed ? next : prev;
+    });
+  }, [currentStep, selectedCustomer?.id, priceCities, cityPriceTable, pickupAddress, deliveryAddress, vehicleType, volumesCount, calculatedRoute, priceItems.length]);
 
   const handleAddPriceItem = (preset?: { name: string; value: number }) => {
     const newId = `extra-${Date.now()}`;
@@ -2431,6 +2488,14 @@ export const NewOrderModal: React.FC = () => {
 
             {/* Lado Direito: Fechar X */}
             <div className="flex items-center gap-1.5 shrink-0">
+              {canSeeOrderPrice && selectedCustomer && (
+                <span
+                  className="px-2 py-1 rounded-lg bg-emerald-400 text-[#0B5187] text-xs sm:text-sm font-black whitespace-nowrap"
+                  title="Valor calculado pela tabela de preços"
+                >
+                  R$ {finalPrice.toFixed(2).replace('.', ',')}
+                </span>
+              )}
               <button
                 type="button"
                 onClick={() => setIsNewOrderModalOpen(false)}

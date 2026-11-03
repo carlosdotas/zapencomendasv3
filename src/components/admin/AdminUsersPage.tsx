@@ -387,6 +387,7 @@ export const AdminUsersPage: React.FC = () => {
         city: editCity.trim() || selectedUser.city,
         cpf: editCpf.trim() || selectedUser.cpf,
         vehicleTypes: editAccessLevel === 'motorista' ? editVehicleTypes : selectedUser.vehicleTypes
+      };
 
       setSelectedUser(updated);
       setUsersList(prev => prev.map(u => (u.id === updated.id || (u.cleanPhone && u.cleanPhone === updated.cleanPhone)) ? updated : u));

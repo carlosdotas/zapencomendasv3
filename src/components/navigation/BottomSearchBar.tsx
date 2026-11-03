@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { searchAddress } from '../../services/geocodingService';
 import { FloatingSearchBar } from '../search/FloatingSearchBar';
 import { useMapStore } from '../../context/MapContext';
 import { extractSharedMapQuery, readShareParams } from '../../utils/sharedMapLink';
@@ -11,10 +12,30 @@ interface SharedMapData {
 }
 
 export const BottomSearchBar: React.FC = () => {
-  const { selectedPlace, currentRole, searchQuery, setSearchQuery } = useMapStore();
+  const { selectedPlace, currentRole, searchQuery, setSearchQuery, openNewOrderForm } = useMapStore();
   const [hasSharedMap, setHasSharedMap] = useState(false);
+  const openNewOrderFormRef = useRef(openNewOrderForm);
+  openNewOrderFormRef.current = openNewOrderForm;
 
   useEffect(() => {
+    // Resolve o local compartilhado e já abre o pedido; se não resolver (ou for motorista), cai na busca
+    const openOrderFromShare = async (query: string) => {
+      const isDriver = localStorage.getItem('encomendaszap_user_role') === 'motorista';
+      if (!isDriver) {
+        try {
+          const [resolved] = await searchAddress(query);
+          if (resolved?.coordinates) {
+            openNewOrderFormRef.current({ ...resolved, id: `pedido-${Date.now()}` });
+            return;
+          }
+        } catch (error) {
+          console.warn('[BottomSearchBar] Falha ao resolver local compartilhado:', error);
+        }
+      }
+      setSearchQuery(query);
+      setHasSharedMap(true);
+    };
+
     const applySharedMap = (data: SharedMapData) => {
       const query = extractSharedMapQuery({ url: data.url, text: data.raw }) || (
         typeof data.lat === 'number' && typeof data.lng === 'number'
@@ -23,8 +44,7 @@ export const BottomSearchBar: React.FC = () => {
       );
 
       if (query) {
-        setSearchQuery(query);
-        setHasSharedMap(true);
+        void openOrderFromShare(query);
       }
 
       window.AndroidApp?.clearLastSharedMap?.();
@@ -50,10 +70,7 @@ export const BottomSearchBar: React.FC = () => {
     if (sharedContent) {
       const query = extractSharedMapQuery(sharedContent);
       window.history.replaceState(null, '', window.location.pathname + window.location.hash);
-      if (query) {
-        setSearchQuery(query);
-        setHasSharedMap(true);
-      }
+      if (query) void openOrderFromShare(query);
     }
 
     return () => window.removeEventListener('mapShareReceived', handleMapShare);

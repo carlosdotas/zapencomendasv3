@@ -4454,8 +4454,8 @@ ${horarioText}
                       </div>
                     </button>
 
-                    {/* Detalhes do Pedido & Preço (oculto para motoristas) */}
-                    {!isDriverRole && (
+                    {/* Detalhes do Pedido & Preço (apenas admin e atendente) */}
+                    {canManageDriverAssignment && (
                     <button
                       type="button"
                       onClick={() => {
@@ -5983,7 +5983,7 @@ ${horarioText}
       />
 
       {/* MODAL DA ETAPA FINAL COM TRAÇADO DA ROTA, PREÇOS DISCRIMINADOS E WHATSAPP */}
-      {selectedPlace && (
+      {selectedPlace && canManageDriverAssignment && (
         <OrderFinalDetailsModal
           isOpen={isFinalDetailsOpen}
           onClose={() => setIsFinalDetailsOpen(false)}
