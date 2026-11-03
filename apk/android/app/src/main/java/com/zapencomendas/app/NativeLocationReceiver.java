@@ -24,6 +24,7 @@ public class NativeLocationReceiver extends BroadcastReceiver {
         }
 
         PendingResult pendingResult = goAsync();
+    LocationService.recordLocationFix(context, location);
         LocationService.transmitPersistedLocation(context, location, pendingResult::finish);
     }
 }

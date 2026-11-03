@@ -44,6 +44,7 @@ public class LocationService extends Service implements LocationListener {
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_ENDPOINT = "endpoint";
     private static final String KEY_DRIVER = "driver";
+    private static final String KEY_LAST_FIX_AT = "last_fix_at";
     private static final String KEY_LAST_SENT_AT = "last_sent_at";
     private static final long MIN_SEND_INTERVAL_MS = 5000L;
     private static final long LOCATION_HEALTH_CHECK_MS = 60_000L;
@@ -63,7 +64,8 @@ public class LocationService extends Service implements LocationListener {
         public void run() {
             if (!isTrackingEnabled(LocationService.this)) return;
             long now = System.currentTimeMillis();
-            if (!locationUpdatesRegistered || (lastLocationFixAt > 0 && now - lastLocationFixAt > LOCATION_STALE_MS)) {
+            long lastFixAt = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getLong(KEY_LAST_FIX_AT, 0L);
+            if (!locationUpdatesRegistered || lastFixAt == 0L || now - lastFixAt > LOCATION_STALE_MS) {
                 Log.w(TAG, "GPS sem atualização recente. Registrando provedores novamente.");
                 startFusedLocationUpdates();
                 startLocationUpdates();
@@ -176,6 +178,7 @@ public class LocationService extends Service implements LocationListener {
             PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (powerManager != null) {
                 wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "EncomendasZap:LocationTrackingLock");
+                wakeLock.setReferenceCounted(false);
                 wakeLock.acquire();
             }
         } catch (Exception e) {
@@ -275,6 +278,11 @@ public class LocationService extends Service implements LocationListener {
                 .setWaitForAccurateLocation(true)
                 .build();
             fusedLocationClient.requestLocationUpdates(request, nativeLocationPendingIntent(this));
+            fusedLocationClient.getLastLocation().addOnSuccessListener(location -> {
+                if (location == null || System.currentTimeMillis() - location.getTime() > LOCATION_STALE_MS) return;
+                recordLocationFix(this, location);
+                transmitPersistedLocation(this, location);
+            });
         } catch (SecurityException e) {
             Log.e(TAG, "Permissão de localização negada para o rastreamento nativo", e);
         } catch (Exception e) {
@@ -297,10 +305,7 @@ public class LocationService extends Service implements LocationListener {
     @Override
     public void onLocationChanged(Location location) {
         if (location != null) {
-            lastLocationFixAt = System.currentTimeMillis();
-            lastLatitude = location.getLatitude();
-            lastLongitude = location.getLongitude();
-            lastSpeed = location.getSpeed();
+            recordLocationFix(this, location);
             Log.d(TAG, "GPS fix: " + lastLatitude + ", " + lastLongitude + " | precisão: " + location.getAccuracy() + "m");
             transmitLocation(location);
         }
@@ -312,6 +317,18 @@ public class LocationService extends Service implements LocationListener {
 
     public static void transmitPersistedLocation(Context context, Location location) {
         transmitPersistedLocation(context, location, null);
+    }
+
+    public static void recordLocationFix(Context context, Location location) {
+        Context appContext = context.getApplicationContext();
+        long fixedAt = location.getTime() > 0 ? location.getTime() : System.currentTimeMillis();
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(KEY_LAST_FIX_AT, fixedAt)
+            .apply();
+        lastLatitude = location.getLatitude();
+        lastLongitude = location.getLongitude();
+        lastSpeed = location.getSpeed();
     }
 
     public static void transmitPersistedLocation(Context context, Location location, Runnable onComplete) {
