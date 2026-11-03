@@ -6,6 +6,8 @@ import {
   Globe2, 
   ShieldCheck, 
   Users,
+  Truck,
+  Headset,
   Package,
   DollarSign,
   LogOut,
@@ -24,6 +26,7 @@ export const SideMenuDrawer: React.FC = () => {
     setIsSidebarOpen, 
     setIsAdminSettingsOpen,
     setIsAdminUsersOpen,
+    setAdminUsersRoleFilter,
     openCustomerList,
     openOrdersModal,
     openFinancialModal,
@@ -200,9 +203,42 @@ export const SideMenuDrawer: React.FC = () => {
                   </span>
                 </button>
 
+                {currentRole === 'admin_geral' && (
+                  <>
+                    <button 
+                      onClick={() => {
+                        setIsSidebarOpen(false);
+                        setAdminUsersRoleFilter('motorista');
+                        setIsAdminUsersOpen(true);
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold text-slate-700 hover:bg-[#FFF9F5] hover:text-[#FF5E00] rounded-lg transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Truck className="w-4 h-4 text-[#FF5E00]" />
+                        <span>Lista de Motoristas</span>
+                      </div>
+                    </button>
+
+                    <button 
+                      onClick={() => {
+                        setIsSidebarOpen(false);
+                        setAdminUsersRoleFilter('atendente');
+                        setIsAdminUsersOpen(true);
+                      }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold text-slate-700 hover:bg-[#FFF9F5] hover:text-[#FF5E00] rounded-lg transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Headset className="w-4 h-4 text-[#FF5E00]" />
+                        <span>Lista de Atendentes</span>
+                      </div>
+                    </button>
+                  </>
+                )}
+
                 <button 
                   onClick={() => {
                     setIsSidebarOpen(false);
+                    setAdminUsersRoleFilter('todos');
                     setIsAdminUsersOpen(true);
                   }}
                   className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold text-slate-700 hover:bg-[#FFF9F5] hover:text-[#FF5E00] rounded-lg transition-colors cursor-pointer"

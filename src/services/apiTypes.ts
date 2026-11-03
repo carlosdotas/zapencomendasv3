@@ -75,6 +75,8 @@ export interface BackendUser {
   email?: string;
   notes?: string;
   companyId?: string;
+  vehicle_types?: string[];
+  vehicleType?: string;
 }
 
 export interface BackendLocal {

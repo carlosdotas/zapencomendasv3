@@ -49,8 +49,22 @@ export interface SystemUserRecord {
   department?: string;
   description?: string;
   code?: string;
+  vehicleTypes?: string[];
   isDatabase: boolean;
 }
+
+export const VEHICLE_OPTIONS = [
+  { value: 'moto', label: 'Moto', emoji: '🏍️' },
+  { value: 'carro', label: 'Carro', emoji: '🚗' },
+  { value: 'utilitario', label: 'Utilitário', emoji: '🚚' }
+] as const;
+
+const readVehicleTypes = (user: BackendUser, fallback?: string[]): string[] => {
+  const raw: unknown = user.vehicle_types ?? user.vehicleType;
+  const list = Array.isArray(raw) ? raw : typeof raw === 'string' && raw ? [raw] : [];
+  const valid = list.map(v => String(v).toLowerCase()).filter(v => VEHICLE_OPTIONS.some(o => o.value === v));
+  return valid.length ? [...new Set(valid)] : fallback || [];
+};
 
 const ROLE_CONFIGS: Record<SystemAccessLevel, { label: string; badgeColor: string; icon: any; desc: string }> = {
   motorista: {
@@ -104,6 +118,7 @@ function mapDatabaseUserRecord(user: BackendUser, existing?: SystemUserRecord): 
     department: existing?.department || ((user.city || user.cidade) ? `Base: ${user.city || user.cidade}` : undefined),
     description: existing?.description,
     code: existing?.code,
+    vehicleTypes: readVehicleTypes(user, existing?.vehicleTypes),
     isDatabase: true
   };
 }
@@ -132,6 +147,8 @@ export const AdminUsersPage: React.FC = () => {
   const { 
     isAdminUsersOpen, 
     setIsAdminUsersOpen,
+    adminUsersRoleFilter,
+    setAdminUsersRoleFilter,
     setIsAdminSettingsOpen,
     user: currentUser,
     updateUser,
@@ -159,6 +176,7 @@ export const AdminUsersPage: React.FC = () => {
   const [editAccessLevel, setEditAccessLevel] = useState<SystemAccessLevel>('motorista');
   const [editCity, setEditCity] = useState('');
   const [editCpf, setEditCpf] = useState('');
+  const [editVehicleTypes, setEditVehicleTypes] = useState<string[]>([]);
 
   const adminAvatarInputRef = useRef<HTMLInputElement>(null);
   const pageScrollRef = useRef<HTMLDivElement>(null);
@@ -240,6 +258,8 @@ export const AdminUsersPage: React.FC = () => {
   // Busca ao abrir
   useEffect(() => {
     if (isAdminUsersOpen) {
+      setRoleFilter(adminUsersRoleFilter);
+      setSelectedUser(null);
       fetchDatabaseUsers();
     }
     return () => {
@@ -272,7 +292,7 @@ export const AdminUsersPage: React.FC = () => {
     setEditAccessLevel(userItem.accessLevel);
     setEditCity(userItem.city || '');
     setEditCpf(userItem.cpf || '');
-    setIsEditing(false);
+    setEditVehicleTypes(userItem.vehicleTypes || []);
     setSuccessMsg('');
     setErrorMsg('');
   };
@@ -322,6 +342,7 @@ export const AdminUsersPage: React.FC = () => {
     setEditAccessLevel(selectedUser.accessLevel);
     setEditCity(selectedUser.city || '');
     setEditCpf(selectedUser.cpf || '');
+    setEditVehicleTypes(selectedUser.vehicleTypes || []);
     setIsEditing(true);
     setSuccessMsg('');
   };
@@ -347,7 +368,10 @@ export const AdminUsersPage: React.FC = () => {
           phone: editPhone.trim() || selectedUser.phone,
           access_level: editAccessLevel,
           ...(editCity ? { cidade: editCity.trim() } : {}),
-          ...(editCpf ? { cpf: editCpf.trim() } : {})
+          ...(editCpf ? { cpf: editCpf.trim() } : {}),
+          ...(editAccessLevel === 'motorista'
+            ? { vehicle_types: editVehicleTypes, vehicleType: editVehicleTypes[0] || '' }
+            : {})
         });
       }
 
@@ -361,8 +385,8 @@ export const AdminUsersPage: React.FC = () => {
         roleLabel: ROLE_CONFIGS[editAccessLevel].label,
         badgeColor: ROLE_CONFIGS[editAccessLevel].badgeColor,
         city: editCity.trim() || selectedUser.city,
-        cpf: editCpf.trim() || selectedUser.cpf
-      };
+        cpf: editCpf.trim() || selectedUser.cpf,
+        vehicleTypes: editAccessLevel === 'motorista' ? editVehicleTypes : selectedUser.vehicleTypes
 
       setSelectedUser(updated);
       setUsersList(prev => prev.map(u => (u.id === updated.id || (u.cleanPhone && u.cleanPhone === updated.cleanPhone)) ? updated : u));
@@ -1032,6 +1056,34 @@ export const AdminUsersPage: React.FC = () => {
                         className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:border-[#0B5187] font-mono"
                       />
                     </div>
+
+                    {editAccessLevel === 'motorista' && (
+                      <div>
+                        <label className="block text-xs font-black uppercase tracking-wider text-slate-700 mb-1">
+                          Tipos de Veículo
+                        </label>
+                        <div className="flex flex-wrap gap-2">
+                          {VEHICLE_OPTIONS.map(opt => {
+                            const active = editVehicleTypes.includes(opt.value);
+                            return (
+                              <button
+                                key={opt.value}
+                                type="button"
+                                aria-pressed={active}
+                                onClick={() => setEditVehicleTypes(prev => active ? prev.filter(v => v !== opt.value) : [...prev, opt.value])}
+                                className={`px-3 py-2 rounded-xl border text-xs font-black flex items-center gap-1.5 cursor-pointer transition-colors ${
+                                  active
+                                    ? 'bg-[#0B5187] border-[#0B5187] text-white'
+                                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                }`}
+                              >
+                                <span>{opt.emoji}</span> {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex gap-2 justify-end pt-3 border-t border-slate-100">
@@ -1091,6 +1143,19 @@ export const AdminUsersPage: React.FC = () => {
                         {selectedUser.city || 'Não informada'}
                       </p>
                     </div>
+
+                    {selectedUser.accessLevel === 'motorista' && (
+                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                          Tipos de Veículo
+                        </span>
+                        <p className="text-xs font-black text-slate-800 mt-0.5">
+                          {selectedUser.vehicleTypes?.length
+                            ? selectedUser.vehicleTypes.map(v => VEHICLE_OPTIONS.find(o => o.value === v)?.label || v).join(', ')
+                            : 'Não informado'}
+                        </p>
+                      </div>
+                    )}
 
                     {(() => {
                       const docInfo = formatTaxId(selectedUser.cpf);

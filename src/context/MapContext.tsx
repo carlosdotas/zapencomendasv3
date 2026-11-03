@@ -94,6 +94,8 @@ interface MapContextType {
   setIsAdminSettingsOpen: (open: boolean) => void;
   isAdminUsersOpen: boolean;
   setIsAdminUsersOpen: (open: boolean) => void;
+  adminUsersRoleFilter: 'todos' | 'motorista' | 'atendente';
+  setAdminUsersRoleFilter: (filter: 'todos' | 'motorista' | 'atendente') => void;
   isCustomerListOpen: boolean;
   setIsCustomerListOpen: (open: boolean) => void;
   openCustomerList: () => void;
@@ -377,6 +379,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState<boolean>(false);
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isAdminUsersOpen, setIsAdminUsersOpen] = useState<boolean>(false);
+  const [adminUsersRoleFilter, setAdminUsersRoleFilter] = useState<'todos' | 'motorista' | 'atendente'>('todos');
   const [isCustomerListOpen, setIsCustomerListOpen] = useState<boolean>(false);
   const openCustomerList = useCallback(() => setIsCustomerListOpen(true), []);
   const closeCustomerList = useCallback(() => setIsCustomerListOpen(false), []);
@@ -3375,6 +3378,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsAdminSettingsOpen,
         isAdminUsersOpen,
         setIsAdminUsersOpen,
+        adminUsersRoleFilter,
+        setAdminUsersRoleFilter,
         isCustomerListOpen,
         setIsCustomerListOpen,
         openCustomerList,
