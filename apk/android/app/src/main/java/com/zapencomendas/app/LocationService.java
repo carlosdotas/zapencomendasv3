@@ -23,6 +23,10 @@ import android.os.SystemClock;
 import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.Priority;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -40,6 +44,7 @@ public class LocationService extends Service implements LocationListener {
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_ENDPOINT = "endpoint";
     private static final String KEY_DRIVER = "driver";
+    private static final String KEY_LAST_SENT_AT = "last_sent_at";
     private static final long MIN_SEND_INTERVAL_MS = 5000L;
     private static final long LOCATION_HEALTH_CHECK_MS = 60_000L;
     private static final long LOCATION_STALE_MS = 120_000L;
@@ -47,10 +52,10 @@ public class LocationService extends Service implements LocationListener {
     private static final int RECOVERY_REQUEST_CODE = 2027;
 
     private LocationManager locationManager;
+    private FusedLocationProviderClient fusedLocationClient;
     private PowerManager.WakeLock wakeLock;
-    private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
+    private static final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private final Handler healthHandler = new Handler(Looper.getMainLooper());
-    private long lastSentAt = 0L;
     private long lastLocationFixAt = 0L;
     private boolean locationUpdatesRegistered = false;
     private final Runnable locationHealthCheck = new Runnable() {
@@ -60,6 +65,7 @@ public class LocationService extends Service implements LocationListener {
             long now = System.currentTimeMillis();
             if (!locationUpdatesRegistered || (lastLocationFixAt > 0 && now - lastLocationFixAt > LOCATION_STALE_MS)) {
                 Log.w(TAG, "GPS sem atualização recente. Registrando provedores novamente.");
+                startFusedLocationUpdates();
                 startLocationUpdates();
             }
             healthHandler.postDelayed(this, LOCATION_HEALTH_CHECK_MS);
@@ -104,7 +110,19 @@ public class LocationService extends Service implements LocationListener {
     public static void stopTracking(Context context) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit().clear().apply();
         cancelRecovery(context);
+        LocationServices.getFusedLocationProviderClient(context).removeLocationUpdates(nativeLocationPendingIntent(context));
         context.stopService(new Intent(context, LocationService.class));
+    }
+
+    private static PendingIntent nativeLocationPendingIntent(Context context) {
+        Intent intent = new Intent(context, NativeLocationReceiver.class);
+        intent.setPackage(context.getPackageName());
+        return PendingIntent.getBroadcast(
+            context,
+            2028,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT
+        );
     }
 
     private static PendingIntent recoveryPendingIntent(Context context) {
@@ -146,6 +164,8 @@ public class LocationService extends Service implements LocationListener {
         acquireWakeLock();
         createNotificationChannel();
         startForegroundWithNotification();
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
+        startFusedLocationUpdates();
         startLocationUpdates();
         scheduleRecovery();
         healthHandler.post(locationHealthCheck);
@@ -246,6 +266,22 @@ public class LocationService extends Service implements LocationListener {
         }
     }
 
+    private void startFusedLocationUpdates() {
+        if (fusedLocationClient == null) return;
+        try {
+            LocationRequest request = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000L)
+                .setMinUpdateIntervalMillis(2000L)
+                .setMaxUpdateDelayMillis(5000L)
+                .setWaitForAccurateLocation(true)
+                .build();
+            fusedLocationClient.requestLocationUpdates(request, nativeLocationPendingIntent(this));
+        } catch (SecurityException e) {
+            Log.e(TAG, "Permissão de localização negada para o rastreamento nativo", e);
+        } catch (Exception e) {
+            Log.e(TAG, "Falha ao registrar rastreamento nativo", e);
+        }
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (!isTrackingEnabled(this)) {
@@ -271,17 +307,41 @@ public class LocationService extends Service implements LocationListener {
     }
 
     private void transmitLocation(Location location) {
-        long now = System.currentTimeMillis();
-        if (now - lastSentAt < MIN_SEND_INTERVAL_MS) return;
+        transmitPersistedLocation(this, location);
+    }
 
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-        if (!prefs.getBoolean(KEY_ENABLED, false)) return;
+    public static void transmitPersistedLocation(Context context, Location location) {
+        transmitPersistedLocation(context, location, null);
+    }
+
+    public static void transmitPersistedLocation(Context context, Location location, Runnable onComplete) {
+        long now = System.currentTimeMillis();
+        Context appContext = context.getApplicationContext();
+        SharedPreferences prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        if (!prefs.getBoolean(KEY_ENABLED, false)) {
+            complete(onComplete);
+            return;
+        }
+
+        synchronized (LocationService.class) {
+            long lastSentAt = prefs.getLong(KEY_LAST_SENT_AT, 0L);
+            if (now - lastSentAt < MIN_SEND_INTERVAL_MS) {
+                complete(onComplete);
+                return;
+            }
+            prefs.edit().putLong(KEY_LAST_SENT_AT, now).apply();
+        }
 
         String endpoint = prefs.getString(KEY_ENDPOINT, null);
         String savedDriver = prefs.getString(KEY_DRIVER, null);
-        if (endpoint == null || savedDriver == null) return;
+        if (endpoint == null || savedDriver == null) {
+            complete(onComplete);
+            return;
+        }
 
-        lastSentAt = now;
+        lastLatitude = location.getLatitude();
+        lastLongitude = location.getLongitude();
+        lastSpeed = location.getSpeed();
         networkExecutor.execute(() -> {
             HttpURLConnection connection = null;
             try {
@@ -301,8 +361,8 @@ public class LocationService extends Service implements LocationListener {
 
                 connection = (HttpURLConnection) new URL(endpoint).openConnection();
                 connection.setRequestMethod("POST");
-                connection.setConnectTimeout(10000);
-                connection.setReadTimeout(10000);
+                connection.setConnectTimeout(4000);
+                connection.setReadTimeout(4000);
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
                 connection.setRequestProperty("Accept", "application/json");
@@ -319,8 +379,13 @@ public class LocationService extends Service implements LocationListener {
                 Log.w(TAG, "Falha ao enviar localização ao servidor: " + e.getMessage());
             } finally {
                 if (connection != null) connection.disconnect();
+                complete(onComplete);
             }
         });
+    }
+
+    private static void complete(Runnable onComplete) {
+        if (onComplete != null) onComplete.run();
     }
 
     @Override
@@ -357,11 +422,13 @@ public class LocationService extends Service implements LocationListener {
             } catch (Exception ignored) {}
         }
         locationUpdatesRegistered = false;
+        if (!isTrackingEnabled(this) && fusedLocationClient != null) {
+            fusedLocationClient.removeLocationUpdates(nativeLocationPendingIntent(this));
+        }
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
         }
         scheduleRecovery();
-        networkExecutor.shutdownNow();
         super.onDestroy();
         Log.d(TAG, "LocationService destruído.");
     }

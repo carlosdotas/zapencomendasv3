@@ -1,9 +1,9 @@
 {
   "major": 3,
   "web": 1,
-  "apk": 3,
+  "apk": 6,
   "webHash": "be3b70abf678ab920a65e81d6f7f79c5a94c9b8ab28dc78d1064a7382cb29331",
-  "apkHash": "5f3565933e87c4bed15b6b983ba06cb516409b4f1895cdfcc54b038e5093f09e",
-  "updatedAt": "2026-11-03T03:59:16.262Z",
-  "version": "V.3.1.3"
+  "apkHash": "30f6fdd2070b560d534b64e9d8814e05c45296bf684f1adbdd78c974d65f7ee5",
+  "updatedAt": "2026-11-03T04:47:57.156Z",
+  "version": "V.3.1.6"
 }

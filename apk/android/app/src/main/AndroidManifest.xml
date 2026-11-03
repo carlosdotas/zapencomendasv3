@@ -55,6 +55,11 @@
             android:enabled="true"
             android:exported="false" />
 
+        <receiver
+            android:name=".NativeLocationReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
         <!-- Receiver para reiniciar serviço de GPS ao reiniciar o aparelho -->
         <receiver
             android:name=".BootReceiver"
