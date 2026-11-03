@@ -52,6 +52,7 @@ function readManifest() {
 }
 
 const initialize = process.argv.includes('--initialize');
+const bumpApk = process.argv.includes('--bump-apk');
 const manifest = readManifest();
 const webHash = hashInputs(webInputs);
 const apkHash = hashInputs(apkInputs);
@@ -62,7 +63,7 @@ if (initialize) {
   manifest.apk = 0;
 } else {
   if (manifest.webHash && manifest.webHash !== webHash) manifest.web += 1;
-  if (manifest.apkHash && manifest.apkHash !== apkHash) manifest.apk += 1;
+  if (bumpApk || (manifest.apkHash && manifest.apkHash !== apkHash)) manifest.apk += 1;
 }
 
 manifest.major = 3;

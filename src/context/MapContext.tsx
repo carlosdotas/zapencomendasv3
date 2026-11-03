@@ -1878,7 +1878,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // 1. Telemetria do Motorista Ativo: sincroniza em tempo real com tela ligada ou desligada
   useEffect(() => {
     if (currentRole !== 'motorista' || !isDriverOnline) {
-      backgroundGeolocationService.stopBackgroundTracking();
       return;
     }
 

@@ -42,7 +42,8 @@ public class LocationService extends Service implements LocationListener {
     private static final String KEY_DRIVER = "driver";
     private static final long MIN_SEND_INTERVAL_MS = 5000L;
     private static final long LOCATION_HEALTH_CHECK_MS = 60_000L;
-    private static final long RECOVERY_DELAY_MS = 15_000L;
+    private static final long LOCATION_STALE_MS = 120_000L;
+    private static final long RECOVERY_DELAY_MS = 15 * 60_000L;
     private static final int RECOVERY_REQUEST_CODE = 2027;
 
     private LocationManager locationManager;
@@ -56,7 +57,11 @@ public class LocationService extends Service implements LocationListener {
         @Override
         public void run() {
             if (!isTrackingEnabled(LocationService.this)) return;
-            startLocationUpdates();
+            long now = System.currentTimeMillis();
+            if (!locationUpdatesRegistered || (lastLocationFixAt > 0 && now - lastLocationFixAt > LOCATION_STALE_MS)) {
+                Log.w(TAG, "GPS sem atualização recente. Registrando provedores novamente.");
+                startLocationUpdates();
+            }
             healthHandler.postDelayed(this, LOCATION_HEALTH_CHECK_MS);
         }
     };
@@ -142,6 +147,7 @@ public class LocationService extends Service implements LocationListener {
         createNotificationChannel();
         startForegroundWithNotification();
         startLocationUpdates();
+        scheduleRecovery();
         healthHandler.post(locationHealthCheck);
     }
 
@@ -247,6 +253,7 @@ public class LocationService extends Service implements LocationListener {
             return START_NOT_STICKY;
         }
 
+        scheduleRecovery();
         // START_STICKY garante que o Android reinicie o serviço caso seja finalizado pelo sistema.
         return START_STICKY;
     }
