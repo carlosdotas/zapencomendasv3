@@ -74,7 +74,6 @@ public class MainActivity extends BridgeActivity {
         setupWebView();
         requestInitialPermissions();
         checkGpsEnabled();
-        requestIgnoreBatteryOptimizations();
         handleIncomingIntent(getIntent());
     }
 
@@ -543,21 +542,6 @@ public class MainActivity extends BridgeActivity {
                     new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
                     BACKGROUND_LOCATION_CODE
                 );
-            }
-        }
-    }
-
-    private void requestIgnoreBatteryOptimizations() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                    Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                    intent.setData(Uri.parse("package:" + getPackageName()));
-                    startActivity(intent);
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Não foi possível abrir diálogo de ignorar otimização de bateria: " + e.getMessage());
             }
         }
     }
