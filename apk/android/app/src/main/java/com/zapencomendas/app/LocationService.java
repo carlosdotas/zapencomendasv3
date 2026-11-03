@@ -184,7 +184,12 @@ public class LocationService extends Service implements LocationListener {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // START_STICKY garante que o Android reinicie o serviço caso seja finalizado pelo sistema
+        if (!isTrackingEnabled(this)) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        // START_STICKY garante que o Android reinicie o serviço caso seja finalizado pelo sistema.
         return START_STICKY;
     }
 
@@ -268,6 +273,10 @@ public class LocationService extends Service implements LocationListener {
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
+        if (!isTrackingEnabled(this)) {
+            stopSelf();
+            return;
+        }
         Log.d(TAG, "App removido dos recentes. Reiniciando serviço para manter monitoramento...");
         Intent restartServiceIntent = new Intent(getApplicationContext(), this.getClass());
         restartServiceIntent.setPackage(getPackageName());

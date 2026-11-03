@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "sync": "cap sync",
-    "build:apk": "cap sync && cd android && .\\gradlew.bat assembleDebug && copy /y app\\build\\outputs\\apk\\debug\\app-debug.apk ..\\zap-encomendas.apk",
+    "build:apk": "cap sync && cd android && .\\gradlew.bat assembleDebug && copy /y app\\build\\outputs\\apk\\debug\\app-debug.apk ..\\zap-encomendas.apk && copy /y app\\build\\outputs\\apk\\debug\\app-debug.apk ..\\..\\public\\download\\zap-encomendas.apk",
     "open:android": "cap open android"
   },
   "keywords": [],

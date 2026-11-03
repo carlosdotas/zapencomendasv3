@@ -230,11 +230,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
           {!(window as any).Capacitor?.isNativePlatform?.() && (
             <div className="pb-4 text-center">
               <a
-                href="/download/zap-encomendas.apk"
+                href="/download/zap-encomendas.apk?v=1.0.2"
                 download="zap-encomendas.apk"
                 className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-xs font-black text-[#0B5187] hover:bg-slate-50"
               >
-                📱 Baixar aplicativo Android (APK)
+                📱 Baixar aplicativo Android 1.0.2 (APK)
               </a>
             </div>
           )}
