@@ -80,28 +80,28 @@ export class LocalDbStore {
       }
 
       // 2. Garante tabelas essenciais
-      if (!this.tables.has('config_cities') || !this.tables.get('config_cities')?.length) {
+      if (!this.tables.has('config_cities')) {
         this.tables.set('config_cities', [...DEFAULT_CITIES]);
         this.updateMaxId('config_cities', DEFAULT_CITIES);
       }
-      if (!this.tables.has('app_settings') || !this.tables.get('app_settings')?.length) {
+      if (!this.tables.has('app_settings')) {
         this.tables.set('app_settings', [...DEFAULT_SETTINGS]);
         this.updateMaxId('app_settings', DEFAULT_SETTINGS);
       }
-      if (!this.tables.has('company') || !this.tables.get('company')?.length) {
+      if (!this.tables.has('company')) {
         this.tables.set('company', [...DEFAULT_COMPANY]);
         this.updateMaxId('company', DEFAULT_COMPANY);
       }
 
       // 3. Usuários a partir de importedUsers.legacy.json se a tabela estiver vazia
-      if (!this.tables.has('users') || !this.tables.get('users')?.length) {
+      if (!this.tables.has('users')) {
         const seededUsers = this.seedUsersFromLegacy();
         this.tables.set('users', seededUsers);
         this.updateMaxId('users', seededUsers);
       }
 
       // 4. Pedidos a partir de backup se tabela estiver vazia
-      if (!this.tables.has('orders') || !this.tables.get('orders')?.length) {
+      if (!this.tables.has('orders')) {
         const seededOrders = this.seedOrdersFromBackup();
         this.tables.set('orders', seededOrders);
         this.updateMaxId('orders', seededOrders);
@@ -183,25 +183,37 @@ export class LocalDbStore {
     return list;
   }
 
+  private writeStore() {
+    const obj: Record<string, any[]> = {};
+    for (const [table, rows] of this.tables.entries()) {
+      // Não precisa persistir logs de rastreamento efêmeros em massa
+      if (table === 'driver_tracking' && rows.length > 500) {
+        obj[table] = rows.slice(-500);
+      } else {
+        obj[table] = rows;
+      }
+    }
+    fs.writeFileSync(STORE_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+  }
+
   private schedulePersist() {
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
       try {
-        const obj: Record<string, any[]> = {};
-        for (const [table, rows] of this.tables.entries()) {
-          // Não precisa persistir logs de rastreamento efêmeros em massa
-          if (table === 'driver_tracking' && rows.length > 500) {
-            obj[table] = rows.slice(-500);
-          } else {
-            obj[table] = rows;
-          }
-        }
-        fs.writeFileSync(STORE_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+        this.writeStore();
       } catch (err) {
         console.warn('[LocalDbStore] Falha ao persistir loja local:', err);
       }
     }, 100);
+  }
+
+  private persistImmediately() {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.writeStore();
   }
 
   private matchCondition(val: any, cond: any): boolean {
@@ -471,7 +483,7 @@ export class LocalDbStore {
         const idx = list.findIndex(r => this.matchWhere(r, where));
         if (idx === -1) return null;
         const [removed] = list.splice(idx, 1);
-        this.schedulePersist();
+        this.persistImmediately();
         return removed;
       }
 
@@ -481,7 +493,7 @@ export class LocalDbStore {
         const kept = list.filter(r => !this.matchWhere(r, where));
         this.tables.set(table, kept);
         const count = prevLen - kept.length;
-        if (count > 0) this.schedulePersist();
+        if (count > 0) this.persistImmediately();
         return { count };
       }
 

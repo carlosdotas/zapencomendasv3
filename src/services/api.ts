@@ -183,7 +183,7 @@ export const api = {
     return placeService.buscarLocalLink(link);
   },
 
-  async getLocaisNearby(lat: number, lng: number, radiusKm: number = 0.5): Promise<ApiResponse<{ id: number; name: string; lat: number; lng: number; dist_km?: number } | null>> {
+  async getLocaisNearby(lat: number, lng: number, radiusKm: number = 0.5): Promise<ApiResponse<{ id: number; name: string; lat: number; lng: number; dist_km?: number; dist_m?: number } | null>> {
     return placeService.getLocaisNearby(lat, lng, radiusKm);
   },
 

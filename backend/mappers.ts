@@ -348,6 +348,9 @@ const ORDER_READ_ALIASES: Array<[string, string]> = [
 const ORDER_KNOWN_KEYS = new Set<string>([
   'id', 'data', 'etapa', 'tipo_encomenda', 'tipo_veiculo', 'status_pagamento', 'created_at', 'updated_at',
   'token', 'caller_role', 'userRole', 'user_role', 'pedido_id',
+  'observations', 'notes', 'pickupNotes', 'deliveryNotes', 'exchangeNotes',
+  'orig_notes', 'dest_notes', 'coleta_observacoes', 'coleta_observacao', 'obs_coleta',
+  'entrega_observacoes', 'entrega_observacao', 'obs_entrega',
   ...ORDER_FIELDS.map(([key]) => key),
   ...ORDER_READ_ALIASES.map(([key]) => key),
   'cliente_id'
@@ -439,27 +442,32 @@ export function pedidoLocationIds(rows: any[]): number[] {
 
 /** Converte o corpo do app em colunas da tabela `orders` (+ `extra`). */
 export function pedidoFromBackend(body: Json, current?: any): Json {
+  const payload: Json = { ...body };
   const data: Json = {};
   const extra = parseExtra(current?.extra);
   const app: Json = { ...(extra.__app || {}) };
 
   // Normaliza aliases de observações e notas de coleta, entrega e gerais para persistência garantida no banco
-  if (body.coleta_obs === undefined || body.coleta_obs === '') {
-    const v = body.pickupNotes ?? body.orig_notes ?? body.coleta_observacoes ?? body.coleta_observacao ?? body.obs_coleta;
-    if (v !== undefined) body.coleta_obs = v;
+  if (payload.coleta_obs === undefined || payload.coleta_obs === '') {
+    const v = payload.pickupNotes ?? payload.orig_notes ?? payload.coleta_observacoes ?? payload.coleta_observacao ?? payload.obs_coleta;
+    if (v !== undefined) payload.coleta_obs = v;
   }
-  if (body.entrega_obs === undefined || body.entrega_obs === '') {
-    const v = body.deliveryNotes ?? body.dest_notes ?? body.entrega_observacoes ?? body.entrega_observacao ?? body.obs_entrega;
-    if (v !== undefined) body.entrega_obs = v;
+  if (payload.entrega_obs === undefined || payload.entrega_obs === '') {
+    const v = payload.deliveryNotes ?? payload.dest_notes ?? payload.entrega_observacoes ?? payload.entrega_observacao ?? payload.obs_entrega;
+    if (v !== undefined) payload.entrega_obs = v;
   }
-  if (body.detalhes === undefined || body.detalhes === '') {
-    const v = body.observations ?? body.notes ?? body.observacoes ?? body.observacao ?? body.driverNotes;
-    if (v !== undefined) body.detalhes = v;
+  if (payload.troca_obs === undefined || payload.troca_obs === '') {
+    const v = payload.exchangeNotes ?? payload.troca_observacoes ?? payload.troca_observacao ?? payload.obs_troca;
+    if (v !== undefined) payload.troca_obs = v;
+  }
+  if (payload.detalhes === undefined || payload.detalhes === '') {
+    const v = payload.observations ?? payload.notes ?? payload.observacoes ?? payload.observacao ?? payload.driverNotes;
+    if (v !== undefined) payload.detalhes = v;
   }
 
   for (const [key, column, kind] of ORDER_FIELDS) {
-    let value = body[key];
-    if (key === 'clientes_id' && value === undefined) value = body.cliente_id;
+    let value = payload[key];
+    if (key === 'clientes_id' && value === undefined) value = payload.cliente_id;
     if (value === undefined) continue;
     switch (kind) {
       case 's': data[column] = toStr(value); break;
@@ -480,28 +488,28 @@ export function pedidoFromBackend(body: Json, current?: any): Json {
   }
   if ('item_qty' in data && !data.item_qty) data.item_qty = 1;
 
-  if (body.data !== undefined && hasValue(body.data)) data.date = String(body.data).slice(0, 10);
-  if (body.etapa !== undefined && String(body.etapa).toLowerCase().trim() in ETAPA_TO_STAGE) {
-    app.etapa = normalizeEtapa(body.etapa);
-    data.stage = etapaToStage(body.etapa);
+  if (payload.data !== undefined && hasValue(payload.data)) data.date = String(payload.data).slice(0, 10);
+  if (payload.etapa !== undefined && String(payload.etapa).toLowerCase().trim() in ETAPA_TO_STAGE) {
+    app.etapa = normalizeEtapa(payload.etapa);
+    data.stage = etapaToStage(payload.etapa);
   }
-  if (body.tipo_encomenda !== undefined && String(body.tipo_encomenda).toLowerCase() in TIPO_TO_ORDER_TYPE) {
-    const tipo = String(body.tipo_encomenda).toLowerCase();
+  if (payload.tipo_encomenda !== undefined && String(payload.tipo_encomenda).toLowerCase() in TIPO_TO_ORDER_TYPE) {
+    const tipo = String(payload.tipo_encomenda).toLowerCase();
     app.tipo_encomenda = tipo;
     data.order_type = TIPO_TO_ORDER_TYPE[tipo] || 'entrega';
   }
-  if (body.tipo_veiculo !== undefined) {
-    const veiculo = String(body.tipo_veiculo).toLowerCase();
+  if (payload.tipo_veiculo !== undefined) {
+    const veiculo = String(payload.tipo_veiculo).toLowerCase();
     app.tipo_veiculo = veiculo;
     data.vehicle_type = VEHICLE_TO_DB[veiculo] || 'moto';
   }
-  if (body.status_pagamento !== undefined) {
-    const status = String(body.status_pagamento).toLowerCase();
+  if (payload.status_pagamento !== undefined) {
+    const status = String(payload.status_pagamento).toLowerCase();
     app.status_pagamento = status;
     data.payment_status = PAYMENT_TO_DB[status] || 'nao_pago';
   }
 
-  for (const [key, value] of Object.entries(body)) {
+  for (const [key, value] of Object.entries(payload)) {
     if (ORDER_KNOWN_KEYS.has(key)) continue;
     extra[key] = value;
   }

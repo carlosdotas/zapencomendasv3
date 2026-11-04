@@ -63,6 +63,20 @@ export const SellerResponsibleModal: React.FC<SellerResponsibleModalProps> = ({
     }
   }, [isOpen, initialName, initialPhone]);
 
+  // Retorno da agenda nativa do app Android (evento 'contactSelected')
+  useEffect(() => {
+    if (!isOpen) return;
+    const onSelected = (e: Event) => {
+      const detail = (e as CustomEvent<{ name?: string; phone?: string }>).detail;
+      if (!detail || (!detail.name && !detail.phone)) return;
+      if (detail.name) setName(detail.name);
+      if (detail.phone) setPhone(formatPhoneInput(detail.phone));
+      setIsAgendaOpen(false);
+    };
+    window.addEventListener('contactSelected', onSelected);
+    return () => window.removeEventListener('contactSelected', onSelected);
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -83,6 +97,10 @@ export const SellerResponsibleModal: React.FC<SellerResponsibleModalProps> = ({
 
   // Se o dispositivo tiver suporte a navegação nativa de contatos do Android / Chrome
   const handleNativeContactPicker = async () => {
+    if (typeof window !== 'undefined' && window.AndroidApp?.pickContact) {
+      window.AndroidApp.pickContact();
+      return;
+    }
     try {
       if ('contacts' in navigator && 'select' in (navigator as any).contacts) {
         const props = ['name', 'tel'];

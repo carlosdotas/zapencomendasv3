@@ -1418,7 +1418,7 @@ export const FullscreenMap: React.FC = () => {
   operationsFilterRef.current = operationsFilter;
   const customersRef = useRef(customers);
   customersRef.current = customers;
-  const handleAddPlaceAtCoordsRef = useRef<((coords: { lat: number; lng: number }) => Promise<void>) | null>(null);
+  const handleAddPlaceAtCoordsRef = useRef<((coords: { lat: number; lng: number }, snapRadiusMeters?: number) => Promise<void>) | null>(null);
 
   // Expõe helper global para abrir foto de coleta concluída no FullScreenPhotoViewer
   useEffect(() => {
@@ -1547,7 +1547,7 @@ export const FullscreenMap: React.FC = () => {
     let lastClickPos: L.LatLng | null = null;
     let lastHandledDblClick = 0;
 
-    const handleAddPlaceAtCoords = async (coords: { lat: number; lng: number }) => {
+    const handleAddPlaceAtCoords = async (coords: { lat: number; lng: number }, snapRadiusMeters: number = 45) => {
       // Motorista NÃO PODE adicionar pedidos
       if (currentRole === 'motorista') {
         return;
@@ -1571,7 +1571,17 @@ export const FullscreenMap: React.FC = () => {
 
       // 1. SNAPPING INTELIGENTE EM LOCAL CADASTRADO (<= 45 metros)
       try {
-        const nearbyFb = placeService.getClosestLocalSync(coords.lat, coords.lng, 45);
+        let nearbyFb = placeService.getClosestLocalSync(coords.lat, coords.lng, snapRadiusMeters);
+        if (!nearbyFb) {
+          const nearRes = await placeService.getLocaisNearby(coords.lat, coords.lng, snapRadiusMeters / 1000);
+          const near = nearRes.success ? nearRes.data : null;
+          if (near) {
+            const full = await placeService.getLocalById(near.id);
+            if (full.success && full.data) {
+              nearbyFb = { local: full.data, distMeters: near.dist_m ?? calculateDistanceMeters(coords, { lat: Number(near.lat), lng: Number(near.lng) }) };
+            }
+          }
+        }
         if (nearbyFb && nearbyFb.local) {
           const l = nearbyFb.local;
           const fullAddr = l.endereco || [l.rua, l.numero, l.setor, l.cidade].filter(Boolean).join(', ') || l.name;
@@ -1765,7 +1775,7 @@ export const FullscreenMap: React.FC = () => {
         e.originalEvent.stopPropagation();
         e.originalEvent.preventDefault();
       }
-      handleAddPlaceAtCoords({ lat: e.latlng.lat, lng: e.latlng.lng });
+      handleAddPlaceAtCoords({ lat: e.latlng.lat, lng: e.latlng.lng }, 10);
     });
 
     // 2. Duplo clique como atalho adicional para adicionar no ponto
@@ -2429,7 +2439,7 @@ export const FullscreenMap: React.FC = () => {
 
     const loadCentrals = async () => {
       try {
-        const res = await placeService.getLocais({ central_coletas: true, limit: 1000 });
+        const res = await placeService.getLocaisCentrais();
         if (cancelled || !res.success || !Array.isArray(res.data)) return;
         layer.clearLayers();
         const seen = new Set<string>();

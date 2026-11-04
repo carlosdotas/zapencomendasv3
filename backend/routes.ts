@@ -244,6 +244,12 @@ async function searchPedidosWhere(body: any) {
   }
   if (body.data_ini) and.push({ date: { gte: String(body.data_ini).slice(0, 10) } });
   if (body.data_fim) and.push({ date: { lte: String(body.data_fim).slice(0, 10) } });
+  if (body.active_only === true || body.active_only === 'true' || body.active_only === 1) {
+    and.push({ stage: { notIn: ['entregue', 'finalizado', 'cancelado'] } });
+  }
+  if (body.completed_only === true || body.completed_only === 'true' || body.completed_only === 1) {
+    and.push({ stage: { in: ['entregue', 'finalizado', 'cancelado'] } });
+  }
   if (and.length) where.AND = and;
   return where;
 }
@@ -483,6 +489,20 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     const page = Math.max(1, parseInt(body.page, 10) || 1);
 
     const caller = await resolveCaller(req, body);
+    const lightweightFeed = body.active_only === true || body.active_only === 'true' || body.active_only === 1 ||
+      body.completed_only === true || body.completed_only === 'true' || body.completed_only === 1;
+    if (lightweightFeed && isPrivileged(caller)) {
+      const skip = (page - 1) * limit;
+      const [rows, total] = await Promise.all([
+        prisma.orders.findMany({ where, orderBy: { id: 'desc' }, skip, take: limit }),
+        prisma.orders.count({ where })
+      ]);
+      let data = await pedidosToBackend(rows);
+      if (etapas) data = data.filter(o => etapas.includes(String(o.etapa).toLowerCase()));
+      res.json({ success: true, data, total, page, limit, hasMore: page * limit < total });
+      return;
+    }
+
     const rows = await prisma.orders.findMany({ where, orderBy: { id: 'desc' } });
     let data = await pedidosToBackend(rows);
     // Pedido com motorista definido só aparece para esse motorista
@@ -548,8 +568,8 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       });
       await logStage(saved.id, 'novo', saved.stage, body.users_id, 'Pedido criado');
       void notifyNewOrder(saved, sessionCaller?.id ?? toInt(body.users_id));
-      deps.notifyOrdersChanged?.();
     }
+    deps.notifyOrdersChanged?.();
     res.json({ success: true, data: { id: saved.id }, id: saved.id, message: 'Pedido salvo com sucesso!' });
   });
 
@@ -974,7 +994,7 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({
       success: true,
       data: closest
-        ? { id: closest.local.id, name: closest.local.name, lat: closest.local.lat, lng: closest.local.lng, dist_km: Math.round(closest.dist * 100) / 100 }
+        ? { id: closest.local.id, name: closest.local.name, lat: closest.local.lat, lng: closest.local.lng, dist_km: Math.round(closest.dist * 100) / 100, dist_m: Math.round(closest.dist * 1000) }
         : null
     });
   });

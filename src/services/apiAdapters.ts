@@ -1,4 +1,12 @@
-import { Place, LocationCoordinates, OperationType, Driver, OrderDateBadgeType, VehicleCollectionType } from '../types/map';
+import {
+  Place,
+  LocationCoordinates,
+  OperationType,
+  Driver,
+  OrderDateBadgeType,
+  VehicleCollectionType,
+  PaymentConditionType
+} from '../types/map';
 import { Customer } from '../types/customer';
 import { isStreetOrAddress, resolveCommercialClosingTime } from '../utils/placeUtils';
 import { resolveCustomerCity } from '../utils/addressUtils';
@@ -522,6 +530,111 @@ function parseOrderExtraItems(pedido?: BackendPedido | null): Record<string, unk
   }
 }
 
+function finiteNumber(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function mapPriceItems(value: unknown): Place['priceItems'] {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const data = item as Record<string, unknown>;
+    const amount = finiteNumber(data.value);
+    if (!data.id || !data.name || amount === undefined) return [];
+    const category = ['coleta', 'transporte', 'entrega', 'extra'].includes(String(data.category))
+      ? String(data.category) as 'coleta' | 'transporte' | 'entrega' | 'extra'
+      : undefined;
+    return [{
+      id: String(data.id),
+      name: String(data.name),
+      value: amount,
+      ...(category ? { category } : {}),
+      ...(typeof data.isRemovable === 'boolean' ? { isRemovable: data.isRemovable } : {})
+    }];
+  });
+  return items.length ? items : undefined;
+}
+
+function mapDiscountItems(value: unknown): Place['discountItems'] {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const data = item as Record<string, unknown>;
+    const amount = finiteNumber(data.value);
+    if (!data.id || !data.name || amount === undefined) return [];
+    return [{
+      id: String(data.id),
+      name: String(data.name),
+      value: amount,
+      ...(typeof data.isRemovable === 'boolean' ? { isRemovable: data.isRemovable } : {})
+    }];
+  });
+  return items.length ? items : undefined;
+}
+
+function mapPaymentCondition(value: unknown): PaymentConditionType | undefined {
+  const conditions: PaymentConditionType[] = ['antes_entrega', 'depois_entrega', 'semanal', 'quinzenal', 'mensal'];
+  return conditions.includes(value as PaymentConditionType) ? value as PaymentConditionType : undefined;
+}
+
+function persistedMapOrderDetails(pedido: BackendPedido): Pick<
+  Place,
+  | 'packageType'
+  | 'priceItems'
+  | 'discountItems'
+  | 'totalDiscounts'
+  | 'scheduledTime'
+  | 'scheduledTimeMode'
+  | 'packageSize'
+  | 'volumesCount'
+  | 'weightKg'
+  | 'dimensions'
+  | 'isFragile'
+  | 'paymentCondition'
+  | 'paymentAdjustmentType'
+  | 'paymentAdjustmentValue'
+  | 'paymentAdjustmentMode'
+> {
+  const extra = parseOrderExtraItems(pedido);
+  const length = pedido.mercadoria_comprimento;
+  const width = pedido.mercadoria_largura;
+  const height = pedido.mercadoria_altura;
+  const dimensions = length || width || height
+    ? `${length || '-'}x${width || '-'}x${height || '-'}cm`
+    : undefined;
+  const adjustmentType = ['desconto', 'acrescimo', 'nenhum'].includes(String(extra.paymentAdjustmentType))
+    ? String(extra.paymentAdjustmentType) as 'desconto' | 'acrescimo' | 'nenhum'
+    : undefined;
+  const adjustmentMode = ['percent', 'fixed'].includes(String(extra.paymentAdjustmentMode))
+    ? String(extra.paymentAdjustmentMode) as 'percent' | 'fixed'
+    : undefined;
+  const scheduledTimeMode = ['ate', 'partir'].includes(String(extra.scheduledTimeMode))
+    ? String(extra.scheduledTimeMode) as 'ate' | 'partir'
+    : undefined;
+  const volumeCount = finiteNumber(pedido.mercadoria_quantidade ?? extra.volumesCount);
+
+  return {
+    packageType: pedido.mercadoria_nome || 'caixa',
+    ...(mapPriceItems(extra.priceItems) ? { priceItems: mapPriceItems(extra.priceItems) } : {}),
+    ...(mapDiscountItems(extra.discountItems) ? { discountItems: mapDiscountItems(extra.discountItems) } : {}),
+    ...(finiteNumber(pedido.desconto) !== undefined ? { totalDiscounts: finiteNumber(pedido.desconto) } : {}),
+    ...(typeof extra.scheduledTime === 'string' ? { scheduledTime: extra.scheduledTime } : {}),
+    ...(scheduledTimeMode ? { scheduledTimeMode } : {}),
+    ...(typeof extra.packageSize === 'string' ? { packageSize: extra.packageSize } : {}),
+    ...(volumeCount !== undefined ? { volumesCount: volumeCount } : {}),
+    ...(pedido.mercadoria_peso ? { weightKg: String(pedido.mercadoria_peso) } : {}),
+    ...(dimensions ? { dimensions } : {}),
+    ...(pedido.mercadoria_fragil === true || Number(pedido.mercadoria_fragil) === 1 ? { isFragile: true } : {}),
+    ...(mapPaymentCondition(extra.paymentCondition) ? { paymentCondition: mapPaymentCondition(extra.paymentCondition) } : {}),
+    ...(adjustmentType ? { paymentAdjustmentType: adjustmentType } : {}),
+    ...(finiteNumber(extra.paymentAdjustmentValue) !== undefined
+      ? { paymentAdjustmentValue: finiteNumber(extra.paymentAdjustmentValue) }
+      : {}),
+    ...(adjustmentMode ? { paymentAdjustmentMode: adjustmentMode } : {})
+  };
+}
+
 function getRoutePointMetadata(pedido: BackendPedido, point: RoutePointKey, includeLegacySeller = false) {
   const extra = parseOrderExtraItems(pedido);
   const visibilityValue = pedido[`${point}Visibility`] ?? extra[`${point}Visibility`] ??
@@ -686,10 +799,12 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
   const pickupMetadata = getRoutePointMetadata(pedido, 'pickup');
   const exchangeMetadata = getRoutePointMetadata(pedido, 'exchange');
   const deliveryMetadata = getRoutePointMetadata(pedido, 'delivery');
+  const mapOrderDetails = persistedMapOrderDetails(pedido);
 
   return {
     id: `pedido-${pedido.id}-${activeOperationType}`,
     ...pedidoPaymentFields(pedido),
+    ...mapOrderDetails,
     orderCode: `EZ-${pedido.id}-GO`,
     name: activeName,
     address: activeAddress,
@@ -721,7 +836,6 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     originCity: pedido.coleta_cidade || pedido.cidade || 'Goiânia - GO',
     destinationCity: pedido.entrega_cidade || pedido.cidade || 'Goiânia - GO',
     vehicleType: vType,
-    packageType: 'caixa',
     driverNotes: activeObs,
     observations: activeObs,
     responsibleName: activeResp,
@@ -781,12 +895,16 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
   const rawColetaLng = pedido.coleta_locais_lng ?? pedido.coleta_lng;
   const rawEntregaLat = pedido.entrega_locais_lat ?? pedido.entrega_lat;
   const rawEntregaLng = pedido.entrega_locais_lng ?? pedido.entrega_lng;
+  const rawTrocaLat = pedido.troca_lat;
+  const rawTrocaLng = pedido.troca_lng;
 
   // 1. Tenta coordenadas explícitas nos campos do pedido
   let parsedColetaLat = typeof rawColetaLat === 'string' ? parseFloat(rawColetaLat) : Number(rawColetaLat);
   let parsedColetaLng = typeof rawColetaLng === 'string' ? parseFloat(rawColetaLng) : Number(rawColetaLng);
   let parsedEntregaLat = typeof rawEntregaLat === 'string' ? parseFloat(rawEntregaLat) : Number(rawEntregaLat);
   let parsedEntregaLng = typeof rawEntregaLng === 'string' ? parseFloat(rawEntregaLng) : Number(rawEntregaLng);
+  const parsedTrocaLat = typeof rawTrocaLat === 'string' ? parseFloat(rawTrocaLat) : Number(rawTrocaLat);
+  const parsedTrocaLng = typeof rawTrocaLng === 'string' ? parseFloat(rawTrocaLng) : Number(rawTrocaLng);
 
   // 2. Se coletaLat ou coletaLng estiver ausente, extrai do texto do endereço ou busca local conhecido
   if (isNaN(parsedColetaLat) || isNaN(parsedColetaLng) || parsedColetaLat === 0) {
@@ -826,6 +944,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
 
   const hasRealColeta = !isNaN(parsedColetaLat) && !isNaN(parsedColetaLng) && parsedColetaLat !== 0 && hasColetaAddressOrName;
   const hasRealEntrega = !isNaN(parsedEntregaLat) && !isNaN(parsedEntregaLng) && parsedEntregaLat !== 0 && hasEntregaAddressOrName;
+  const hasRealTroca = !isNaN(parsedTrocaLat) && !isNaN(parsedTrocaLng) && parsedTrocaLat !== 0;
 
   const coletaLat = hasRealColeta ? parsedColetaLat : (hasRealEntrega ? parsedEntregaLat : fallbackLat);
   const coletaLng = hasRealColeta ? parsedColetaLng : (hasRealEntrega ? parsedEntregaLng : fallbackLng);
@@ -834,6 +953,9 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
 
   const pickupCoords: LocationCoordinates = { lat: coletaLat, lng: coletaLng };
   const deliveryCoords: LocationCoordinates = { lat: entregaLat, lng: entregaLng };
+  const exchangeCoords: LocationCoordinates | undefined = hasRealTroca
+    ? { lat: parsedTrocaLat, lng: parsedTrocaLng }
+    : undefined;
 
   const rawColetaName = pedido.coleta_local || pedido.coleta_locais_name || pedido.local;
   const coletaLocalName = (rawColetaName && rawColetaName !== 'Ponto de Coleta')
@@ -854,9 +976,11 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
   const pickupMetadata = getRoutePointMetadata(pedido, 'pickup');
   const exchangeMetadata = getRoutePointMetadata(pedido, 'exchange');
   const deliveryMetadata = getRoutePointMetadata(pedido, 'delivery');
+  const mapOrderDetails = persistedMapOrderDetails(pedido);
 
   const baseShared = {
     ...pedidoPaymentFields(pedido),
+    ...mapOrderDetails,
     id: `pedido-${pedido.id}`,
     orderId: String(pedido.id),
     pedido_id: pedido.id,
@@ -866,7 +990,6 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
     originCity: pedido.coleta_cidade || pedido.cidade || 'Goiânia - GO',
     destinationCity: pedido.entrega_cidade || pedido.cidade || 'Goiânia - GO',
     vehicleType: vType,
-    packageType: 'caixa' as const,
     openNow: true,
     isExchangeOrder: isExchange,
     orderDateBadge: dateBadge,
@@ -907,7 +1030,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
     deliveryNotes: pedido.entrega_obs ?? pedido.detalhes,
     exchangeName: pedido.troca_nome || entregaLocalName,
     exchangeAddress: pedido.troca_endereco || entregaFullAddress,
-    exchangeCoordinates: isExchange && hasRealEntrega ? deliveryCoords : undefined,
+    exchangeCoordinates: isExchange ? exchangeCoords || (hasRealEntrega ? deliveryCoords : undefined) : undefined,
     exchangeContact: pedido.troca_contato,
     exchangePhone: pedido.troca_phone,
     exchangeNotes: pedido.troca_obs ?? pedido.detalhes,

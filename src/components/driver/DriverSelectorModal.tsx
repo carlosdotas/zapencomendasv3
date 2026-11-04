@@ -14,7 +14,9 @@ import {
   Database,
   RefreshCw,
   MapPin,
-  Sparkles
+  Sparkles,
+  Globe,
+  Lock
 } from 'lucide-react';
 import { Place, Driver, VehicleCollectionType } from '../../types/map';
 import { api } from '../../services/api';
@@ -49,6 +51,8 @@ interface DriverSelectorModalProps {
   onRemoveDriver?: () => void;
   multiCount?: number;
   activeTelemetryDrivers: Driver[];
+  visibility?: 'publico' | 'privado';
+  onVisibilityChange?: (visibility: 'publico' | 'privado') => void;
 }
 
 export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
@@ -58,7 +62,9 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
   onSelectDriver,
   onRemoveDriver,
   multiCount,
-  activeTelemetryDrivers
+  activeTelemetryDrivers,
+  visibility,
+  onVisibilityChange
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [vehicleFilter, setVehicleFilter] = useState<'todos' | VehicleCollectionType>('todos');
@@ -271,35 +277,25 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* CABEÇALHO COM TEMA ENCOMENDASZAP */}
-        <div className="p-4 sm:p-5 bg-gradient-to-r from-[#0B5187] via-[#09426D] to-[#062D4A] text-white shrink-0">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-[#FF5E00] text-white flex items-center justify-center shadow-md">
-                <Navigation className="w-4 h-4 fill-current stroke-[2]" />
+        <div className="px-3 py-2 bg-gradient-to-r from-[#0B5187] via-[#09426D] to-[#062D4A] text-white shrink-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="w-7 h-7 shrink-0 rounded-lg bg-[#FF5E00] text-white flex items-center justify-center shadow-md">
+                <Navigation className="w-3.5 h-3.5 fill-current stroke-[2]" />
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base sm:text-lg font-black leading-tight">
-                    Direcionar para Motorista
-                  </h3>
-                  <span className="text-[10px] font-black uppercase tracking-wider bg-white/20 text-blue-100 px-2 py-0.5 rounded-full flex items-center gap-1">
-                    <Database className="w-2.5 h-2.5" />
-                    Banco de Dados
-                  </span>
-                </div>
-                <p className="text-[11px] text-blue-100 font-medium">
-                  {multiCount ? `Passar rota • ${multiCount} ${multiCount === 1 ? 'local' : 'locais'}` : `${place.operationType === 'coleta' ? 'Ponto de Coleta' : 'Ponto de Entrega'} • ${place.orderCode || 'Encomenda'}`}
-                </p>
-              </div>
+              <h3 className="shrink-0 text-sm font-black leading-tight">Motorista</h3>
+              <span className="truncate text-[11px] font-medium text-blue-100">
+                {multiCount ? `${multiCount} ${multiCount === 1 ? 'local' : 'locais'}` : `${place.name}${place.orderCode ? ` • ${place.orderCode}` : ''}`}
+              </span>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1.5">
               {/* Botão de Atualizar do Banco de Dados */}
               <button
                 type="button"
                 onClick={fetchDatabaseDrivers}
                 disabled={isLoadingBackend}
-                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors cursor-pointer disabled:opacity-50"
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors cursor-pointer disabled:opacity-50"
                 title="Atualizar lista de motoristas do banco de dados"
               >
                 <RefreshCw className={`w-3.5 h-3.5 stroke-[2.5] ${isLoadingBackend ? 'animate-spin' : ''}`} />
@@ -308,7 +304,7 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors cursor-pointer"
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 active:bg-white/30 text-white flex items-center justify-center transition-colors cursor-pointer"
                 title="Fechar"
               >
                 <X className="w-4 h-4 stroke-[2.5]" />
@@ -316,30 +312,58 @@ export const DriverSelectorModal: React.FC<DriverSelectorModalProps> = ({
             </div>
           </div>
 
-          <p className="text-xs text-blue-100 leading-snug">
-            Selecione o motorista para destinar a rota privada (opcional). A encomenda aparecerá no mapa do aplicativo dele.
-          </p>
-
-          {/* Resumo do Local da Encomenda */}
-          <div className="mt-3 p-2.5 rounded-xl bg-white/10 backdrop-blur-xs border border-white/15 flex items-center justify-between gap-2 text-xs">
-            <div className="min-w-0">
-              <span className="text-[10px] uppercase font-black tracking-wider text-orange-300 block">
-                {multiCount ? 'Locais selecionados' : `Local de ${place.operationType === 'coleta' ? 'Coleta' : 'Entrega'}`}
-              </span>
-              <p className="font-bold truncate text-white">
-                {place.name}
-              </p>
-              <p className="text-[10px] text-blue-200 truncate">
-                {place.address}
-              </p>
-            </div>
-            {place.customerName && (
-              <span className="text-[10px] font-black bg-white/20 px-2 py-1 rounded-md shrink-0">
-                {place.customerName.split(' ')[0]}
-              </span>
-            )}
-          </div>
         </div>
+
+        {onVisibilityChange && visibility && (
+          <div className="border-b border-slate-100 bg-slate-50/70 p-3 sm:p-4">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-black text-slate-800">Visibilidade do pedido</p>
+                <p className="text-[10px] font-medium text-slate-500">Defina quem pode visualizar esta encomenda no mapa.</p>
+              </div>
+              <span className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-black ${
+                visibility === 'publico'
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : 'bg-blue-100 text-[#0B5187]'
+              }`}>
+                {visibility === 'publico' ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
+                {visibility === 'publico' ? 'Público' : 'Privado'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => onVisibilityChange('publico')}
+                className={`rounded-xl border p-2 text-left transition-colors ${
+                  visibility === 'publico'
+                    ? 'border-emerald-500 bg-emerald-50 text-emerald-950 ring-1 ring-emerald-400'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-[11px] font-black">
+                  <Globe className="h-3.5 w-3.5" />
+                  Público
+                </span>
+                <span className="mt-1 block text-[9px] font-medium leading-tight">Todos os motoristas podem ver e assumir.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onVisibilityChange('privado')}
+                className={`rounded-xl border p-2 text-left transition-colors ${
+                  visibility === 'privado'
+                    ? 'border-[#0B5187] bg-blue-50 text-[#083D66] ring-1 ring-blue-400'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 text-[11px] font-black">
+                  <Lock className="h-3.5 w-3.5" />
+                  Privado
+                </span>
+                <span className="mt-1 block text-[9px] font-medium leading-tight">Direcione para um motorista específico.</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* CAMPO DE BUSCA & FILTRO POR VEÍCULO */}
         <div className="p-3 sm:p-4 border-b border-slate-100 space-y-2.5 bg-slate-50/70 shrink-0">

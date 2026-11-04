@@ -375,8 +375,6 @@ export const PlaceDetailCard: React.FC = () => {
   // Regra de segurança: Motoristas NÃO possuem permissão para adicionar nem editar pedidos
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const [isSavingOrder, setIsSavingOrder] = useState(false);
-  const [isSavingEdit, setIsSavingEdit] = useState(false);
-  const isEditing = !isDriverRole && isEditingOrder;
   const canEdit = !isDriverRole && (!isAlreadySaved || isEditingOrder);
   const isNewOrderDraft = isTemporaryOrderId(selectedPlace?.id);
 
@@ -407,31 +405,46 @@ export const PlaceDetailCard: React.FC = () => {
 
   const handleSaveSellerResponsible = (data: { name: string; phone: string }) => {
     if (!selectedPlace) return;
-    if (routeSellerTarget === 'pickup') {
-      updatePlaceDetails(selectedPlace.id, { pickupSellerName: data.name, pickupSellerPhone: data.phone });
+    const target = routeSellerTarget ||
+      (selectedPlace.operationType === 'troca' ? 'exchange' : selectedPlace.operationType === 'entrega' ? 'delivery' : 'pickup');
+    const targetOperation = target === 'pickup' ? 'coleta' : target === 'exchange' ? 'troca' : 'entrega';
+    const activeContact = selectedPlace.operationType === targetOperation
+      ? {
+          responsibleName: data.name,
+          responsiblePhone: data.phone,
+          sellerName: data.name,
+          sellerPhone: data.phone,
+          managerName: data.name,
+          managerPhone: data.phone
+        }
+      : {};
+
+    if (target === 'pickup') {
+      updatePlaceDetails(selectedPlace.id, {
+        ...activeContact,
+        pickupSellerName: data.name,
+        pickupSellerPhone: data.phone
+      });
       return;
     }
-    if (routeSellerTarget === 'exchange') {
-      updatePlaceDetails(selectedPlace.id, { exchangeSellerName: data.name, exchangeSellerPhone: data.phone });
-      return;
-    }
-    if (routeSellerTarget === 'delivery') {
-      updatePlaceDetails(selectedPlace.id, { deliverySellerName: data.name, deliverySellerPhone: data.phone });
+    if (target === 'exchange') {
+      updatePlaceDetails(selectedPlace.id, {
+        ...activeContact,
+        exchangeSellerName: data.name,
+        exchangeSellerPhone: data.phone
+      });
       return;
     }
     updatePlaceDetails(selectedPlace.id, {
-      responsibleName: data.name,
-      responsiblePhone: data.phone,
-      sellerName: data.name,
-      sellerPhone: data.phone,
-      managerName: data.name,
-      managerPhone: data.phone
+      ...activeContact,
+      deliverySellerName: data.name,
+      deliverySellerPhone: data.phone
     });
   };
 
   // Estados para direcionamento de motorista
   const [isDriverSelectorOpen, setIsDriverSelectorOpen] = useState(false);
-  const [routeDriverTarget, setRouteDriverTarget] = useState<'pickup' | 'delivery' | null>(null);
+  const [routeDriverTarget, setRouteDriverTarget] = useState<'pickup' | 'exchange' | 'delivery' | null>(null);
   const [driverToast, setDriverToast] = useState<string | null>(null);
   const hasCustomerRoute = Boolean(orderResolvedLocations?.canTraceRoute && !customerMissingLocation);
   const getRouteSeller = (point: 'pickup' | 'exchange' | 'delivery') => {
@@ -446,7 +459,43 @@ export const PlaceDetailCard: React.FC = () => {
       phone: fields.phone || (isActivePoint ? selectedPlace?.sellerPhone || selectedPlace?.responsiblePhone || selectedPlace?.managerPhone : '') || ''
     };
   };
-  const renderRouteSellerCard = (point: 'pickup' | 'exchange' | 'delivery', label: string) => {
+  const getRouteDriver = (point: 'pickup' | 'exchange' | 'delivery') => {
+    const fields = point === 'pickup'
+      ? {
+          id: selectedPlace?.pickupAssignedDriverId,
+          name: selectedPlace?.pickupAssignedDriverName,
+          phone: selectedPlace?.pickupAssignedDriverPhone,
+          visibility: selectedPlace?.pickupVisibility,
+          operation: 'coleta'
+        }
+      : point === 'exchange'
+        ? {
+            id: selectedPlace?.exchangeAssignedDriverId,
+            name: selectedPlace?.exchangeAssignedDriverName,
+            phone: selectedPlace?.exchangeAssignedDriverPhone,
+            visibility: selectedPlace?.exchangeVisibility,
+            operation: 'troca'
+          }
+        : {
+            id: selectedPlace?.deliveryAssignedDriverId,
+            name: selectedPlace?.deliveryAssignedDriverName,
+            phone: selectedPlace?.deliveryAssignedDriverPhone,
+            visibility: selectedPlace?.deliveryVisibility,
+            operation: 'entrega'
+          };
+    const isActivePoint = selectedPlace?.operationType === fields.operation;
+    return {
+      id: fields.id || (isActivePoint ? selectedPlace?.assignedDriverId : undefined),
+      name: fields.name || (isActivePoint ? selectedPlace?.assignedDriverName : undefined),
+      phone: fields.phone || (isActivePoint ? selectedPlace?.assignedDriverPhone : undefined),
+      visibility: fields.visibility || (isActivePoint ? selectedPlace?.orderVisibility : undefined) || 'publico'
+    };
+  };
+  const renderRouteSellerCard = (
+    point: 'pickup' | 'exchange' | 'delivery',
+    label: string,
+    allowEditing = true
+  ) => {
     const contact = getRouteSeller(point);
     return (
       <div className="flex items-center justify-between gap-2 rounded-lg bg-white/80 border border-slate-200 p-2">
@@ -461,7 +510,7 @@ export const PlaceDetailCard: React.FC = () => {
             {contact.phone ? formatPhoneDisplay(contact.phone) : 'Sem telefone'}
           </p>
         </div>
-        {canEdit && (
+        {canEdit && allowEditing && (
           <button
             type="button"
             onClick={() => {
@@ -478,83 +527,55 @@ export const PlaceDetailCard: React.FC = () => {
       </div>
     );
   };
-  const handleCompleteOrderEditing = async () => {
-    if (!selectedPlace || isSavingEdit) return;
-    setIsSavingEdit(true);
-    try {
-      const saved = await updatePlaceDetails(selectedPlace.id, hasCustomerRoute
-        ? {
-            pickupSellerName: getRouteSeller('pickup').name,
-            pickupSellerPhone: getRouteSeller('pickup').phone,
-            exchangeSellerName: getRouteSeller('exchange').name,
-            exchangeSellerPhone: getRouteSeller('exchange').phone,
-            deliverySellerName: getRouteSeller('delivery').name,
-            deliverySellerPhone: getRouteSeller('delivery').phone
-          }
-        : {
-            sellerName: selectedPlace.sellerName || selectedPlace.responsibleName || '',
-            sellerPhone: selectedPlace.sellerPhone || selectedPlace.responsiblePhone || '',
-            responsibleName: selectedPlace.responsibleName || selectedPlace.sellerName || '',
-            responsiblePhone: selectedPlace.responsiblePhone || selectedPlace.sellerPhone || '',
-            managerName: selectedPlace.managerName || selectedPlace.responsibleName || selectedPlace.sellerName || '',
-            managerPhone: selectedPlace.managerPhone || selectedPlace.responsiblePhone || selectedPlace.sellerPhone || ''
-          });
-      if (!saved) {
-        window.alert('Não foi possível salvar as alterações. Verifique a conexão e tente novamente.');
-        return;
-      }
-      setIsEditingOrder(false);
-      setSaveSuccessToast('Alterações salvas com sucesso.');
-      setTimeout(() => setSaveSuccessToast(null), 3000);
-    } catch (error) {
-      console.error('[PlaceDetailCard] Falha ao concluir edição:', error);
-      window.alert('Ocorreu um erro ao salvar as alterações. Tente novamente.');
-    } finally {
-      setIsSavingEdit(false);
-    }
-  };
-
-  const getRouteAssignmentPlaceId = useCallback((point: 'pickup' | 'delivery') => {
+  const getRouteAssignmentPlaceId = useCallback((point: 'pickup' | 'exchange' | 'delivery') => {
     if (!selectedPlace) return '';
-    const operation = point === 'pickup' ? 'coleta' : 'entrega';
+    const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
     const orderId = selectedPlace.orderId || selectedPlace.id.match(/pedido-(\d+)/)?.[1];
     if (orderId) return `pedido-${orderId}-${operation}`;
     return `${selectedPlace.id.replace(/-(coleta|troca|entrega|retorno)$/i, '')}-${operation}`;
   }, [selectedPlace]);
 
-  const updateRoutePointVisibility = useCallback((point: 'pickup' | 'delivery', visibility: 'publico' | 'privado') => {
+  const updateRoutePointVisibility = useCallback((point: 'pickup' | 'exchange' | 'delivery', visibility: 'publico' | 'privado') => {
     if (!selectedPlace) return;
-    const operation = point === 'pickup' ? 'coleta' : 'entrega';
+    const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
     const isActivePoint = selectedPlace.operationType === operation;
-    const updates: Partial<Place> = point === 'pickup'
-        ? {
-            pickupVisibility: visibility,
-            ...(isActivePoint ? { orderVisibility: visibility } : {}),
-            ...(visibility === 'publico' ? {
-              pickupAssignedDriverId: undefined,
-              pickupAssignedDriverName: undefined,
-              pickupAssignedDriverPhone: undefined,
-              ...(isActivePoint ? {
-                assignedDriverId: undefined,
-                assignedDriverName: undefined,
-                assignedDriverPhone: undefined
-              } : {})
-          } : {})
+    const clearActiveDriver = visibility === 'publico' && isActivePoint
+      ? {
+          assignedDriverId: undefined,
+          assignedDriverName: undefined,
+          assignedDriverPhone: undefined
         }
-        : {
-            deliveryVisibility: visibility,
-            ...(isActivePoint ? { orderVisibility: visibility } : {}),
-            ...(visibility === 'publico' ? {
+      : {};
+    const clearPointDriver = visibility === 'publico'
+      ? point === 'pickup'
+        ? {
+            pickupAssignedDriverId: undefined,
+            pickupAssignedDriverName: undefined,
+            pickupAssignedDriverPhone: undefined
+          }
+        : point === 'exchange'
+          ? {
+              exchangeAssignedDriverId: undefined,
+              exchangeAssignedDriverName: undefined,
+              exchangeAssignedDriverPhone: undefined
+            }
+          : {
               deliveryAssignedDriverId: undefined,
               deliveryAssignedDriverName: undefined,
-              deliveryAssignedDriverPhone: undefined,
-              ...(isActivePoint ? {
-                assignedDriverId: undefined,
-                assignedDriverName: undefined,
-                assignedDriverPhone: undefined
-              } : {})
-            } : {})
-        };
+              deliveryAssignedDriverPhone: undefined
+            }
+      : {};
+    const pointVisibility = point === 'pickup'
+      ? { pickupVisibility: visibility }
+      : point === 'exchange'
+        ? { exchangeVisibility: visibility }
+        : { deliveryVisibility: visibility };
+    const updates: Partial<Place> = {
+      ...pointVisibility,
+      ...(isActivePoint ? { orderVisibility: visibility } : {}),
+      ...clearPointDriver,
+      ...clearActiveDriver
+    };
     if (visibility === 'publico') {
       assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined);
     }
@@ -565,69 +586,78 @@ export const PlaceDetailCard: React.FC = () => {
   const handleSelectDriverForRoutePoint = useCallback((driverOption: { id: string; phone?: string; name?: string }) => {
     if (!selectedPlace || !routeDriverTarget) return;
     const point = routeDriverTarget;
-    const operation = point === 'pickup' ? 'coleta' : 'entrega';
+    const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
     assignPlaceToDriver(getRouteAssignmentPlaceId(point), driverOption.id, driverOption.phone, driverOption.name);
     clearActiveRoute();
-    updatePlaceDetails(selectedPlace.id, point === 'pickup'
+    const activeDriver = selectedPlace.operationType === operation
       ? {
-          pickupVisibility: 'privado',
-          ...(selectedPlace.operationType === operation ? {
-            orderVisibility: 'privado',
-            assignedDriverId: driverOption.id,
-            assignedDriverPhone: driverOption.phone,
-            assignedDriverName: driverOption.name
-          } : {}),
+          orderVisibility: 'privado' as const,
+          assignedDriverId: driverOption.id,
+          assignedDriverPhone: driverOption.phone,
+          assignedDriverName: driverOption.name
+        }
+      : {};
+    const pointDriver = point === 'pickup'
+      ? {
+          pickupVisibility: 'privado' as const,
           pickupAssignedDriverId: driverOption.id,
           pickupAssignedDriverPhone: driverOption.phone,
           pickupAssignedDriverName: driverOption.name
         }
-      : {
-          deliveryVisibility: 'privado',
-          ...(selectedPlace.operationType === operation ? {
-            orderVisibility: 'privado',
-            assignedDriverId: driverOption.id,
-            assignedDriverPhone: driverOption.phone,
-            assignedDriverName: driverOption.name
-          } : {}),
-          deliveryAssignedDriverId: driverOption.id,
-          deliveryAssignedDriverPhone: driverOption.phone,
-          deliveryAssignedDriverName: driverOption.name
-        });
+      : point === 'exchange'
+        ? {
+            exchangeVisibility: 'privado' as const,
+            exchangeAssignedDriverId: driverOption.id,
+            exchangeAssignedDriverPhone: driverOption.phone,
+            exchangeAssignedDriverName: driverOption.name
+          }
+        : {
+            deliveryVisibility: 'privado' as const,
+            deliveryAssignedDriverId: driverOption.id,
+            deliveryAssignedDriverPhone: driverOption.phone,
+            deliveryAssignedDriverName: driverOption.name
+          };
+    updatePlaceDetails(selectedPlace.id, { ...activeDriver, ...pointDriver });
     setIsDriverSelectorOpen(false);
     setRouteDriverTarget(null);
-    setDriverToast(`${operation === 'coleta' ? 'Coleta' : 'Entrega'} privada direcionada para ${driverOption.name}!`);
+    setDriverToast(`${operation === 'coleta' ? 'Coleta' : operation === 'troca' ? 'Troca' : 'Entrega'} privada direcionada para ${driverOption.name}!`);
     setTimeout(() => setDriverToast(null), 3500);
   }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails, clearActiveRoute]);
 
-  const handleRemoveDriverFromRoutePoint = useCallback((point: 'pickup' | 'delivery' = routeDriverTarget || 'pickup') => {
+  const handleRemoveDriverFromRoutePoint = useCallback((point: 'pickup' | 'exchange' | 'delivery' = routeDriverTarget || 'pickup') => {
     if (!selectedPlace) return;
     assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined);
     clearActiveRoute();
-    updatePlaceDetails(selectedPlace.id, point === 'pickup'
+    const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
+    const activeDriver = selectedPlace.operationType === operation
       ? {
-          pickupVisibility: 'privado',
-          ...(selectedPlace.operationType === 'coleta' ? {
-            orderVisibility: 'privado',
-            assignedDriverId: undefined,
-            assignedDriverName: undefined,
-            assignedDriverPhone: undefined
-          } : {}),
+          orderVisibility: 'privado' as const,
+          assignedDriverId: undefined,
+          assignedDriverName: undefined,
+          assignedDriverPhone: undefined
+        }
+      : {};
+    const pointDriver = point === 'pickup'
+      ? {
+          pickupVisibility: 'privado' as const,
           pickupAssignedDriverId: undefined,
           pickupAssignedDriverName: undefined,
           pickupAssignedDriverPhone: undefined
         }
-      : {
-          deliveryVisibility: 'privado',
-          ...(selectedPlace.operationType === 'entrega' ? {
-            orderVisibility: 'privado',
-            assignedDriverId: undefined,
-            assignedDriverName: undefined,
-            assignedDriverPhone: undefined
-          } : {}),
-          deliveryAssignedDriverId: undefined,
-          deliveryAssignedDriverName: undefined,
-          deliveryAssignedDriverPhone: undefined
-        });
+      : point === 'exchange'
+        ? {
+            exchangeVisibility: 'privado' as const,
+            exchangeAssignedDriverId: undefined,
+            exchangeAssignedDriverName: undefined,
+            exchangeAssignedDriverPhone: undefined
+          }
+        : {
+            deliveryVisibility: 'privado' as const,
+            deliveryAssignedDriverId: undefined,
+            deliveryAssignedDriverName: undefined,
+            deliveryAssignedDriverPhone: undefined
+          };
+    updatePlaceDetails(selectedPlace.id, { ...activeDriver, ...pointDriver });
     setIsDriverSelectorOpen(false);
     setRouteDriverTarget(null);
     setDriverToast('Motorista desvinculado. O ponto continua privado.');
@@ -693,6 +723,15 @@ export const PlaceDetailCard: React.FC = () => {
     setDriverToast('Visibilidade definida como Privado. Selecione um motorista se desejar.');
     setTimeout(() => setDriverToast(null), 3500);
   }, [selectedPlace, updatePlaceDetails, clearActiveRoute]);
+
+  const handleDraftVisibilityChange = useCallback((visibility: 'publico' | 'privado') => {
+    if (!selectedPlace) return;
+    const point = routeDriverTarget ||
+      (selectedPlace.operationType === 'troca' ? 'exchange' : selectedPlace.operationType === 'entrega' ? 'delivery' : 'pickup');
+    updateRoutePointVisibility(point, visibility);
+    setDriverToast(`Visibilidade da ${point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega'} definida como ${visibility === 'publico' ? 'Público' : 'Privado'}.`);
+    setTimeout(() => setDriverToast(null), 3500);
+  }, [routeDriverTarget, selectedPlace, updateRoutePointVisibility]);
 
   const [copied, setCopied] = useState(false);
   const [sharedToast, setSharedToast] = useState(false);
@@ -776,6 +815,8 @@ export const PlaceDetailCard: React.FC = () => {
   const [editedPickupNotes, setEditedPickupNotes] = useState('');
   const [editedExchangeNotes, setEditedExchangeNotes] = useState('');
   const [editedDeliveryNotes, setEditedDeliveryNotes] = useState('');
+  const [draftPlaceName, setDraftPlaceName] = useState('');
+  const [draftOrderComment, setDraftOrderComment] = useState('');
   const [editingRouteComment, setEditingRouteComment] = useState<'pickup' | 'delivery' | null>(null);
 
   // Modal da Etapa Final com Detalhes, Rota, Preços e Compartilhar no Zap
@@ -940,6 +981,14 @@ export const PlaceDetailCard: React.FC = () => {
       setEditedPickupNotes(selectedPlace.pickupNotes || '');
       setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
       setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
+      setDraftPlaceName(selectedPlace.name || '');
+      setDraftOrderComment(
+        selectedPlace.operationType === 'troca'
+          ? selectedPlace.exchangeNotes || selectedPlace.observations || ''
+          : selectedPlace.operationType === 'entrega'
+            ? selectedPlace.deliveryNotes || selectedPlace.observations || ''
+            : selectedPlace.pickupNotes || selectedPlace.observations || ''
+      );
       setNewCustomPackageInput('');
 
       // Inicializa dimensões a partir de selectedPlace.dimensions (ex: 30x20x15 cm)
@@ -1454,14 +1503,111 @@ export const PlaceDetailCard: React.FC = () => {
   const customerName = selectedPlace.customerName || '';
   const customerPhone = selectedPlace.customerPhone || '';
   const placeDateBadge = getPlaceDateBadgeInfo(selectedPlace);
+  const activeRoutePoint = operationType === 'troca' ? 'exchange' : operationType === 'entrega' ? 'delivery' : 'pickup';
+  const activeRouteSeller = getRouteSeller(activeRoutePoint);
   
   const hasResponsible = Boolean(
+    activeRouteSeller.name ||
     (selectedPlace.responsibleName && selectedPlace.responsibleName.trim()) ||
     (selectedPlace.sellerName && selectedPlace.sellerName.trim()) || 
     (selectedPlace.managerName && selectedPlace.managerName.trim())
   );
-  const responsibleName = selectedPlace.sellerName || selectedPlace.responsibleName || selectedPlace.managerName || '';
-  const responsiblePhone = selectedPlace.sellerPhone || selectedPlace.responsiblePhone || selectedPlace.managerPhone || customerPhone;
+  const responsibleName = activeRouteSeller.name || selectedPlace.sellerName || selectedPlace.responsibleName || selectedPlace.managerName || '';
+  const responsiblePhone = activeRouteSeller.phone || selectedPlace.sellerPhone || selectedPlace.responsiblePhone || selectedPlace.managerPhone || customerPhone;
+  const selectedDriverName = selectedPlace.assignedDriverName || assignedDriverObj?.name || '';
+  const renderRoutePointDetails = (point: 'pickup' | 'exchange' | 'delivery') => {
+    const seller = getRouteSeller(point);
+    const notes = point === 'pickup'
+      ? selectedPlace.pickupNotes || selectedPlace.observations || ''
+      : point === 'exchange'
+        ? selectedPlace.exchangeNotes || selectedPlace.observations || ''
+        : selectedPlace.deliveryNotes || selectedPlace.observations || '';
+
+    if (!seller.name && !notes) return null;
+
+    return (
+      <div className="mt-1.5 space-y-0.5 border-l-2 border-slate-200 pl-2 text-[9.5px]">
+        {seller.name && (
+          <p className="flex items-center gap-1 font-bold text-slate-600">
+            <UserCheck className="h-3 w-3 shrink-0 text-[#0B5187]" />
+            <span className="truncate">Responsável: {seller.name}</span>
+          </p>
+        )}
+        {notes && (
+          <p className="flex items-start gap-1 font-medium text-slate-500">
+            <FileText className="mt-0.5 h-3 w-3 shrink-0 text-amber-700" />
+            <span className="line-clamp-2 whitespace-pre-wrap break-words">Obs.: {notes}</span>
+          </p>
+        )}
+      </div>
+    );
+  };
+  const renderDraftRoutePointActions = (point: 'pickup' | 'exchange' | 'delivery') => {
+    if (!isNewOrderDraft || !canEdit || !hasCustomerRoute) return null;
+    const seller = getRouteSeller(point);
+    const driver = getRouteDriver(point);
+    const label = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
+    const note = point === 'pickup'
+      ? selectedPlace.pickupNotes || ''
+      : point === 'exchange'
+        ? selectedPlace.exchangeNotes || ''
+        : selectedPlace.deliveryNotes || '';
+
+    return (
+      <div className="mt-2 space-y-1.5">
+        <div className="flex flex-wrap gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              setRouteSellerTarget(point);
+              setIsSellerModalOpen(true);
+            }}
+            className="inline-flex max-w-full items-center gap-1 rounded-lg border border-orange-200 bg-orange-50 px-2 py-1 text-[9px] font-black text-orange-800 hover:bg-orange-100"
+          >
+            <UserCheck className="h-3 w-3 shrink-0" />
+            <span className="min-w-0 flex-1 whitespace-normal break-words text-center leading-tight">
+              {seller.name ? <><span>Vendedor</span><br /><span className="font-semibold">{seller.name}</span></> : 'Definir vendedor'}
+            </span>
+            {seller.name && <Edit3 className="h-2.5 w-2.5 shrink-0" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRouteDriverTarget(point);
+              setIsDriverSelectorOpen(true);
+            }}
+            className="inline-flex max-w-full items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[9px] font-black text-emerald-800 hover:bg-emerald-100"
+          >
+            {driver.visibility === 'privado' ? <Lock className="h-3 w-3 shrink-0" /> : <Globe className="h-3 w-3 shrink-0" />}
+            <span className="min-w-0 flex-1 whitespace-normal break-words text-center leading-tight">
+              {driver.name ? <><span>Motorista</span><br /><span className="font-semibold">{driver.name}</span></> : 'Motorista'}
+            </span>
+            {driver.name && <Edit3 className="h-2.5 w-2.5 shrink-0" />}
+          </button>
+        </div>
+        <textarea
+          value={note}
+          onChange={event => {
+            const value = event.target.value;
+            const routeNote = point === 'pickup'
+              ? { pickupNotes: value }
+              : point === 'exchange'
+                ? { exchangeNotes: value }
+                : { deliveryNotes: value };
+            setSelectedPlace({
+              ...selectedPlace,
+              ...routeNote,
+              ...(point === activeRoutePoint ? { observations: value } : {})
+            });
+            if (point === activeRoutePoint) setDraftOrderComment(value);
+          }}
+          rows={2}
+          placeholder={`Comentários para ${label}...`}
+          className="w-full resize-y rounded-lg border border-amber-200 bg-amber-50/50 px-2 py-1.5 text-[11px] font-medium text-slate-800 outline-none focus:border-amber-500 focus:bg-white focus:ring-1 focus:ring-amber-100"
+        />
+      </div>
+    );
+  };
 
   // Primeira foto do local/encomenda para identificação visual imediata
   // REGRA: Na entrega NÃO pode mostrar foto do local, apenas na coleta
@@ -2010,13 +2156,31 @@ ${horarioText}
   // Salva a encomenda/pedido no banco de dados e mapa conforme as regras de Coleta, Entrega e Troca
   const handleSavePlaceOrder = async () => {
     if (!selectedPlace || isDriverRole || isSavingOrder) return;
-    const finalObs = isEditingObservations ? editedObservations : (selectedPlace.observations || '');
     const op = selectedPlace.operationType || 'coleta';
+    const finalObs = isNewOrderDraft && !hasCustomerRoute
+      ? draftOrderComment
+      : isEditingObservations ? editedObservations : (selectedPlace.observations || '');
+    const draftRouteNotes: Partial<Place> = isNewOrderDraft && !hasCustomerRoute
+      ? op === 'troca'
+        ? { exchangeNotes: draftOrderComment }
+        : op === 'entrega'
+          ? { deliveryNotes: draftOrderComment }
+          : { pickupNotes: draftOrderComment }
+      : {};
     const resolved = getOrderLocationsForOperation(selectedPlace, op, customers);
 
     let updated: Place = {
       ...selectedPlace,
-      observations: finalObs
+      name: isNewOrderDraft ? draftPlaceName.trim() || selectedPlace.name : selectedPlace.name,
+      observations: finalObs,
+      ...draftRouteNotes,
+      ...(isEditingObservations
+        ? {
+            pickupNotes: editedPickupNotes,
+            exchangeNotes: selectedPlace.isExchangeOrder || op === 'troca' ? editedExchangeNotes : undefined,
+            deliveryNotes: editedDeliveryNotes
+          }
+        : {})
     };
 
     clearActiveRoute();
@@ -2147,6 +2311,29 @@ ${horarioText}
 
   return (
     <>
+      {(saveSuccessToast || driverToast) && (
+        <div className="pointer-events-none fixed inset-x-0 top-3 z-[150] flex justify-center px-4">
+          <div
+            role="status"
+            className="pointer-events-auto inline-flex max-w-md items-center gap-2 rounded-xl border border-slate-200 bg-white/95 px-3 py-2 text-xs font-bold text-slate-700 shadow-lg backdrop-blur-sm animate-in fade-in slide-in-from-top-2 duration-150"
+          >
+            <Check className="h-4 w-4 shrink-0 text-emerald-600" />
+            <span className="min-w-0 flex-1 truncate">{saveSuccessToast || driverToast}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setSaveSuccessToast(null);
+                setDriverToast(null);
+              }}
+              className="rounded-md p-0.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+              aria-label="Fechar informação"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* INPUT INVISÍVEL PARA ESCOLHER FOTO DA GALERIA */}
       <input 
         type="file" 
@@ -2189,6 +2376,7 @@ ${horarioText}
               <div className="relative">
                 <button
                   type="button"
+                  disabled={isNewOrderDraft || !canEdit}
                   onClick={() => {
                     if (!canEdit) {
                       handleLockedEditAttempt();
@@ -2879,13 +3067,6 @@ ${horarioText}
                   <span>Editar</span>
                 </button>
               )}
-              {isEditingOrder && (
-                <span className="px-2.5 py-1 rounded-full bg-[#DC2626] text-white text-[11px] font-black inline-flex items-center gap-1 shadow-2xs">
-                  <Edit3 className="w-3 h-3 stroke-[2.5]" />
-                  <span>Editando</span>
-                </span>
-              )}
-
               <button
                 onClick={triggerClose}
                 className="w-7 h-7 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-colors active:scale-90 shrink-0 cursor-pointer"
@@ -2896,33 +3077,6 @@ ${horarioText}
               </button>
             </div>
           </div>
-
-          {/* BANNER DE MODO DE EDIÇÃO ATIVO - FUNDO VERMELHO, LETRA BRANCA, BEM DESTACADO E LEGÍVEL */}
-          {isEditingOrder && (
-            <div 
-              className="bg-[#DC2626] text-white px-3.5 py-2 flex items-center justify-between text-xs sm:text-sm font-black shadow-md shrink-0 border-y-2 border-red-700 animate-in fade-in duration-150"
-              title="Modo de edição ativo. Toque nos dados para alterar."
-            >
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-white animate-pulse shrink-0" />
-                <span className="flex items-center gap-1.5 uppercase tracking-wide font-black">
-                  <Edit3 className="w-4 h-4 stroke-[2.8]" />
-                  Modo de Edição Ativo
-                </span>
-                <span className="hidden sm:inline text-[11px] font-bold text-white/95">
-                  • Toque nos campos para alterar
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={handleCompleteOrderEditing}
-                disabled={isSavingEdit}
-                className="bg-white hover:bg-red-50 text-red-700 active:scale-95 px-3 py-1 rounded-lg text-xs font-black uppercase tracking-wider shadow-xs transition-all cursor-pointer disabled:opacity-60"
-              >
-                {isSavingEdit ? 'Salvando...' : 'Concluir'}
-              </button>
-            </div>
-          )}
 
           {/* DADOS DO LOCAL (NOME DO LOCAL, HORÁRIO QUE FECHA, CLIENTE, RESPONSÁVEL) */}
           <div 
@@ -3024,9 +3178,20 @@ ${horarioText}
               <div className="flex-1 min-w-0">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-1.5 flex-wrap min-w-0 flex-1">
-                    <h2 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight leading-tight">
-                      {selectedPlace.name}
-                    </h2>
+                    {isNewOrderDraft && canEdit ? (
+                      <input
+                        aria-label="Nome do local"
+                        value={draftPlaceName}
+                        onChange={event => setDraftPlaceName(event.target.value)}
+                        onClick={event => event.stopPropagation()}
+                        placeholder="Nome do local"
+                        className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-1 text-lg font-black tracking-tight text-slate-900 outline-none focus:border-[#0B5187] focus:ring-2 focus:ring-blue-100 sm:text-xl"
+                      />
+                    ) : (
+                      <h2 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight leading-tight">
+                        {selectedPlace.name}
+                      </h2>
+                    )}
                   </div>
 
                   {distanceFormatted && (
@@ -3109,9 +3274,57 @@ ${horarioText}
             </div>
           </div>
 
+          {isNewOrderDraft && canEdit && (
+            <div className={hasCustomerRoute ? 'flex' : 'grid grid-cols-3 gap-2'}>
+              <button
+                type="button"
+                onClick={() => handleOpenCustomerSelector('customer')}
+                className={`inline-flex min-w-0 items-center justify-between gap-1.5 rounded-xl border border-blue-700 bg-blue-600 px-2.5 py-2 text-[10px] font-black text-white shadow-sm transition-colors hover:bg-blue-700 ${hasCustomerRoute ? 'w-full' : ''}`}
+              >
+                <User className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 whitespace-normal break-words text-center leading-tight">
+                  {customerName ? <><span>Cliente</span><br /><span className="font-semibold">{customerName}</span></> : 'Cliente'}
+                </span>
+                {customerName && <Edit3 className="h-3 w-3 shrink-0" />}
+              </button>
+              {!hasCustomerRoute && (
+                <>
+              <button
+                type="button"
+                onClick={() => {
+                  setRouteSellerTarget(null);
+                  setIsSellerModalOpen(true);
+                }}
+                className="inline-flex min-w-0 items-center justify-between gap-1.5 rounded-xl border border-orange-700 bg-orange-500 px-2.5 py-2 text-[10px] font-black text-white shadow-sm transition-colors hover:bg-orange-600"
+              >
+                <UserCheck className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 whitespace-normal break-words text-center leading-tight">
+                  {responsibleName ? <><span>Vendedor</span><br /><span className="font-semibold">{responsibleName}</span></> : 'Definir vendedor'}
+                </span>
+                {responsibleName && <Edit3 className="h-3 w-3 shrink-0" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRouteDriverTarget(null);
+                  setIsDriverSelectorOpen(true);
+                }}
+                className="inline-flex min-w-0 items-center justify-between gap-1.5 rounded-xl border border-emerald-700 bg-emerald-600 px-2.5 py-2 text-[10px] font-black text-white shadow-sm transition-colors hover:bg-emerald-700"
+              >
+                {selectedPlace.orderVisibility === 'privado' ? <Lock className="h-3.5 w-3.5 shrink-0" /> : <Globe className="h-3.5 w-3.5 shrink-0" />}
+                <span className="min-w-0 flex-1 whitespace-normal break-words text-center leading-tight">
+                  {selectedDriverName ? <><span>Motorista</span><br /><span className="font-semibold">{selectedDriverName}</span></> : 'Motorista'}
+                </span>
+                {selectedDriverName && <Edit3 className="h-3 w-3 shrink-0" />}
+              </button>
+                </>
+              )}
+            </div>
+          )}
+
 
             {/* CLIENTE E VENDEDOR (RESPONSÁVEL) - motorista só vê os cartões preenchidos */}
-            {(!isDriverRole || hasCustomer || (hasResponsible && !hasCustomerRoute)) && (
+            {!isNewOrderDraft && (!isDriverRole || hasCustomer || (hasResponsible && !hasCustomerRoute)) && (
             <div className={`w-full grid ${hasCustomerRoute || (isDriverRole && (hasCustomer !== hasResponsible)) ? 'grid-cols-1' : 'grid-cols-2'} gap-1.5 sm:gap-2 shrink-0`}>
               {/* CARD 1: CLIENTE */}
               {hasCustomer ? (
@@ -3430,23 +3643,6 @@ ${horarioText}
             </div>
             )}
 
-            {/* FEEDBACK TOAST DE ATRIBUIÇÃO */}
-            {driverToast && (
-              <div className="p-2.5 rounded-xl bg-emerald-600 text-white text-xs font-black flex items-center justify-between gap-2 shadow-md animate-in slide-in-from-top-2 duration-150 shrink-0">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <Check className="w-4 h-4 stroke-[3] shrink-0" />
-                  <span className="truncate">{driverToast}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setDriverToast(null)}
-                  className="p-1 hover:bg-emerald-700 rounded-lg text-white/90 hover:text-white cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5 stroke-[2.5]" />
-                </button>
-              </div>
-            )}
-
             {/* Rota, pontos e configurações em um único painel compacto. */}
             {hasCustomerRoute ? (
               <div className="w-full min-w-0 rounded-2xl p-3 bg-gradient-to-br from-slate-50 via-blue-50/20 to-slate-50 border border-slate-200/90 shadow-2xs space-y-2.5 shrink-0">
@@ -3484,6 +3680,8 @@ ${horarioText}
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
                             {orderResolvedLocations.summaryOriginAddress}
                           </p>
+                          {renderRoutePointDetails('pickup')}
+                          {renderDraftRoutePointActions('pickup')}
                         </div>
                       </div>
                       <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
@@ -3497,6 +3695,8 @@ ${horarioText}
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
                             {orderResolvedLocations.summaryDestAddress}
                           </p>
+                          {renderRoutePointDetails('delivery')}
+                          {renderDraftRoutePointActions('delivery')}
                         </div>
                       </div>
                     </>
@@ -3515,6 +3715,8 @@ ${horarioText}
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
                             {orderResolvedLocations.summaryOriginAddress}
                           </p>
+                          {renderRoutePointDetails('pickup')}
+                          {renderDraftRoutePointActions('pickup')}
                         </div>
                       </div>
                       <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
@@ -3528,6 +3730,8 @@ ${horarioText}
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
                             {orderResolvedLocations.summaryDestAddress}
                           </p>
+                          {renderRoutePointDetails('delivery')}
+                          {renderDraftRoutePointActions('delivery')}
                         </div>
                       </div>
                     </>
@@ -3546,6 +3750,8 @@ ${horarioText}
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
                             {orderResolvedLocations.summaryOriginAddress}
                           </p>
+                          {renderRoutePointDetails('pickup')}
+                          {renderDraftRoutePointActions('pickup')}
                         </div>
                       </div>
                       <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
@@ -3559,6 +3765,8 @@ ${horarioText}
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
                             {orderResolvedLocations.exchangeAddress}
                           </p>
+                          {renderRoutePointDetails('exchange')}
+                          {renderDraftRoutePointActions('exchange')}
                         </div>
                       </div>
                       <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
@@ -3572,6 +3780,8 @@ ${horarioText}
                           <p className="text-[9.5px] text-slate-400 truncate mt-0.5">
                             {orderResolvedLocations.summaryDestAddress}
                           </p>
+                          {renderRoutePointDetails('delivery')}
+                          {renderDraftRoutePointActions('delivery')}
                         </div>
                       </div>
                     </>
@@ -3603,7 +3813,7 @@ ${horarioText}
                 </div>
 
             {/* Configurações individuais das paradas quando há rota até o cliente. */}
-              <div className="border-t border-slate-200/80 pt-2 space-y-2">
+              <div className={isNewOrderDraft ? 'hidden' : 'border-t border-slate-200/80 pt-2 space-y-2'}>
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-[10px] font-black uppercase tracking-wider text-slate-700">Coleta e entrega</p>
                 </div>
@@ -3628,7 +3838,9 @@ ${horarioText}
                     (driverId && (driver.id === driverId || driver.id.replace(/\D/g, '') === driverId.replace(/\D/g, ''))) ||
                     (driverPhone && driver.phone?.replace(/\D/g, '') === driverPhone.replace(/\D/g, ''))
                   );
-                  const pointNotes = pickup ? selectedPlace.pickupNotes || '' : selectedPlace.deliveryNotes || '';
+                  const pointNotes = pickup
+                    ? selectedPlace.pickupNotes || selectedPlace.observations || ''
+                    : selectedPlace.deliveryNotes || selectedPlace.observations || '';
                   const pointAddress = pickup
                     ? orderResolvedLocations?.pickupAddress
                     : orderResolvedLocations?.deliveryAddress;
@@ -3651,7 +3863,7 @@ ${horarioText}
                           {(['publico', 'privado'] as const).map(visibility => {
                             const active = pointVisibility === visibility;
                             const Icon = visibility === 'publico' ? Globe : Lock;
-                            return canManageDriverAssignment && canEdit ? (
+                            return canManageDriverAssignment && canEdit && !isNewOrderDraft ? (
                               <button
                                 key={visibility}
                                 type="button"
@@ -3687,7 +3899,7 @@ ${horarioText}
                               </p>
                             </div>
                           </div>
-                          {canManageDriverAssignment && canEdit && (
+                          {canManageDriverAssignment && canEdit && !isNewOrderDraft && (
                             <div className="flex gap-1 shrink-0">
                               <button
                                 type="button"
@@ -3715,7 +3927,7 @@ ${horarioText}
                         </div>
                       )}
 
-                      {renderRouteSellerCard(point, pickup ? 'coleta' : 'entrega')}
+                      {renderRouteSellerCard(point, pickup ? 'coleta' : 'entrega', !isNewOrderDraft)}
 
                       <div className="rounded-lg bg-white/80 border border-slate-200 p-2 space-y-1.5">
                         <p className="text-[9px] font-black uppercase tracking-wide text-slate-600">Comentário da {pickup ? 'coleta' : 'entrega'}</p>
@@ -3763,7 +3975,7 @@ ${horarioText}
                               else setEditedDeliveryNotes(pointNotes);
                               setEditingRouteComment(point);
                             }}
-                            className="w-full text-left text-[11px] text-slate-700 font-semibold whitespace-pre-wrap break-words rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5187]"
+                            className="w-full text-left text-[11px] text-slate-700 font-semibold whitespace-pre-wrap break-words rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5187] disabled:cursor-default"
                             aria-label={`Editar comentário da ${pickup ? 'coleta' : 'entrega'}`}
                             title={canEdit ? 'Toque para adicionar ou editar o comentário' : undefined}
                           >
@@ -3784,13 +3996,21 @@ ${horarioText}
                       {selectedPlace.exchangeAddress || selectedPlace.exchangeName || selectedPlace.address || 'Endereço não informado'}
                     </p>
                   </div>
-                  {renderRouteSellerCard('exchange', 'troca')}
+                  {renderRouteSellerCard('exchange', 'troca', !isNewOrderDraft)}
+                  <div className="rounded-lg border border-slate-200 bg-white/80 p-2">
+                    <p className="text-[9px] font-black uppercase tracking-wide text-slate-600">Comentário da troca</p>
+                    <p className="mt-1 whitespace-pre-wrap break-words text-[11px] font-semibold text-slate-700">
+                      {selectedPlace.exchangeNotes || selectedPlace.observations || (
+                        <span className="text-slate-400 italic font-normal">Sem comentário na troca.</span>
+                      )}
+                    </p>
+                  </div>
                 </section>
               )}
               </div>
             </div>
             ) : (
-            !isDriverRole && (() => {
+            !isNewOrderDraft && !isDriverRole && (() => {
               const isPublicMode = selectedPlace.orderVisibility === 'publico' || 
                 (!selectedPlace.orderVisibility && !selectedPlace.assignedDriverId && !selectedPlace.assignedDriverPhone);
 
@@ -3983,43 +4203,32 @@ ${horarioText}
             })()
             )}
 
-            {/* FEEDBACK TOAST DE SALVAMENTO */}
-            {saveSuccessToast && (
-              <div className="p-2.5 rounded-xl bg-emerald-600 text-white text-xs font-black flex items-center justify-between gap-2 shadow-md animate-in slide-in-from-top-2 duration-150 shrink-0">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <Check className="w-4 h-4 stroke-[3] shrink-0" />
-                  <span className="truncate">{saveSuccessToast}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSaveSuccessToast(null)}
-                  className="p-1 hover:bg-emerald-700 rounded-lg text-white/90 hover:text-white cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5 stroke-[2.5]" />
-                </button>
-              </div>
-            )}
-
-            {/* AVISO DE MODO EDIÇÃO ATIVO - FUNDO VERMELHO, LETRA BRANCA */}
-            {isEditingOrder && (
-              <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-[#DC2626] border-2 border-red-700 text-white text-xs sm:text-sm font-black animate-in fade-in duration-150 shrink-0 shadow-md">
-                <div className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-white animate-pulse" />
-                  <span className="uppercase tracking-wide">Modo de Edição Ativo</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCompleteOrderEditing}
-                  disabled={isSavingEdit}
-                  className="bg-white hover:bg-red-50 text-red-700 px-3 py-1 rounded-lg text-xs font-black uppercase tracking-wider transition-colors cursor-pointer shadow-xs active:scale-95 disabled:opacity-60"
-                >
-                  {isSavingEdit ? 'Salvando...' : 'Concluir Edição'}
-                </button>
+            {isNewOrderDraft && canEdit && !hasCustomerRoute && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3 shadow-2xs shrink-0">
+                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-950">
+                  Comentários / observações
+                  <textarea
+                    value={draftOrderComment}
+                    onChange={event => {
+                      const comment = event.target.value;
+                      setDraftOrderComment(comment);
+                      const routeNote = operationType === 'troca'
+                        ? { exchangeNotes: comment }
+                        : operationType === 'entrega'
+                          ? { deliveryNotes: comment }
+                          : { pickupNotes: comment };
+                      setSelectedPlace({ ...selectedPlace, observations: comment, ...routeNote });
+                    }}
+                    placeholder={`Instruções para ${operationType === 'coleta' ? 'a coleta' : operationType === 'troca' ? 'a troca' : 'a entrega'}...`}
+                    rows={3}
+                    className="mt-1.5 w-full resize-y rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+                  />
+                </label>
               </div>
             )}
 
             {/* COMENTÁRIOS E OBSERVAÇÕES POR ETAPA (COLETA, ENTREGA E TROCA) */}
-            {!hasCustomerRoute && (!isDriverRole || observations || selectedPlace.pickupNotes || selectedPlace.deliveryNotes || selectedPlace.exchangeNotes) && (
+            {!isNewOrderDraft && !hasCustomerRoute && (!isDriverRole || observations || selectedPlace.pickupNotes || selectedPlace.deliveryNotes || selectedPlace.exchangeNotes) && (
               <div className="bg-gradient-to-br from-amber-50/90 via-white to-orange-50/40 rounded-2xl p-3 border border-amber-200/90 shadow-2xs space-y-2.5 shrink-0">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1.5">
@@ -5980,6 +6189,8 @@ ${horarioText}
         onSelectDriver={routeDriverTarget ? handleSelectDriverForRoutePoint : handleSelectDriverForPlace}
         onRemoveDriver={routeDriverTarget ? handleRemoveDriverFromRoutePoint : handleRemoveDriverFromPlace}
         activeTelemetryDrivers={drivers}
+        visibility={isNewOrderDraft && getRouteDriver(routeDriverTarget || activeRoutePoint).visibility === 'privado' ? 'privado' : isNewOrderDraft ? 'publico' : undefined}
+        onVisibilityChange={isNewOrderDraft ? handleDraftVisibilityChange : undefined}
       />
 
       {/* MODAL DA ETAPA FINAL COM TRAÇADO DA ROTA, PREÇOS DISCRIMINADOS E WHATSAPP */}

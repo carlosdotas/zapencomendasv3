@@ -62,6 +62,7 @@ function createPrismaProxy(): PrismaClient {
     get(target, prop: string) {
       if (prop === '$transaction') {
         return async (arg: any) => {
+          await isDatabaseOnline();
           if (isMysqlAvailable) {
             try {
               return await realPrisma.$transaction(arg);
@@ -85,6 +86,7 @@ function createPrismaProxy(): PrismaClient {
 
       if (prop === '$queryRaw' || prop === '$executeRaw') {
         return async (...args: any[]) => {
+          await isDatabaseOnline();
           if (isMysqlAvailable) {
             try {
               return await (realPrisma as any)[prop](...args);
@@ -108,6 +110,7 @@ function createPrismaProxy(): PrismaClient {
       return new Proxy({}, {
         get(_, method: string) {
           return async (...args: any[]) => {
+            await isDatabaseOnline();
             if (isMysqlAvailable) {
               try {
                 return await (target as any)[prop][method](...args);

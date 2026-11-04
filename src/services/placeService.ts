@@ -15,10 +15,6 @@ class PlaceService {
   private places: Map<string, BackendLocal> = new Map();
   private loadPromise: Promise<void> | null = null;
 
-  constructor() {
-    void this.init();
-  }
-
   /**
    * Carrega o cache em memória com os locais cadastrados no servidor.
    */
@@ -153,7 +149,7 @@ class PlaceService {
     lat: number,
     lng: number,
     radiusKm: number = 0.5
-  ): Promise<ApiResponse<{ id: number; name: string; lat: number; lng: number; dist_km?: number } | null>> {
+  ): Promise<ApiResponse<{ id: number; name: string; lat: number; lng: number; dist_km?: number; dist_m?: number } | null>> {
     return request('/locais/nearby', 'POST', { lat, lng, radius_km: radiusKm });
   }
 

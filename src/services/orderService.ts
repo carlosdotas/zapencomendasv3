@@ -17,6 +17,8 @@ export interface PedidoListFilters {
   id?: string | number;
   motorista_id?: string | number;
   cidade?: string;
+  active_only?: boolean;
+  completed_only?: boolean;
   limit?: number;
   page?: number;
 }

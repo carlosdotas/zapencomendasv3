@@ -38,7 +38,7 @@ import { resolveCustomerCity } from '../utils/addressUtils';
 import { normalizeCustomerId } from '../utils/customerIdentity';
 
 import { AuthAccount, UserRole } from '../types/auth';
-import { api, getApiBaseUrl, setApiBaseUrl } from '../services/api';
+import { api, getApiBaseUrl, getAuthToken, setApiBaseUrl } from '../services/api';
 import { 
   backendLocalToPlace, 
   backendPedidoToPlace, 
@@ -55,6 +55,7 @@ import { shouldApplyOrderSync, runOncePerKey } from '../utils/orderSync';
 import { filterPlacesBySequence } from '../utils/orderSequence';
 import { sanitizeNewOrderAssignments } from '../utils/newOrderAssignment';
 import { BackendPedido, BackendUser, BaixaProximity } from '../services/apiTypes';
+import { buildMapOrderPayload } from '../services/mapOrderPayload';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
 import {
@@ -537,7 +538,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, []);
 
-  // Tempo online = agora - momento em que o motorista virou a chave (sobrevive a recarregar a página)
+  // Mantém o relógio de sessão sem forçar a re-renderização de todo o mapa a cada segundo.
   useEffect(() => {
     if (!isDriverOnline) return;
     if (!readOnlineSince()) {
@@ -548,7 +549,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setDriverActiveSeconds(Math.max(0, Math.floor((Date.now() - since) / 1000)));
     };
     tick();
-    const interval = setInterval(tick, 1000);
+    const interval = setInterval(tick, 10000);
     return () => clearInterval(interval);
   }, [isDriverOnline]);
   
@@ -649,6 +650,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       mutationVersion: orderMutationVersion.current
     };
     const silent = opts?.silent === true;
+    const shouldLoadOrderHistory = !silent && Boolean(getAuthToken());
     if (!silent) {
       setIsSyncingServer(true);
       setServerStatus('checking');
@@ -672,20 +674,29 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const now = new Date();
       const todayStr = now.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
 
-      const [markersData, pedidosRes, locaisRes] = await Promise.all([
+      const [markersData, pedidosRes, recentCompletedRes] = await Promise.all([
         api.getActiveOrderMarkersTodayAndYesterday().catch(error => {
           console.error('[Orders] Falha ao carregar os marcadores:', error);
           return { todayMarkers: [], yesterdayPendingMarkers: [], allActiveMarkers: [] };
         }),
-        api.listAllPedidos({ limit: 2000 }).catch(error => {
-          console.error('[Orders] Falha ao carregar a lista completa de pedidos:', error);
+        api.listAllPedidos({ limit: 250, active_only: true }).catch(error => {
+          console.error('[Orders] Falha ao carregar a lista de pedidos:', error);
           return {
             success: false,
             data: [],
             message: error instanceof Error ? error.message : 'Não foi possível carregar os pedidos.'
           };
         }),
-        api.getLocais({ limit: 100 }).catch(() => ({ success: false, data: [] }))
+        shouldLoadOrderHistory
+          ? api.listPedidos({ limit: 250, completed_only: true }).catch(error => {
+              console.error('[Orders] Falha ao carregar o histórico recente de pedidos:', error);
+              return {
+                success: false,
+                data: [],
+                message: error instanceof Error ? error.message : 'Não foi possível carregar o histórico de pedidos.'
+              };
+            })
+          : Promise.resolve(null)
       ]);
 
       // Mapeia detalhes completos dos pedidos caso estejam disponíveis no banco
@@ -720,7 +731,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (!pedidosRes.success || !Array.isArray(pedidosRes.data)) {
         console.warn(
-          '[Orders] A lista completa de pedidos não foi carregada; mantendo os pedidos locais até a próxima sincronização.',
+          '[Orders] A lista de pedidos não foi carregada; mantendo os pedidos locais até a próxima sincronização.',
           pedidosRes.message
         );
       }
@@ -916,11 +927,12 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
 
-      // Coleta pedidos concluídos/entregues para exibição na Central de Pedidos (sem aparecer no mapa)
-      if (pedidosRes && pedidosRes.success && Array.isArray(pedidosRes.data)) {
+      // O histórico completo é carregado apenas na sincronização inicial/manual.
+      // Atualizações periódicas usam só pedidos ativos para não bloquear o mapa.
+      if (recentCompletedRes && recentCompletedRes.success && Array.isArray(recentCompletedRes.data)) {
         const doneList: Place[] = [];
         const seenDoneKeys = new Set<string>();
-        pedidosRes.data.forEach((p: any) => {
+        recentCompletedRes.data.forEach((p: any) => {
           const et = (p.etapa || '').toLowerCase().trim();
           if (et !== 'entregue' && et !== 'finalizado' && et !== 'concluido' && et !== 'cancelado') return;
           const place = backendPedidoToPlace(p as BackendPedido);
@@ -1332,16 +1344,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setAllPlaces(prev => {
       const next = prev.map(p => p.id === placeId ? { ...p, ...resolvedPartial } : p);
-      try {
-        localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-      } catch (e) {
-        // ignore
-      }
+      scheduleStorageSave('encomendaszap_all_places', next);
       return next;
     });
 
     setSavedPlaces(prev => {
       const next = prev.map(p => p.id === placeId ? { ...p, ...resolvedPartial } : p);
+      scheduleStorageSave('encomendaszap_saved_places', next);
       return next;
     });
 
@@ -1465,11 +1474,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return p;
       });
-      try {
-        localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-      } catch (e) {
-        // ignore
-      }
+      scheduleStorageSave('encomendaszap_all_places', next);
       return next;
     });
 
@@ -1487,6 +1492,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return p;
       });
+      scheduleStorageSave('encomendaszap_saved_places', next);
       return next;
     });
 
@@ -1754,9 +1760,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return p;
       });
-      try {
-        localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-      } catch {}
+      scheduleStorageSave('encomendaszap_all_places', next);
       return next;
     });
 
@@ -1774,9 +1778,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         return p;
       });
-      try {
-        localStorage.setItem('encomendaszap_saved_places', JSON.stringify(next));
-      } catch {}
+      scheduleStorageSave('encomendaszap_saved_places', next);
       return next;
     });
 
@@ -2464,9 +2466,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setAllPlaces(prev => {
       const next = [newPlace, ...prev.filter(place => place.id !== newPlace.id)];
-      try {
-        localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-      } catch {}
+      scheduleStorageSave('encomendaszap_all_places', next);
       return next;
     });
     setSelectedPlace(newPlace);
@@ -2490,150 +2490,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return updatePlaceDetails(rawPlace.id, newPlace);
     }
 
-    // Regra EncomendasZap: "ao add, e o cliente nao tiver local setado, deve add apenas um maker."
-    const op = newPlace.operationType || 'coleta';
-    const hasColetaCoords = Boolean(newPlace.pickupCoordinates?.lat && newPlace.pickupCoordinates?.lng);
-    const hasEntregaCoords = Boolean(newPlace.deliveryCoordinates?.lat && newPlace.deliveryCoordinates?.lng);
-    const hasTrocaCoords = Boolean(newPlace.exchangeCoordinates?.lat && newPlace.exchangeCoordinates?.lng);
-
-    const coletaLat = hasColetaCoords 
-      ? newPlace.pickupCoordinates!.lat 
-      : (op === 'coleta' ? newPlace.coordinates?.lat : undefined);
-    const coletaLng = hasColetaCoords 
-      ? newPlace.pickupCoordinates!.lng 
-      : (op === 'coleta' ? newPlace.coordinates?.lng : undefined);
-
-    const entregaLat = hasEntregaCoords 
-      ? newPlace.deliveryCoordinates!.lat 
-      : (op === 'entrega' ? newPlace.coordinates?.lat : undefined);
-    const entregaLng = hasEntregaCoords 
-      ? newPlace.deliveryCoordinates!.lng 
-      : (op === 'entrega' ? newPlace.coordinates?.lng : undefined);
-
-    const trocaLat = hasTrocaCoords 
-      ? newPlace.exchangeCoordinates!.lat 
-      : (op === 'troca' ? newPlace.coordinates?.lat : undefined);
-    const trocaLng = hasTrocaCoords 
-      ? newPlace.exchangeCoordinates!.lng 
-      : (op === 'troca' ? newPlace.coordinates?.lng : undefined);
-
     // O banco é a fonte única: o pedido só entra no mapa depois de gravado (/pedidos/save)
     try {
-      const res = await api.savePedido({
-      data: newPlace.data || newPlace.scheduledDate,
-      etapa: 'pendente',
-      cliente: newPlace.customerName || 'Cliente EncomendasZap',
-      phone: newPlace.customerPhone || '',
-      clientes_id: newPlace.customerId && /^\d+$/.test(newPlace.customerId)
-        ? Number(newPlace.customerId)
-        : undefined,
-      cidade: newPlace.originCity || 'Goiânia',
-      tipo_encomenda: newPlace.operationType || 'coleta',
-      tipo_veiculo: newPlace.vehicleType || 'moto',
-      detalhes: newPlace.observations || newPlace.driverNotes || '',
-      observations: newPlace.observations || '',
-      pickupNotes: newPlace.pickupNotes || '',
-      deliveryNotes: newPlace.deliveryNotes || '',
-      exchangeNotes: newPlace.exchangeNotes || '',
-      valor: newPlace.price !== undefined ? newPlace.price + (newPlace.totalDiscounts || 0) : undefined,
-      desconto: newPlace.totalDiscounts || 0,
-      total: newPlace.price,
-      coleta_valor: newPlace.priceItems
-        ?.filter(item => item.category === 'coleta')
-        .reduce((sum, item) => sum + item.value, 0),
-      valor_intercidade: newPlace.priceItems
-        ?.filter(item => item.category === 'transporte')
-        .reduce((sum, item) => sum + item.value, 0),
-      entrega_valor: newPlace.priceItems
-        ?.filter(item => item.category === 'entrega')
-        .reduce((sum, item) => sum + item.value, 0),
-      mercadoria_nome: newPlace.packageType,
-      mercadoria_altura: newPlace.dimensions?.split('x')[2]?.replace('cm', ''),
-      mercadoria_largura: newPlace.dimensions?.split('x')[1],
-      mercadoria_comprimento: newPlace.dimensions?.split('x')[0],
-      mercadoria_peso: newPlace.weightKg,
-      mercadoria_fragil: newPlace.isFragile,
-      mercadoria_quantidade: newPlace.volumesCount,
-      itens_extras: JSON.stringify({
-        priceItems: newPlace.priceItems || [],
-        discountItems: newPlace.discountItems || [],
-        orderVisibility: newPlace.orderVisibility,
-        assignedDriverId: newPlace.assignedDriverId,
-        assignedDriverPhone: newPlace.assignedDriverPhone,
-        pickupVisibility: newPlace.pickupVisibility,
-        pickupAssignedDriverId: newPlace.pickupAssignedDriverId,
-        pickupAssignedDriverPhone: newPlace.pickupAssignedDriverPhone,
-        pickupAssignedDriverName: newPlace.pickupAssignedDriverName,
-        pickupSellerName: newPlace.pickupSellerName,
-        pickupSellerPhone: newPlace.pickupSellerPhone,
-        exchangeVisibility: newPlace.exchangeVisibility,
-        exchangeAssignedDriverId: newPlace.exchangeAssignedDriverId,
-        exchangeAssignedDriverPhone: newPlace.exchangeAssignedDriverPhone,
-        exchangeAssignedDriverName: newPlace.exchangeAssignedDriverName,
-        exchangeSellerName: newPlace.exchangeSellerName,
-        exchangeSellerPhone: newPlace.exchangeSellerPhone,
-        deliveryVisibility: newPlace.deliveryVisibility,
-        deliveryAssignedDriverId: newPlace.deliveryAssignedDriverId,
-        deliveryAssignedDriverPhone: newPlace.deliveryAssignedDriverPhone,
-        deliveryAssignedDriverName: newPlace.deliveryAssignedDriverName,
-        deliverySellerName: newPlace.deliverySellerName,
-        deliverySellerPhone: newPlace.deliverySellerPhone,
-        packageSize: newPlace.packageSize,
-        volumesCount: newPlace.volumesCount,
-        scheduledTime: newPlace.scheduledTime,
-        scheduledTimeMode: newPlace.scheduledTimeMode,
-        paymentCondition: newPlace.paymentCondition,
-        paymentAdjustmentType: newPlace.paymentAdjustmentType,
-        paymentAdjustmentValue: newPlace.paymentAdjustmentValue,
-        paymentAdjustmentMode: newPlace.paymentAdjustmentMode
-      }),
-      local: newPlace.name,
-      coleta_local: op === 'coleta' ? (newPlace.pickupName || newPlace.name) : (hasColetaCoords ? (newPlace.pickupName || 'Ponto de Coleta') : undefined),
-      coleta_nome: op === 'coleta' ? (newPlace.pickupName || newPlace.name) : (hasColetaCoords ? (newPlace.pickupName || 'Ponto de Coleta') : undefined),
-      coleta_data: newPlace.data || newPlace.scheduledDate,
-      coleta_cidade: newPlace.originCity,
-      coleta_endereco: op === 'coleta' ? (newPlace.pickupAddress || newPlace.address) : (hasColetaCoords ? newPlace.pickupAddress : undefined),
-      coleta_lat: coletaLat,
-      coleta_lng: coletaLng,
-      coleta_contato: newPlace.pickupContact,
-      coleta_phone: newPlace.pickupPhone,
-      coleta_obs: newPlace.pickupNotes,
-      entrega_local: op === 'entrega' ? (newPlace.deliveryName || newPlace.name) : (hasEntregaCoords ? (newPlace.deliveryName || 'Ponto de Entrega') : undefined),
-      entrega_nome: op === 'entrega' ? (newPlace.deliveryName || newPlace.name) : (hasEntregaCoords ? (newPlace.deliveryName || 'Ponto de Entrega') : undefined),
-      entrega_data: newPlace.data || newPlace.scheduledDate,
-      entrega_cidade: newPlace.destinationCity,
-      entrega_endereco: op === 'entrega' ? (newPlace.deliveryAddress || newPlace.address) : (hasEntregaCoords ? newPlace.deliveryAddress : undefined),
-      entrega_lat: entregaLat,
-      entrega_lng: entregaLng,
-      entrega_contato: newPlace.deliveryContact,
-      entrega_phone: newPlace.deliveryPhone,
-      entrega_obs: newPlace.deliveryNotes,
-      troca_nome: op === 'troca' ? (newPlace.exchangeName || newPlace.name) : (hasTrocaCoords ? (newPlace.exchangeName || 'Ponto de Troca') : undefined),
-      troca_endereco: op === 'troca' ? (newPlace.exchangeAddress || newPlace.address) : (hasTrocaCoords ? newPlace.exchangeAddress : undefined),
-      troca_lat: trocaLat,
-      troca_lng: trocaLng,
-      troca_contato: newPlace.exchangeContact,
-      troca_phone: newPlace.exchangePhone,
-      troca_obs: newPlace.exchangeNotes,
-      pickupVisibility: newPlace.pickupVisibility,
-      pickupAssignedDriverId: newPlace.pickupAssignedDriverId,
-      pickupAssignedDriverPhone: newPlace.pickupAssignedDriverPhone,
-      pickupAssignedDriverName: newPlace.pickupAssignedDriverName,
-      pickupSellerName: newPlace.pickupSellerName,
-      pickupSellerPhone: newPlace.pickupSellerPhone,
-      exchangeVisibility: newPlace.exchangeVisibility,
-      exchangeAssignedDriverId: newPlace.exchangeAssignedDriverId,
-      exchangeAssignedDriverPhone: newPlace.exchangeAssignedDriverPhone,
-      exchangeAssignedDriverName: newPlace.exchangeAssignedDriverName,
-      exchangeSellerName: newPlace.exchangeSellerName,
-      exchangeSellerPhone: newPlace.exchangeSellerPhone,
-      deliveryVisibility: newPlace.deliveryVisibility,
-      deliveryAssignedDriverId: newPlace.deliveryAssignedDriverId,
-      deliveryAssignedDriverPhone: newPlace.deliveryAssignedDriverPhone,
-      deliveryAssignedDriverName: newPlace.deliveryAssignedDriverName,
-      deliverySellerName: newPlace.deliverySellerName,
-      deliverySellerPhone: newPlace.deliverySellerPhone
-      });
+      const res = await api.savePedido(buildMapOrderPayload(newPlace));
       if (!res.success || !res.data?.id) {
         window.alert(res.message || 'Não foi possível salvar o pedido. Verifique a conexão e tente novamente.');
         return false;
@@ -2649,16 +2508,15 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Remove qualquer rascunho, variante de coleta/entrega ou cópia para manter rigorosamente 1 único pedido
       setAllPlaces(prev => {
         const next = [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId && getOrderKey(p) !== persistedKey)];
-        try {
-          localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-        } catch {}
+        scheduleStorageSave('encomendaszap_all_places', next);
         return next;
       });
-      setSavedPlaces(prev => [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId && getOrderKey(p) !== persistedKey)]);
+      setSavedPlaces(prev => {
+        const next = [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId && getOrderKey(p) !== persistedKey)];
+        scheduleStorageSave('encomendaszap_saved_places', next);
+        return next;
+      });
       setSelectedPlace(prev => (!prev || prev.id === newPlace.id) ? persistedPlace : prev);
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new Event('zap:refresh-orders'));
-      }
       flyToLocation(persistedPlace.coordinates, 16);
       if (newPlace.customerPhone || newPlace.customerName || newPlace.customerId) {
         const customerStatsRecord = {
@@ -2916,9 +2774,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         nextList = prev.filter(p => p.id !== placeId);
       }
 
-      try {
-        localStorage.setItem('encomendaszap_all_places', JSON.stringify(nextList));
-      } catch (e) {}
+      scheduleStorageSave('encomendaszap_all_places', nextList);
       return nextList;
     });
 
@@ -3013,9 +2869,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         nextSaved = prevSaved.filter(p => p.id !== placeId);
       }
 
-      try {
-        localStorage.setItem('encomendaszap_saved_places', JSON.stringify(nextSaved));
-      } catch {}
+      scheduleStorageSave('encomendaszap_saved_places', nextSaved);
       return nextSaved;
     });
 
@@ -3499,33 +3353,25 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setAllPlaces(prev => {
       const next = prev.filter(p => !isTarget(p));
-      try {
-        localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-      } catch {}
+      scheduleStorageSave('encomendaszap_all_places', next);
       return next;
     });
 
     setSavedPlaces(prev => {
       const next = prev.filter(p => !isTarget(p));
-      try {
-        localStorage.setItem('encomendaszap_saved_places', JSON.stringify(next));
-      } catch {}
+      scheduleStorageSave('encomendaszap_saved_places', next);
       return next;
     });
 
     setCompletedOrders(prev => {
       const next = prev.filter(p => !isTarget(p));
-      try {
-        localStorage.setItem('encomendaszap_completed_orders', JSON.stringify(next));
-      } catch {}
+      scheduleStorageSave('encomendaszap_completed_orders', next);
       return next;
     });
 
     setCompletedWaypointMarks(prev => {
       const next = prev.filter(m => !m.orderId || !isTarget({ id: m.orderId, orderCode: m.orderCode }));
-      try {
-        localStorage.setItem('encomendaszap_completed_marks', JSON.stringify(next));
-      } catch {}
+      scheduleStorageSave('encomendaszap_completed_marks', next);
       return next;
     });
 
