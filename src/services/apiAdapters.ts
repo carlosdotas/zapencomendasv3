@@ -10,6 +10,7 @@ import {
 import { Customer } from '../types/customer';
 import { isStreetOrAddress, resolveCommercialClosingTime } from '../utils/placeUtils';
 import { resolveCustomerCity } from '../utils/addressUtils';
+import { collectionOwnership, withCollectionOwner } from '../utils/collectionOwnership';
 import { 
   BackendLocal, 
   BackendPedido, 
@@ -174,6 +175,14 @@ export function normalizePhotoPath(item: any, size: PhotoVariantSize = 'md'): st
 
   // Imagem legada data: URL (base64)
   if (trimmed.startsWith('data:')) return trimmed;
+
+  // O servidor Node grava apenas o arquivo original, sem variantes redimensionadas.
+  if (/^(?:https?:\/\/[^/]+)?\/uploads\/pedidos\/(?:coleta|entrega|mercadoria)\//i.test(trimmed) &&
+      /\.(?:jpe?g|png|webp)(?:[?#].*)?$/i.test(trimmed) &&
+      !/_(?:icon|thumb|md|lg)\.(?:jpe?g|png|webp)(?:[?#].*)?$/i.test(trimmed)) {
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return `${getApiBaseUrl().replace(/\/+$/, '')}${trimmed}`;
+  }
 
   // 1. OBTÉM O LINK DO SERVIDOR DE IMAGENS CADASTRADO NAS CONFIGURAÇÕES
   const configuredServer = getImageServerUrl();
@@ -712,8 +721,8 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
 
   const coletaLocalName = pedido.coleta_local || pedido.coleta_locais_name || pedido.local || 'Ponto de Coleta';
   const entregaLocalName = pedido.entrega_local || pedido.entrega_locais_name || 'Ponto de Entrega';
-  const coletaFullAddress = pedido.coleta_cidade ? `${coletaLocalName} - ${pedido.coleta_cidade}` : coletaLocalName;
-  const entregaFullAddress = pedido.entrega_cidade ? `${entregaLocalName} - ${pedido.entrega_cidade}` : entregaLocalName;
+  const coletaFullAddress = pedido.coleta_endereco || (pedido.coleta_cidade ? `${coletaLocalName} - ${pedido.coleta_cidade}` : coletaLocalName);
+  const entregaFullAddress = pedido.entrega_endereco || (pedido.entrega_cidade ? `${entregaLocalName} - ${pedido.entrega_cidade}` : entregaLocalName);
 
   let activeOperationType: OperationType = 'coleta';
   let activeStage: 'coleta' | 'troca' | 'entrega' | 'retorno' | 'concluido' = 'coleta';
@@ -766,9 +775,11 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
 
   const vType = pedido.tipo_veiculo === 'carro' ? 'carro' : pedido.tipo_veiculo === 'utilitario' ? 'utilitario' : 'moto';
 
+  const pickupPhotos = extractPhotoUrls(pedido.coleta_foto, 'md');
+  const deliveryPhotos = extractPhotoUrls(pedido.entrega_foto, 'md');
   const orderPhotos = activeOperationType === 'coleta'
-    ? extractPhotoUrls(pedido.coleta_foto, 'md').concat(extractPhotoUrls(pedido.mercadoria_foto, 'md'))
-    : extractPhotoUrls(pedido.entrega_foto, 'md');
+    ? pickupPhotos.concat(extractPhotoUrls(pedido.mercadoria_foto, 'md'))
+    : deliveryPhotos.concat(pickupPhotos);
   const uniquePhotos = Array.from(new Set(orderPhotos));
 
   const activeObsRaw = activeOperationType === 'coleta'
@@ -801,10 +812,13 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
   const deliveryMetadata = getRoutePointMetadata(pedido, 'delivery');
   const mapOrderDetails = persistedMapOrderDetails(pedido);
 
-  return {
+  return withCollectionOwner({
     id: `pedido-${pedido.id}-${activeOperationType}`,
     ...pedidoPaymentFields(pedido),
     ...mapOrderDetails,
+    ...collectionOwnership(pedido),
+    pickupPhotos,
+    deliveryPhotos,
     orderCode: `EZ-${pedido.id}-GO`,
     name: activeName,
     address: activeAddress,
@@ -831,7 +845,7 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     deliveryAssignedDriverName: deliveryMetadata.driverName,
     deliverySellerName: deliveryMetadata.sellerName,
     deliverySellerPhone: deliveryMetadata.sellerPhone,
-    customerName: pedido.cliente || 'Cliente EncomendasZap',
+    customerName: pedido.cliente || '',
     customerPhone: pedido.phone ? String(pedido.phone) : undefined,
     originCity: pedido.coleta_cidade || pedido.cidade || 'Goiânia - GO',
     destinationCity: pedido.entrega_cidade || pedido.cidade || 'Goiânia - GO',
@@ -873,7 +887,7 @@ export function backendPedidoToPlace(pedido: BackendPedido): Place {
     deliveryPhone: pedido.entrega_phone,
     deliveryNotes: pedido.entrega_obs,
     orderDateBadge: getOrderDateBadgeFromDate(pedido.data || pedido.created_at || (pedido as any).coleta_data)
-  };
+  }, pedido.coleta_user_nome);
 }
 
 /**
@@ -967,8 +981,8 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
     ? rawEntregaName
     : (pedido.cliente ? `Entrega: ${pedido.cliente}` : (pedido.entrega_endereco?.slice(0, 30) || 'Ponto de Entrega'));
 
-  const coletaFullAddress = pedido.coleta_cidade ? `${coletaLocalName} - ${pedido.coleta_cidade}` : (pedido.coleta_endereco || coletaLocalName);
-  const entregaFullAddress = pedido.entrega_cidade ? `${entregaLocalName} - ${pedido.entrega_cidade}` : (pedido.entrega_endereco || entregaLocalName);
+  const coletaFullAddress = pedido.coleta_endereco || (pedido.coleta_cidade ? `${coletaLocalName} - ${pedido.coleta_cidade}` : coletaLocalName);
+  const entregaFullAddress = pedido.entrega_endereco || (pedido.entrega_cidade ? `${entregaLocalName} - ${pedido.entrega_cidade}` : entregaLocalName);
 
   const vType: VehicleCollectionType = pedido.tipo_veiculo === 'carro' ? 'carro' : pedido.tipo_veiculo === 'utilitario' ? 'utilitario' : 'moto';
   const dateBadge = getOrderDateBadgeFromDate(pedido.data || pedido.created_at);
@@ -981,11 +995,14 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
   const baseShared = {
     ...pedidoPaymentFields(pedido),
     ...mapOrderDetails,
+    ...collectionOwnership(pedido),
+    pickupPhotos: extractPhotoUrls(pedido.coleta_foto, 'md'),
+    deliveryPhotos: extractPhotoUrls(pedido.entrega_foto, 'md'),
     id: `pedido-${pedido.id}`,
     orderId: String(pedido.id),
     pedido_id: pedido.id,
     orderCode: `EZ-${pedido.id}-GO`,
-    customerName: pedido.cliente || 'Cliente EncomendasZap',
+    customerName: pedido.cliente || '',
     customerPhone: pedido.phone ? String(pedido.phone) : undefined,
     originCity: pedido.coleta_cidade || pedido.cidade || 'Goiânia - GO',
     destinationCity: pedido.entrega_cidade || pedido.cidade || 'Goiânia - GO',
@@ -1086,8 +1103,8 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
           name: entregaLocalName,
           address: entregaFullAddress,
           coordinates: deliveryCoords,
-          imageUrl: entregaPhotos[0] || undefined,
-          photos: entregaPhotos.length > 0 ? entregaPhotos : undefined,
+          imageUrl: entregaPhotos[0] || coletaPhotos[0] || undefined,
+          photos: [...entregaPhotos, ...coletaPhotos],
           category: 'Entrega Expressa',
           operationType: 'entrega',
           orderStage: 'entrega',
@@ -1106,7 +1123,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         });
       }
     }
-    return places;
+    return places.map(place => withCollectionOwner(place, pedido.coleta_user_nome));
   }
 
   // REGRA 2: "primeiro aparece o local de coleta, se nao tiver local de entrega ela some"
@@ -1139,7 +1156,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
       managerName: pedido.coleta_responsavel || pedido.coleta_contato || undefined,
       managerPhone: (pedido.coleta_responsavel_phone || pedido.coleta_phone) ? String(pedido.coleta_responsavel_phone || pedido.coleta_phone) : undefined,
     });
-    return places;
+    return places.map(place => withCollectionOwner(place, pedido.coleta_user_nome));
   }
 
   // REGRAS 3 e 4: Tem Coleta E Entrega (ou Troca):
@@ -1182,8 +1199,8 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         name: `2ª Entrega (Retorno à Coleta): ${coletaLocalName}`,
         address: coletaFullAddress,
         coordinates: pickupCoords,
-        imageUrl: undefined,
-        photos: undefined,
+        imageUrl: coletaPhotos[0] || undefined,
+        photos: coletaPhotos,
         category: 'Troca de Mercadoria',
         operationType: 'entrega',
         orderStage: 'retorno',
@@ -1206,8 +1223,8 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         name: entregaLocalName,
         address: entregaFullAddress,
         coordinates: deliveryCoords,
-        imageUrl: undefined,
-        photos: undefined,
+        imageUrl: coletaPhotos[0] || undefined,
+        photos: coletaPhotos,
         category: 'Troca de Mercadoria',
         operationType: 'troca',
         orderStage: 'troca',
@@ -1234,8 +1251,8 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
         name: entregaLocalName,
         address: entregaFullAddress,
         coordinates: deliveryCoords,
-        imageUrl: entregaPhotos[0] || undefined,
-        photos: entregaPhotos.length > 0 ? entregaPhotos : undefined,
+        imageUrl: entregaPhotos[0] || coletaPhotos[0] || undefined,
+        photos: [...entregaPhotos, ...coletaPhotos],
         category: 'Entrega Expressa',
         operationType: 'entrega',
         orderStage: 'entrega',
@@ -1255,7 +1272,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
     }
   }
 
-  return places;
+  return places.map(place => withCollectionOwner(place, pedido.coleta_user_nome));
 }
 
 /**
@@ -1314,13 +1331,13 @@ export function backendOrderMarkerToPlace(
     ? `${localName} - ${city}`
     : localName;
 
-  // Extrai fotos do pedido: na entrega NÃO pode mostrar foto do local, apenas na coleta
+  // Mantém a foto da coleta disponível também nas etapas seguintes.
   let photoUrl: string | undefined = undefined;
   let markerPhotos: string[] = [];
   if (fullPedido) {
     const rawPhotos = isColetaMarker
       ? extractPhotoUrls(fullPedido.coleta_foto, 'md').concat(extractPhotoUrls(fullPedido.mercadoria_foto, 'md'))
-      : extractPhotoUrls(fullPedido.entrega_foto, 'md');
+      : extractPhotoUrls(fullPedido.entrega_foto, 'md').concat(extractPhotoUrls(fullPedido.coleta_foto, 'md'));
     markerPhotos = Array.from(new Set(rawPhotos));
     photoUrl = markerPhotos[0] || undefined;
   }
@@ -1380,9 +1397,16 @@ export function backendOrderMarkerToPlace(
       ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
       : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone);
 
-  return {
+  return withCollectionOwner({
     id: `pedido-${marker.pedido_id}-${marker.tipo}`,
     ...pedidoPaymentFields(fullPedido),
+    ...(marker.collection_restricted ? {
+      collectionRestricted: true,
+      collectionOwnerId: marker.collection_owner_id ? String(marker.collection_owner_id) : undefined
+    } : fullPedido ? collectionOwnership(fullPedido) : {
+      collectionRestricted: Boolean(marker.collection_restricted),
+      collectionOwnerId: marker.collection_owner_id ? String(marker.collection_owner_id) : undefined
+    }),
     orderId: String(marker.pedido_id),
     pedido_id: marker.pedido_id,
     orderCode: `EZ-${marker.pedido_id}-GO`,
@@ -1406,6 +1430,8 @@ export function backendOrderMarkerToPlace(
     openNow: true,
     imageUrl: photoUrl,
     photos: markerPhotos.length > 0 ? markerPhotos : undefined,
+    pickupPhotos: extractPhotoUrls(fullPedido?.coleta_foto, 'md'),
+    deliveryPhotos: extractPhotoUrls(fullPedido?.entrega_foto, 'md'),
     assignedDriverId: pointMetadata.driverId,
     assignedDriverName: pointMetadata.driverName,
     assignedDriverPhone: pointMetadata.driverPhone,
@@ -1456,7 +1482,7 @@ export function backendOrderMarkerToPlace(
     deliveryContact: fullPedido?.entrega_contato,
     deliveryPhone: fullPedido?.entrega_phone,
     deliveryNotes: fullPedido?.entrega_obs ?? fullPedido?.detalhes
-  };
+  }, fullPedido?.coleta_user_nome);
 }
 
 /**

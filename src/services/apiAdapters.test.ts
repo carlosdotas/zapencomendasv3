@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { backendPedidoToPlaces, backendUserToCustomer, formatPhotoUrl } from './apiAdapters';
+import { backendOrderMarkerToPlace, backendPedidoToPlaces, backendUserToCustomer, formatPhotoUrl } from './apiAdapters';
 import { mergeCustomerLists, normalizeCustomerId, normalizeCustomerPhone } from '../utils/customerIdentity';
 
 test('preserves the PHP image host returned by the upload server', () => {
@@ -19,6 +19,67 @@ test('keeps local profile uploads on the app origin', () => {
     formatPhotoUrl('/uploads/users/avatar.jpg'),
     '/uploads/users/avatar.jpg'
   );
+});
+
+test('uses the original uploaded order photo instead of inventing nonexistent variants', () => {
+  for (const size of ['thumb', 'md', 'lg'] as const) {
+    assert.equal(formatPhotoUrl('/uploads/pedidos/coleta/picture.png', size), '/uploads/pedidos/coleta/picture.png');
+  }
+});
+
+test('shows the collection photo at delivery and retains its origin', () => {
+  const order = {
+    id: 21, etapa: 'coletado', tipo_encomenda: 'coleta',
+    coleta_local: 'Coleta', coleta_endereco: 'Rua A', coleta_lat: -16.7, coleta_lng: -49.2,
+    entrega_local: 'Entrega', entrega_endereco: 'Rua B', entrega_lat: -16.8, entrega_lng: -49.3,
+    coleta_foto: '["/uploads/pedidos/coleta/picture.png"]'
+  };
+  const [delivery] = backendPedidoToPlaces(order);
+  assert.equal(delivery.operationType, 'entrega');
+  assert.equal(delivery.imageUrl, '/uploads/pedidos/coleta/picture.png');
+  assert.deepEqual(delivery.pickupPhotos, ['/uploads/pedidos/coleta/picture.png']);
+});
+
+test('tracking markers retain collection proof across pickup and delivery reloads', () => {
+  const photo = '/uploads/pedidos/coleta/picture.png';
+  const order = { id: 21, coleta_foto: JSON.stringify([photo]), entrega_foto: '[]' };
+  for (const tipo of ['coleta', 'entrega']) {
+    const marker = backendOrderMarkerToPlace(
+      { pedido_id: 21, etapa: tipo === 'coleta' ? 'aprovado' : 'coletado', cliente: '', tipo, lat: -16.7, lng: -49.2 },
+      'hoje',
+      order
+    );
+    assert.equal(marker.imageUrl, photo);
+    assert.deepEqual(marker.pickupPhotos, [photo]);
+    assert.deepEqual(marker.deliveryPhotos, []);
+  }
+});
+
+test('keeps the collector reservation in delivery adapters and marker-only responses', () => {
+  const order = {
+    id: 21, etapa: 'coletado', tipo_encomenda: 'coleta', coleta_user_id: 11, coleta_user_nome: 'Coletor',
+    itens_extras: JSON.stringify({ deliveryVisibility: 'publico', deliveryAssignedDriverId: '22', deliveryAssignedDriverName: 'Outro motorista' }),
+    coleta_local: 'Coleta', coleta_endereco: 'Rua A', coleta_lat: -16.7, coleta_lng: -49.2,
+    entrega_local: 'Entrega', entrega_endereco: 'Rua B', entrega_lat: -16.8, entrega_lng: -49.3
+  };
+  const [delivery] = backendPedidoToPlaces(order);
+  assert.equal(delivery.collectionRestricted, true);
+  assert.equal(delivery.collectionOwnerId, '11');
+  assert.equal(delivery.orderVisibility, 'privado');
+  assert.equal(delivery.assignedDriverId, '11');
+  assert.equal(delivery.assignedDriverName, 'Coletor');
+  const marker = {
+    pedido_id: 21, etapa: 'coletado', cliente: '', tipo: 'entrega', lat: -16.8, lng: -49.3,
+    collection_restricted: true, collection_owner_id: 11
+  };
+  for (const place of [backendOrderMarkerToPlace(marker, 'hoje', order), backendOrderMarkerToPlace(marker)]) {
+    assert.equal(place.collectionRestricted, true);
+    assert.equal(place.collectionOwnerId, '11');
+    assert.equal(place.orderVisibility, 'privado');
+    assert.equal(place.assignedDriverId, '11');
+  }
+  const [pickup] = backendPedidoToPlaces({ ...order, etapa: 'pendente' });
+  assert.equal(pickup.collectionRestricted, false);
 });
 
 test('keeps customer city and address separate and normalizes duplicate state suffixes', () => {

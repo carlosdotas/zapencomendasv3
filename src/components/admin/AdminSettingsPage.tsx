@@ -47,6 +47,7 @@ import {
   Truck,
   Cloud,
   Navigation,
+  MapPin as DefaultLocationIcon,
   Compass
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
@@ -77,6 +78,7 @@ import { ImageServerSettingsPage } from './settings/ImageServerSettingsPage';
 import { UserFieldsSettingsPage } from './settings/UserFieldsSettingsPage';
 import { ServerSyncSettingsPage } from './settings/ServerSyncSettingsPage';
 import { NavigationSettingsPage } from './settings/NavigationSettingsPage';
+import { DefaultLocationSettingsPage } from './settings/DefaultLocationSettingsPage';
 import { SecurityOperationSettingsPage } from './settings/SecurityOperationSettingsPage';
 import { CompanyManagementPage } from './settings/CompanyManagementPage';
 import { CityManagementPage } from './settings/CityManagementPage';
@@ -146,7 +148,7 @@ class SettingsErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBou
   }
 }
 
-type SubpageKey = 'pricing' | 'payments' | 'image_server' | 'user_fields' | 'server' | 'navigation' | 'security' | 'companies' | 'cities';
+type SubpageKey = 'pricing' | 'payments' | 'image_server' | 'user_fields' | 'server' | 'navigation' | 'default_location' | 'security' | 'companies' | 'cities';
 
 const AdminSettingsContent: React.FC = () => {
   const { 
@@ -261,6 +263,15 @@ const AdminSettingsContent: React.FC = () => {
           iconBg: 'bg-cyan-600 text-white',
           badge: globalSettings.navigation?.defaultNavApp === 'google_maps' ? 'Google Maps' : globalSettings.navigation?.defaultNavApp === 'waze' ? 'Waze' : 'Perguntar',
           badgeColor: 'bg-cyan-50 text-cyan-800 border-cyan-200'
+        },
+        {
+          id: 'default_location' as SubpageKey,
+          title: 'Local padrão de coleta/entrega',
+          subtitle: globalSettings.defaultOrderLocation?.name || 'Usado quando o pedido não tem cliente com local',
+          icon: DefaultLocationIcon,
+          iconBg: 'bg-emerald-600 text-white',
+          badge: globalSettings.defaultOrderLocation ? 'Definido' : 'Não definido',
+          badgeColor: 'bg-emerald-50 text-emerald-800 border-emerald-200'
         },
         {
           id: 'security' as SubpageKey,
@@ -401,6 +412,20 @@ const AdminSettingsContent: React.FC = () => {
               ...prev,
               navigation: { defaultNavApp: app, saveAsDefault: app !== null }
             }));
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (currentSubpage === 'default_location') {
+    return (
+      <div className="fixed inset-0 z-50 bg-[#F8F9FA] overflow-y-auto">
+        <DefaultLocationSettingsPage
+          onBack={() => setCurrentSubpage(null)}
+          defaultLocation={globalSettings.defaultOrderLocation || null}
+          onUpdate={(location) => {
+            setGlobalSettings(prev => ({ ...prev, defaultOrderLocation: location }));
           }}
         />
       </div>

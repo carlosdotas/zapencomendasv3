@@ -69,6 +69,16 @@ test('mostra a entrega no endereço correto após concluir a coleta', () => {
   assert.deepEqual(visiblePlace.coordinates, deliveryCoordinates);
 });
 
+test('não duplica a mesma entrega quando há marcadores locais e do servidor com filtro ativo', () => {
+  const delivery = makeNormalOrder()[1];
+  const places = [delivery, { ...delivery, id: 'pedido-42' }];
+  const result = filterPlacesBySequence(places, [makeCompletedMark('coleta')], {
+    coleta: false, entrega: true, troca: false
+  });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].operationType, 'entrega');
+});
+
 test('segue coleta, troca e retorno ao endereço de coleta', () => {
   const exchangeOrder = makePlace({
     isExchangeOrder: true,

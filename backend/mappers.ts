@@ -478,7 +478,7 @@ export function pedidoFromBackend(body: Json, current?: any): Json {
     }
   }
   // Colunas NOT NULL não aceitam null
-  if ('client_name' in data && !data.client_name) data.client_name = 'Cliente';
+  if ('client_name' in data && !data.client_name) data.client_name = '';
   if ('contact_phone' in data && !data.contact_phone) data.contact_phone = '';
   for (const column of ['orig_priority', 'dest_priority']) {
     if (column in data && !data[column]) data[column] = 'media';

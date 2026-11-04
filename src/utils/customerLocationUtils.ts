@@ -185,7 +185,7 @@ export function getCustomerLocation(
     return {
       coordinates: place.customerCoordinates,
       address: place.customerAddress || place.address || '',
-      name: place.customerName || 'Cliente'
+      name: place.customerName || place.defaultLocationName || 'Cliente'
     };
   }
 

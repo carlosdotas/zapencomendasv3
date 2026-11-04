@@ -7,6 +7,7 @@ import { reverseGeocode } from '../../services/geocodingService';
 import { MapLayerType, Place, OperationType, Driver, CompletedWaypointMark } from '../../types/map';
 import { Customer } from '../../types/customer';
 import { isCustomerMissingLocation, getCustomerPlaceName } from '../../utils/customerLocationUtils';
+import { getMarkerNote, renderMarkerNote } from '../../utils/markerNotes';
 import { isStreetOrAddress, calculateDistanceMeters, resolveCommercialClosingTime } from '../../utils/placeUtils';
 import { placeService } from '../../services/placeService';
 import { ClaimRouteMap } from './ClaimRouteMap';
@@ -212,30 +213,11 @@ export const getPlaceDateBadgeInfo = (place: Place): { label: string; type: 'hoj
   };
 };
 
-// Helper para obter a primeira foto da encomenda com cache em memória
-// (evita dezenas de acessos síncronos a disco via localStorage.getItem a cada render)
-// REGRA: Na entrega NÃO pode mostrar foto do local, deve mostrar foto apenas na COLETA
-const placePhotoMemoryCache = new Map<string, string | null>();
-
-export const clearPlacePhotoCache = (placeId?: string) => {
-  if (placeId) placePhotoMemoryCache.delete(placeId);
-  else placePhotoMemoryCache.clear();
-};
-
 export const getPlacePhoto = (place: Place): string | null => {
   if (!place) return null;
-  const isColeta = place.operationType === 'coleta' || place.orderStage === 'coleta';
-  if (!isColeta) {
-    return null;
-  }
-
-  if (placePhotoMemoryCache.has(place.id)) {
-    return placePhotoMemoryCache.get(place.id)!;
-  }
-
-  let raw: string | null = null;
+  let raw: string | null = place.photos?.[0] || place.imageUrl || place.pickupPhotos?.[0] || null;
   try {
-    const saved = localStorage.getItem(`encomendaszap_photos_${place.id}`);
+    const saved = !raw && localStorage.getItem(`encomendaszap_photos_${place.id}`);
     if (saved) {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]) {
@@ -245,18 +227,9 @@ export const getPlacePhoto = (place: Place): string | null => {
       }
     }
   } catch (err) {
-    // Ignore storage parse error
+    console.warn('[Fotos] Não foi possível ler fotos locais:', err);
   }
-  if (!raw) {
-    if (place.photos && place.photos.length > 0) {
-      raw = place.photos[0];
-    } else if (place.imageUrl) {
-      raw = place.imageUrl;
-    }
-  }
-  const resolved = raw ? (formatPhotoUrl(raw, 'thumb') || raw) : null;
-  placePhotoMemoryCache.set(place.id, resolved);
-  return resolved;
+  return raw ? (formatPhotoUrl(raw, 'thumb') || raw) : null;
 };
 
 // Helper para identificação clara de veículo (moto, carro, utilitário) com cores diferenciadas no fundo
@@ -349,16 +322,13 @@ export const createPlaceMarkerIcon = (
   place: Place, 
   isSelected: boolean = false, 
   placesAtLocation: Place[] = [place],
-  customers: Customer[] = [],
   isPublicForDriver: boolean = false,
   distanceLabel: string = '',
-  driverStatus: DriverStatusInfo | null = null,
-  hideLocationAlert: boolean = false
+  driverStatus: DriverStatusInfo | null = null
 ) => {
   const isMultiple = placesAtLocation.length > 1;
   const isCollectionCenter = placesAtLocation.some(isCollectionCenterPlace);
   const opType: OperationType = place.operationType || 'entrega';
-  const isSingleMissing = !isMultiple && !isPublicForDriver && !hideLocationAlert && isCustomerMissingLocation(place, customers);
   
   let pinColor = '#FF5E00';
   let mainColor = '#FF5E00';
@@ -373,6 +343,7 @@ export const createPlaceMarkerIcon = (
 
   if (isPublicForDriver && !isCollectionCenter) {
     const label = isMultiple ? `${placesAtLocation.length} pedidos` : 'Aceitar';
+    const publicPhoto = !isMultiple && realtimeAssignmentService.isPublicOrder(place) ? getPlacePhoto(place) : null;
     return L.divIcon({
       className: 'public-claim-marker',
       html: `
@@ -388,6 +359,8 @@ export const createPlaceMarkerIcon = (
             <div style="font-size:9px;font-weight:900;letter-spacing:0.05em;text-transform:uppercase;color:#DC2626;white-space:nowrap;">${label}</div>
             <div style="margin-top:2px;font-size:12px;font-weight:900;color:#0F172A;white-space:nowrap;">${distanceLabel || '🛵'}</div>
           </div>
+          ${publicPhoto ? `<div class="place-marker-photo-trigger" style="position:absolute;right:100%;top:0;width:38px;height:38px;border:2px solid white;border-radius:8px;overflow:hidden;"><img src="${publicPhoto}" alt="Foto da encomenda" style="width:100%;height:100%;object-fit:cover;" /></div>` : ''}
+          <div style="position:absolute;left:100%;top:0;width:180px;text-align:left;">${placesAtLocation.filter(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p)).slice(0, 4).map(renderMarkerNote).join('')}</div>
           <div style="position:relative;width:46px;height:44px;margin-top:2px;animation:claimWiggle 2.4s ease-in-out infinite;">
             <div style="position:absolute;inset:3px;border-radius:10px;background:#EF4444;animation:claimPulse 1.8s ease-out infinite;"></div>
             <svg width="46" height="44" viewBox="0 0 64 62" style="position:absolute;inset:0;filter:drop-shadow(0 3px 4px rgba(127,29,29,0.55))${isSelected ? ' drop-shadow(0 0 4px rgba(254,202,202,0.95))' : ''};">
@@ -493,9 +466,7 @@ export const createPlaceMarkerIcon = (
   const rawPlaceName = place.name || 'Local';
   const cleanPlaceName = rawPlaceName.length > 24 ? rawPlaceName.slice(0, 22) + '...' : rawPlaceName;
 
-  // Foto da encomenda: na entrega NÃO pode mostrar foto do local, deve mostrar foto na coleta
-  const isColetaMarker = opType === 'coleta' || place.orderStage === 'coleta';
-  const placePhoto = isColetaMarker ? (getPlacePhoto(place) || placesAtLocation.filter(p => p.operationType === 'coleta' || p.orderStage === 'coleta').map(p => getPlacePhoto(p)).find(Boolean) || null) : null;
+  const placePhoto = getPlacePhoto(place);
 
   // Veículo da encomenda individual
   const singleVehicle = getVehicleInfo(place.vehicleType);
@@ -538,9 +509,8 @@ export const createPlaceMarkerIcon = (
           opBorder = '#FDE68A';
         }
 
-        const isLineMissing = !isPublicForDriver && !hideLocationAlert && isCustomerMissingLocation(p, customers);
-
         return `
+          <div>
           <div 
             class="place-marker-customer-line" 
             data-customer-idx="${idx}"
@@ -561,19 +531,6 @@ export const createPlaceMarkerIcon = (
               ${cName}
             </span>
 
-            ${isLineMissing ? `
-              <!-- Alerta de Localização Faltando no Cliente -->
-              <span 
-                class="place-marker-location-alert-btn" 
-                data-action="set-customer-location" 
-                data-place-id="${p.id}"
-                title="Cliente sem localização! Toque para definir local."
-                style="background: #FEF3C7; color: #92400E; border: 1px solid #F59E0B; border-radius: 4px; padding: 0.5px 3.5px; font-size: 8px; font-weight: 900; cursor: pointer; display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.25);"
-              >
-                <span>⚠️ Local</span>
-              </span>
-            ` : ''}
-
             <!-- Valor do pedido individual -->
             ${pPrice > 0 ? `
               <span style="font-size: 9px; font-weight: 900; color: #FEF08A; text-shadow: 0 1px 2px rgba(0,0,0,0.5); white-space: nowrap; margin-left: auto;">
@@ -585,6 +542,8 @@ export const createPlaceMarkerIcon = (
             <span style="${pPrice > 0 ? 'margin-left: 2px;' : 'margin-left: auto;'} font-size: 8.5px; font-weight: 900; text-transform: uppercase; color: #ffffff; opacity: 0.95; letter-spacing: 0.02em; padding-left: 2px;">
               ${opLabel}
             </span>
+          </div>
+          ${renderMarkerNote(p)}
           </div>
         `;
       }).join('')}
@@ -613,19 +572,7 @@ export const createPlaceMarkerIcon = (
       ` : ''}
     </div>
 
-    ${isSingleMissing ? `
-      <!-- Alerta de Localização Faltando no Cliente -->
-      <div 
-        class="place-marker-location-alert-btn" 
-        data-action="set-customer-location" 
-        data-place-id="${place.id}"
-        title="Cliente sem localização cadastrada! Toque para definir endereço e local."
-        style="background: linear-gradient(135deg, #FEF3C7, #FDE68A); color: #92400E; border: 1.2px solid #F59E0B; border-radius: 5px; padding: 1.5px 6px; font-size: 8.5px; font-weight: 900; display: inline-flex; align-items: center; gap: 3.5px; margin-top: 2.5px; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.25); text-transform: uppercase; letter-spacing: 0.02em; line-height: 1.2; width: fit-content;"
-      >
-        <span style="font-size: 9.5px;">⚠️</span>
-        <span>Cadastrar Local</span>
-      </div>
-    ` : ''}
+    ${isCollectionCenter ? '' : renderMarkerNote(place)}
   `;
 
   const dateBadge = getPlaceDateBadgeInfo(place);
@@ -682,7 +629,7 @@ export const createPlaceMarkerIcon = (
           ${placePhoto ? `
             <!-- FOTO NO LUGAR DO ÍCONE DA LABEL: TOQUE PARA ABRIR CHEIA NA TELA -->
             <div class="place-marker-label-photo-thumb place-marker-photo-trigger" data-photo-url="${placePhoto}" title="Clique para abrir foto cheia na tela">
-              <img src="${placePhoto}" alt="Foto da encomenda" class="place-marker-thumb-img" onerror="this.onerror=null; this.src='https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=120&auto=format&fit=crop&q=70';" />
+              <img src="${placePhoto}" alt="Foto indisponível" class="place-marker-thumb-img" />
               <div class="place-marker-thumb-hover">
                 <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
               </div>
@@ -728,7 +675,7 @@ export const createPlaceMarkerIcon = (
         </div>
       </div>
     `,
-    iconSize: [360, (isMultiple ? (placesAtLocation.length > 2 ? 120 : 96) : (isPublicForDriver ? 104 : isSingleMissing ? 96 : 74)) + (driverStatus ? 28 : 0)],
+    iconSize: [360, (isMultiple ? (placesAtLocation.length > 2 ? 120 : 96) : (isPublicForDriver ? 104 : 74)) + (driverStatus ? 28 : 0)],
     iconAnchor: [19, 43],
     popupAnchor: [0, -43]
   });
@@ -1634,63 +1581,12 @@ export const FullscreenMap: React.FC = () => {
         console.warn('Erro ao verificar local próximo:', err);
       }
 
-      // 2. SNAPPING INTELIGENTE EM CLIENTE COM LOCALIZAÇÃO CADASTRADA (<= 45 metros)
-      try {
-        const currentCustomers = customersRef.current || [];
-        for (const cust of currentCustomers) {
-          if (cust.coordinates && typeof cust.coordinates.lat === 'number' && typeof cust.coordinates.lng === 'number') {
-            const dist = calculateDistanceMeters(coords, cust.coordinates);
-            if (dist <= 45) {
-              const custDisplayName = cust.fullName || 'Cliente';
-              const custPlaceName = getCustomerPlaceName(custDisplayName);
-              const custAddr = cust.address || `${cust.coordinates.lat.toFixed(5)}, ${cust.coordinates.lng.toFixed(5)}`;
-              const snappedCustPlace: Place = {
-                id: tempId,
-                orderCode,
-                name: custPlaceName,
-                address: custAddr,
-                coordinates: cust.coordinates,
-                operationType: initialOp,
-                vehicleType: 'moto',
-                packageType: 'caixa',
-                orderDateBadge: 'hoje',
-                customerName: custDisplayName,
-                customerPhone: cust.phone || '',
-                customerId: cust.id,
-                sellerName: '',
-                sellerPhone: '',
-                managerName: '',
-                managerPhone: '',
-                responsibleName: '',
-                responsiblePhone: '',
-                observations: '',
-                driverNotes: `Localização cadastrada do cliente ${custDisplayName}.`,
-                category: 'Local de Cliente',
-                openNow: undefined,
-                closingTime: undefined,
-                pickupAddress: initialOp === 'coleta' ? custAddr : undefined,
-                pickupCoordinates: initialOp === 'coleta' ? cust.coordinates : undefined,
-                deliveryAddress: initialOp === 'entrega' ? custAddr : undefined,
-                deliveryCoordinates: initialOp === 'entrega' ? cust.coordinates : undefined,
-                exchangeAddress: initialOp === 'troca' ? custAddr : undefined,
-                exchangeCoordinates: initialOp === 'troca' ? cust.coordinates : undefined
-              };
-
-              setSelectedPlaceRef.current(snappedCustPlace);
-              map.flyTo([cust.coordinates.lat, cust.coordinates.lng], Math.max(map.getZoom(), 16), { duration: 0.5 });
-              return;
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Erro ao verificar cliente próximo:', err);
-      }
-
       // 3. Fallback: cria o rascunho e busca geocodificação reversa
       const newDraftPlace: Place = {
         id: tempId,
         orderCode,
-        name: 'Localizando endereço...',
+        name: '',
+        isResolvingAddress: true,
         address: coordStr,
         coordinates: coords,
         operationType: initialOp,
@@ -1722,7 +1618,7 @@ export const FullscreenMap: React.FC = () => {
 
       // Busca o endereço real via geocodificação reversa
       try {
-        const geoPlace = await reverseGeocode(coords);
+        const geoPlace = await reverseGeocode(coords, snapRadiusMeters);
         if (geoPlace) {
           const finalName = geoPlace.name || (initialOp === 'coleta' ? 'Ponto de Coleta' : initialOp === 'troca' ? 'Ponto de Troca' : 'Ponto de Entrega');
           const finalAddr = geoPlace.address || coordStr;
@@ -1737,9 +1633,12 @@ export const FullscreenMap: React.FC = () => {
             address: finalAddr
           }));
 
-          const updatedPlace: Place = {
-            ...newDraftPlace,
+          setSelectedPlaceRef.current(current => {
+            if (!current || current.id !== tempId) return current;
+            const updatedPlace: Place = {
+            ...current,
             name: finalName,
+            isResolvingAddress: false,
             address: finalAddr,
             coordinates: geoPlace.coordinates || coords,
             originCity: geoPlace.originCity || 'Goiânia - GO',
@@ -1751,17 +1650,18 @@ export const FullscreenMap: React.FC = () => {
             closingTime: isStreet ? undefined : closing,
             imageUrl: geoPlace.imageUrl,
             photos: geoPlace.photos || (geoPlace.imageUrl ? [geoPlace.imageUrl] : []),
-            pickupAddress: initialOp === 'coleta' ? finalAddr : undefined,
-            pickupCoordinates: initialOp === 'coleta' ? (geoPlace.coordinates || coords) : undefined,
-            deliveryAddress: initialOp === 'entrega' ? finalAddr : undefined,
-            deliveryCoordinates: initialOp === 'entrega' ? (geoPlace.coordinates || coords) : undefined,
-            exchangeAddress: initialOp === 'troca' ? finalAddr : undefined,
-            exchangeCoordinates: initialOp === 'troca' ? (geoPlace.coordinates || coords) : undefined
+            pickupAddress: current.pickupAddress === coordStr ? finalAddr : current.pickupAddress,
+            deliveryAddress: current.deliveryAddress === coordStr ? finalAddr : current.deliveryAddress,
+            exchangeAddress: current.exchangeAddress === coordStr ? finalAddr : current.exchangeAddress
           };
-          setSelectedPlaceRef.current(updatedPlace);
+            return updatedPlace;
+          });
         }
       } catch (err) {
         console.error('Erro na geocodificação reversa ao adicionar no local:', err);
+        setSelectedPlaceRef.current(current =>
+          current && current.id === tempId ? { ...current, isResolvingAddress: false } : current
+        );
       }
     };
 
@@ -2078,13 +1978,13 @@ export const FullscreenMap: React.FC = () => {
           const isPublicForDriver = canClaimOrders(currentRole) && placesAtLocation.some(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
       const distanceLabel = isPublicForDriver ? formatClaimDistance(userLocationRef.current, place.coordinates) : '';
       const driverStatus = isDriverRole ? null : getDriverStatusInfo(placesAtLocation, driversRef.current);
-      const iconSignature = `${place.id}_${place.orderStage}_${place.name}_${place.imageUrl || ''}_${isSelected}_${isPublicForDriver}_${distanceLabel}_${driverStatus?.text || ''}_${placesAtLocation.length}`;
+      const iconSignature = JSON.stringify([place.id, place.orderStage, place.name, place.imageUrl, place.photos, place.pickupPhotos, isSelected, isPublicForDriver, distanceLabel, driverStatus?.text, placesAtLocation.map(p => [p.id, getMarkerNote(p)])]);
 
       if (placeMarkersRef.current.has(place.id)) {
         const marker = placeMarkersRef.current.get(place.id)!;
         if ((marker as any)._iconSignature !== iconSignature) {
           (marker as any)._iconSignature = iconSignature;
-          const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customersRef.current, isPublicForDriver, distanceLabel, driverStatus, isDriverRole);
+          const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, isPublicForDriver, distanceLabel, driverStatus);
           marker.setIcon(icon);
         }
         (marker as any)._driverStatusText = driverStatus?.text || '';
@@ -2095,7 +1995,7 @@ export const FullscreenMap: React.FC = () => {
         (marker as any)._customPlacesAtLocation = placesAtLocation;
         (marker as any)._isPublicForDriver = isPublicForDriver;
       } else {
-        const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customersRef.current, isPublicForDriver, distanceLabel, driverStatus, isDriverRole);
+        const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, isPublicForDriver, distanceLabel, driverStatus);
         const marker = L.marker([place.coordinates.lat, place.coordinates.lng], {
           icon,
           zIndexOffset: isPublicForDriver ? 600 : isSelected ? 500 : 100
@@ -2118,25 +2018,16 @@ export const FullscreenMap: React.FC = () => {
           const currentPlace = (marker as any)._customPlaceData || place;
           const currentGroup: Place[] = (marker as any)._customPlacesAtLocation || [currentPlace];
 
+          if (currentGroup.length === 1 && (e.originalEvent?.target as HTMLElement)?.closest('.place-marker-photo-trigger')) {
+            const photo = getPlacePhoto(currentPlace);
+            if (photo) openPhotoViewer(formatPhotoUrl(photo, 'lg') || photo, currentPlace);
+            return;
+          }
+
           // Modo "Passar rota": o clique apenas marca/desmarca os locais deste marcador
           if (routeSelectModeRef.current) {
             const ids = currentGroup.filter(p => !isCollectionCenterPlace(p)).map(p => p.id);
             if (ids.length > 0) toggleRouteSelectionRef.current(ids);
-            return;
-          }
-
-          // Se clicou no botão de alerta para cadastrar localização do cliente
-          const alertTarget = (e.originalEvent?.target as HTMLElement)?.closest('[data-action="set-customer-location"]');
-          if (alertTarget) {
-            const targetId = alertTarget.getAttribute('data-place-id') || place.id;
-            const targetPlace = (currentGroup.find(p => p.id === targetId)) || currentPlace;
-            openCustomerLocationModal({
-              place: targetPlace,
-              placeId: targetPlace.id,
-              customerName: targetPlace.customerName || 'Cliente',
-              customerPhone: targetPlace.customerPhone,
-              customerId: targetPlace.customerId
-            });
             return;
           }
 
@@ -2210,7 +2101,6 @@ export const FullscreenMap: React.FC = () => {
         m._customPlaceData,
         selectedPlace?.id === m._customPlaceData.id,
         m._customPlacesAtLocation || [m._customPlaceData],
-        customersRef.current,
         false,
         '',
         status
@@ -2230,7 +2120,6 @@ export const FullscreenMap: React.FC = () => {
         m._customPlaceData,
         false,
         m._customPlacesAtLocation || [m._customPlaceData],
-        customersRef.current,
         true,
         label
       ));
@@ -2711,7 +2600,7 @@ export const FullscreenMap: React.FC = () => {
     }
 
     const { lat, lng } = selectedPlace.coordinates;
-    const markerIcon = createPlaceMarkerIcon(selectedPlace, true, [selectedPlace], customers, false, '', null, currentRole === 'motorista');
+    const markerIcon = createPlaceMarkerIcon(selectedPlace, true, [selectedPlace], false, '', null);
 
     if (markerRef.current) {
       markerRef.current.setLatLng([lat, lng]);
@@ -2728,19 +2617,14 @@ export const FullscreenMap: React.FC = () => {
           e.originalEvent.stopPropagation();
         }
 
-        const alertTarget = (e.originalEvent?.target as HTMLElement)?.closest('[data-action="set-customer-location"]');
-        if (alertTarget) {
-          openCustomerLocationModal({
-            place: selectedPlace,
-            placeId: selectedPlace.id,
-            customerName: selectedPlace.customerName || 'Cliente',
-            customerPhone: selectedPlace.customerPhone,
-            customerId: selectedPlace.customerId
-          });
+        const currentPlace: Place = (markerRef.current as L.Marker & { _customPlaceData: Place })._customPlaceData;
+        if ((e.originalEvent?.target as HTMLElement)?.closest('.place-marker-photo-trigger')) {
+          const photo = getPlacePhoto(currentPlace);
+          if (photo) openPhotoViewer(formatPhotoUrl(photo, 'lg') || photo, currentPlace);
           return;
         }
 
-        setSelectedPlace(selectedPlace);
+        setSelectedPlace(currentPlace);
       });
 
       markerRef.current.on('dblclick', (e) => {
@@ -2751,7 +2635,8 @@ export const FullscreenMap: React.FC = () => {
         }
       });
     }
-  }, [selectedPlace, mapInstance, customers, openCustomerLocationModal, currentRole]);
+    (markerRef.current as L.Marker & { _customPlaceData: Place })._customPlaceData = selectedPlace;
+  }, [selectedPlace, mapInstance, openPhotoViewer, currentRole]);
 
   // Sync Street Route Highlighting (Vivid Royal & Navy Blue Street Polyline with Uber-style Animated Flow)
   useEffect(() => {
@@ -2932,6 +2817,31 @@ export const FullscreenMap: React.FC = () => {
       }
     };
   }, [userLocation, isTrackingUser, isDriverOnline, currentRole, user, mapInstance]);
+
+  useEffect(() => {
+    const marker = userMarkerRef.current;
+    if (!marker || currentRole !== 'motorista') return;
+    const openOwnDriver = (event: L.LeafletMouseEvent) => {
+      L.DomEvent.stopPropagation(event);
+      if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+      const position = marker.getLatLng();
+      setSelectedDriver({
+        id: String(user.id || ''),
+        name: user.name || 'Motorista',
+        phone: user.phone || '',
+        vehicleType: getUserVehicleType(user),
+        vehicleModel: user.vehicle || '',
+        vehiclePlate: '',
+        color: getDriverPermanentColor(user.id || user.phone || user.name),
+        coordinates: { lat: position.lat, lng: position.lng },
+        status: isDriverOnline ? 'em_rota' : 'offline',
+        avatarUrl: user.avatarUrl,
+        lastSeenTimestamp: userLocation?.timestamp
+      });
+    };
+    marker.on('click', openOwnDriver);
+    return () => { marker.off('click', openOwnDriver); };
+  }, [mapInstance, userLocation, currentRole, user, isDriverOnline, setSelectedDriver]);
 
   // Atualização reativa imediata do marcador quando o usuário altera de papel (Admin/Motorista) ou tipo de veículo
   useEffect(() => {

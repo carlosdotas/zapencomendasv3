@@ -52,10 +52,12 @@ import {
 } from '../services/apiAdapters';
 import { excludeCoveredOrders, isTemporaryOrderId, getOrderKey, cleanOrderId, getBaseOrderId } from '../utils/orderIds';
 import { shouldApplyOrderSync, runOncePerKey } from '../utils/orderSync';
+import { mergeCompletedWaypointMarks } from '../utils/completedWaypointMarks';
 import { filterPlacesBySequence } from '../utils/orderSequence';
 import { sanitizeNewOrderAssignments } from '../utils/newOrderAssignment';
 import { BackendPedido, BackendUser, BaixaProximity } from '../services/apiTypes';
 import { buildMapOrderPayload } from '../services/mapOrderPayload';
+import { settingsService } from '../services/settingsService';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
 import {
@@ -84,7 +86,7 @@ interface MapContextType {
   setMapInstance: (map: LeafletMap | null) => void;
   currentCoords: LocationCoordinates;
   selectedPlace: Place | null;
-  setSelectedPlace: (place: Place | null) => void;
+  setSelectedPlace: React.Dispatch<React.SetStateAction<Place | null>>;
   mapLayer: MapLayerType;
   setMapLayer: (layer: MapLayerType) => void;
   mapTheme: MapColorTheme;
@@ -182,7 +184,7 @@ interface MapContextType {
   completedOrders: Place[];
   completedWaypointMarks: CompletedWaypointMark[];
   revertCompletedMark: (markId: string) => Promise<boolean>;
-  completePlaceWaypoint: (placeId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity) => void;
+  completePlaceWaypoint: (placeId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity, pickupPhotos?: string[]) => Promise<boolean>;
   resetWorkflowToColetas: () => void;
   updatePlaceDetails: (placeId: string, partial: Partial<Place>) => Promise<boolean>;
   assignPlaceToDriver: (placeId: string, driverId: string | null, driverPhone?: string, driverName?: string, acceptedByDriver?: boolean) => void;
@@ -288,6 +290,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [mapInstance, setMapInstance] = useState<LeafletMap | null>(null);
   const [currentCoords, setCurrentCoords] = useState<LocationCoordinates>(() => getSavedLocation().coords);
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
+  useEffect(() => settingsService.subscribe(() => {}), []);
   const [mapLayer, setMapLayerState] = useState<MapLayerType>(() => {
     try {
       const saved = localStorage.getItem('encomendaszap_map_layer');
@@ -573,7 +576,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const saved = localStorage.getItem('encomendaszap_completed_marks');
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return mergeCompletedWaypointMarks([], parsed);
       }
     } catch (e) {
       // ignore
@@ -623,6 +627,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const orderSyncRequestVersion = useRef(0);
   const orderMutationVersion = useRef(0);
   const pendingOrderCreations = useRef(new Map<string, Promise<boolean>>());
+  const pendingWaypointCompletions = useRef(new Map<string, Promise<boolean>>());
 
   useEffect(() => {
     try {
@@ -794,14 +799,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Gera marcas com 'X' para coletas de pedidos vindos do backend cuja etapa já foi concluída
       const backendCompletedColetas: CompletedWaypointMark[] = [];
       if (pedidosRes && pedidosRes.success && Array.isArray(pedidosRes.data)) {
-        const savedColetaSet = new Set<string>();
-        savedMarks.forEach(m => {
-          if (m.operationType === 'coleta') {
-            savedColetaSet.add(m.orderId);
-            if (m.orderCode) savedColetaSet.add(m.orderCode);
-          }
-        });
-
         pedidosRes.data.forEach((p: any) => {
           const et = (p.etapa || '').toLowerCase().trim();
           const isColetado = et === 'coletado' || et === 'trocando' || et === 'trocado' || et === 'retornando' || et === 'entregando' || et === 'entregue';
@@ -812,9 +809,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (isNaN(cLat) || isNaN(cLng) || cLat === 0 || cLng === 0) return;
 
           const markId = `backend-coleta-${p.id}`;
-          const hasLocal = savedColetaSet.has(`pedido-${p.id}`) || savedColetaSet.has(String(p.id)) || (p.order_code && savedColetaSet.has(p.order_code));
-          if (hasLocal) return;
-
           const rawTime = p.coleta_saida_at || p.coleta_chegada_at || p.data || p.created_at;
           let timeFormatted = '12:00';
           if (rawTime) {
@@ -849,10 +843,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (backendCompletedColetas.length > 0) {
         setCompletedWaypointMarks(prev => {
-          const existingIds = new Set(prev.map(m => m.id));
-          const toAdd = backendCompletedColetas.filter(m => !existingIds.has(m.id));
-          if (toAdd.length === 0) return prev;
-          return [...prev, ...toAdd];
+          if (!shouldApplyOrderSync(orderSyncSnapshot, orderSyncRequestVersion.current, orderMutationVersion.current)) return prev;
+          return mergeCompletedWaypointMarks(prev, backendCompletedColetas);
         });
       }
 
@@ -868,7 +860,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const numId = p.id.match(/\d+/)?.[0] || (p.orderCode ? p.orderCode.match(/\d+/)?.[0] : null);
         const rt = realtimeAssignmentService.getAssignmentForOrder(p.id, p.operationType) || 
                    (numId ? realtimeAssignmentService.getAssignmentForOrder(numId, p.operationType) : null);
-        if (rt && rt.driverId) {
+        if (rt && rt.driverId && !p.collectionRestricted) {
           return {
             ...p,
             assignedDriverId: rt.driverId,
@@ -948,12 +940,26 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Se há um local atualmente selecionado, sincroniza com os dados frescos do servidor
       setSelectedPlace(curr => {
         if (!curr) return null;
+        if (!shouldApplyOrderSync(orderSyncSnapshot, orderSyncRequestVersion.current, orderMutationVersion.current)) return curr;
+        if (
+          localStorage.getItem('encomendaszap_user_role') === 'motorista' &&
+          pedidosRes.success && Array.isArray(pedidosRes.data) &&
+          /^pedido-\d+/.test(curr.id) && !isTemporaryOrderId(curr.id) &&
+          !allCombinedActivePlaces.some(p => getOrderKey(p) === getOrderKey(curr))
+        ) return null;
         const refreshed = allCombinedActivePlaces.find(p => p.id === curr.id);
-        if (refreshed && (refreshed.imageUrl !== curr.imageUrl || refreshed.photos?.length !== curr.photos?.length)) {
+        if (refreshed && (
+          refreshed.imageUrl !== curr.imageUrl || refreshed.photos?.length !== curr.photos?.length ||
+          refreshed.collectionRestricted !== curr.collectionRestricted || refreshed.collectionOwnerId !== curr.collectionOwnerId
+        )) {
           return {
             ...curr,
             imageUrl: refreshed.imageUrl,
             photos: refreshed.photos,
+            pickupPhotos: refreshed.pickupPhotos,
+            deliveryPhotos: refreshed.deliveryPhotos,
+            collectionRestricted: refreshed.collectionRestricted,
+            collectionOwnerId: refreshed.collectionOwnerId,
             orderStage: refreshed.orderStage
           };
         }
@@ -1099,6 +1105,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const assignment = assignments[p.id] || 
                              (p.operationType && numId ? assignments[`${numId}_${p.operationType}`] : null) ||
                              (p.operationType && numId ? assignments[`pedido-${numId}-${p.operationType}`] : null);
+          if (p.collectionRestricted) return p;
           if (assignment && assignment.driverId) {
             if (p.assignedDriverId !== assignment.driverId || p.assignedDriverName !== assignment.driverName || Boolean(p.driverEnRoute) !== Boolean(assignment.enRoute) || Boolean(p.acceptedByDriver) !== Boolean(assignment.acceptedByDriver)) {
               hasChanges = true;
@@ -1127,6 +1134,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setSavedPlaces(prev => {
         const next = prev.map(place => {
+          if (place.collectionRestricted) return place;
           if (!place.acceptedByDriver || !canSeeReleasedClaim(place)) return place;
           const numId = place.id.match(/\d+/)?.[0] || (place.orderCode ? place.orderCode.match(/\d+/)?.[0] : null);
           const assignment = assignments[place.id] ||
@@ -1141,6 +1149,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setSelectedPlace(prev => {
         if (!prev) return null;
+        if (prev.collectionRestricted) return prev;
         const numId = prev.id.match(/\d+/)?.[0] || (prev.orderCode ? prev.orderCode.match(/\d+/)?.[0] : null);
         const assignment = assignments[prev.id] || 
                            (prev.operationType && numId ? assignments[`${numId}_${prev.operationType}`] : null) ||
@@ -2555,16 +2564,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [saveNewOrder]);
 
   // Dá baixa em um ponto (coleta, troca ou entrega) e avança para a próxima etapa conforme as regras do EncomendasZap
-  const completePlaceWaypoint = useCallback(async (rawPlaceId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity) => {
+  const performCompletePlaceWaypoint = useCallback(async (rawPlaceId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity, pickupPhotos?: string[]): Promise<boolean> => {
     const placeId = resolvePlaceId(rawPlaceId);
     const now = new Date();
     const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
     const todayStr = now.toISOString().split('T')[0];
 
     // Localiza o local alvo de forma síncrona imediata
-    const place = allPlaces.find(p => p.id === placeId) || 
-                  savedPlaces.find(p => p.id === placeId) || 
-                  (selectedPlace?.id === placeId ? selectedPlace : null);
+    const place = (selectedPlace?.id === placeId ? selectedPlace : null) ||
+                  allPlaces.find(p => p.id === placeId) ||
+                  savedPlaces.find(p => p.id === placeId);
 
     const currentOp: OperationType = place?.operationType || 'coleta';
     const rawId = (place as any)?.pedido_id || (place as any)?.orderId || placeId;
@@ -2613,6 +2622,37 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isFinalOrderCompletion = true;
     }
 
+    let collectionOwnerId = place?.collectionOwnerId;
+    orderMutationVersion.current += 1;
+    if (!isFailedAttempt && targetPedidoId && !isTempPedidoNumber(String(targetPedidoId).replace(/\D/g, '') || null)) {
+      const cleanUserId = user?.id ? parseInt(String(user.id).replace(/\D/g, ''), 10) || 1 : 1;
+      const etapa = currentOp === 'coleta' ? 'coletado' : currentOp === 'troca' ? 'trocado' : 'entregue';
+      try {
+        const actorName = currentOp === 'coleta' ? (user?.name || 'Operador') : (receiverName || user?.name || 'Operador');
+        const result = await api.marcarColetaEntrega(targetPedidoId, etapa, cleanUserId, actorName, proximity);
+        if (!result.success) {
+          window.alert(result.message || 'Não foi possível registrar a etapa do pedido.');
+          return false;
+        }
+        if (currentOp === 'coleta') {
+          collectionOwnerId = result.data?.collection_owner_id != null
+            ? String(result.data.collection_owner_id)
+            : undefined;
+        }
+      } catch (error) {
+        console.error('[Baixa] Erro ao registrar etapa:', error);
+        window.alert('Não foi possível registrar a etapa do pedido. Verifique a conexão e tente novamente.');
+        return false;
+      }
+    }
+    orderMutationVersion.current += 1;
+    const nextCollectionAssignment: Partial<Place> = isFailedAttempt ? {} : {
+      orderVisibility: 'privado',
+      assignedDriverId: collectionOwnerId,
+      assignedDriverName: user?.name,
+      assignedDriverPhone: user?.phone
+    };
+
     // 1. Marcação visual no solo (Xzinho no asfalto com horário e tipo exato da operação)
     let placePhotos: string[] = [];
     try {
@@ -2622,7 +2662,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (Array.isArray(parsed)) placePhotos = parsed;
       }
     } catch {}
-    if (placePhotos.length === 0 && place?.photos && place.photos.length > 0) {
+    if (currentOp === 'coleta' && pickupPhotos?.length) {
+      placePhotos = pickupPhotos;
+    } else if (placePhotos.length === 0 && place?.photos && place.photos.length > 0) {
       placePhotos = [...place.photos];
     }
     if (placePhotos.length === 0 && place?.imageUrl) {
@@ -2660,7 +2702,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setCompletedWaypointMarks(prev => {
-      const nextMarks = [newCompletedMark, ...prev];
+      const nextMarks = mergeCompletedWaypointMarks([newCompletedMark], prev);
       try {
         localStorage.setItem('encomendaszap_completed_marks', JSON.stringify(nextMarks));
       } catch (e) {}
@@ -2706,12 +2748,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (exchangeCoords && !nextList.some(p => p.id === nextStepId)) {
             nextList.push({
               ...place,
+              collectionRestricted: !isFailedAttempt,
+              collectionOwnerId,
+              ...nextCollectionAssignment,
               id: nextStepId,
               name: exchangeName,
               address: exchangeAddress,
               coordinates: exchangeCoords,
-              imageUrl: undefined,
-              photos: undefined,
+              imageUrl: placePhotos[0],
+              photos: placePhotos,
+              pickupPhotos: place.pickupPhotos || placePhotos,
               operationType: 'troca',
               orderStage: 'troca',
               category: 'Troca de Mercadoria',
@@ -2728,12 +2774,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!nextList.some(p => p.id === nextStepId)) {
             nextList.push({
               ...place,
+              collectionRestricted: !isFailedAttempt,
+              collectionOwnerId,
+              ...nextCollectionAssignment,
               id: nextStepId,
               name: destName,
               address: destAddress,
               coordinates: destCoords,
-              imageUrl: undefined,
-              photos: undefined,
+              imageUrl: placePhotos[0],
+              photos: placePhotos,
+              pickupPhotos: placePhotos,
               operationType: 'entrega',
               orderStage: 'entrega',
               category: 'Entrega Expressa',
@@ -2762,8 +2812,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             name: returnName,
             address: returnAddress,
             coordinates: returnCoords,
-            imageUrl: undefined,
-            photos: undefined,
+            imageUrl: placePhotos[0],
+            photos: placePhotos,
+            pickupPhotos: placePhotos,
             operationType: 'entrega',
             orderStage: 'retorno',
             category: 'Troca de Mercadoria',
@@ -2804,12 +2855,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (exchangeCoords && !nextSaved.some(p => p.id === nextStepId)) {
             nextSaved.push({
               ...place,
+              collectionRestricted: !isFailedAttempt,
+              collectionOwnerId,
+              ...nextCollectionAssignment,
               id: nextStepId,
               name: exchangeName,
               address: exchangeAddress,
               coordinates: exchangeCoords,
-              imageUrl: undefined,
-              photos: undefined,
+              imageUrl: placePhotos[0],
+              photos: placePhotos,
+              pickupPhotos: placePhotos,
               operationType: 'troca',
               orderStage: 'troca',
               category: 'Troca de Mercadoria',
@@ -2825,12 +2880,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (!nextSaved.some(p => p.id === nextStepId)) {
             nextSaved.push({
               ...place,
+              collectionRestricted: !isFailedAttempt,
+              collectionOwnerId,
+              ...nextCollectionAssignment,
               id: nextStepId,
               name: destName,
               address: destAddress,
               coordinates: destCoords,
-              imageUrl: undefined,
-              photos: undefined,
+              imageUrl: placePhotos[0],
+              photos: placePhotos,
+              pickupPhotos: placePhotos,
               operationType: 'entrega',
               orderStage: 'entrega',
               category: 'Entrega Expressa',
@@ -2857,8 +2916,9 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             name: returnName,
             address: returnAddress,
             coordinates: returnCoords,
-            imageUrl: undefined,
-            photos: undefined,
+            imageUrl: placePhotos[0],
+            photos: placePhotos,
+            pickupPhotos: place.pickupPhotos || placePhotos,
             operationType: 'entrega',
             orderStage: 'retorno',
             category: 'Troca de Mercadoria',
@@ -2901,20 +2961,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ? 'trocado' 
           : 'entregue';
 
-        // 5.1 Marca etapa no servidor
-        try {
-          await api.marcarColetaEntrega(targetPedidoId, etapaBackend, cleanUserId, operatorName, proximity);
-        } catch (err) {
-          console.warn('[Baixa] Erro em marcarColetaEntrega:', err);
-        }
-
         // 5.2 Persiste etapa e campos de saída no registro do pedido
         try {
           await api.savePedido({
             id: targetPedidoId,
             etapa: isFinalOrderCompletion ? (currentOp === 'coleta' ? 'finalizado' : 'entregue') : etapaBackend,
             ...(currentOp === 'coleta' 
-              ? { coleta_obs: notes || operatorName, coleta_saida_at: timeStr, coleta_user_id: cleanUserId, coleta_user_nome: operatorName } 
+              ? { coleta_obs: notes || operatorName, coleta_saida_at: nowIso, coleta_user_nome: user?.name || 'Operador' }
               : currentOp === 'troca' 
               ? { troca_obs: notes || operatorName, troca_saida_at: timeStr, troca_at: timeStr, troca_user_id: cleanUserId, troca_user_nome: operatorName } 
               : { entrega_obs: notes || operatorName, entrega_saida_at: timeStr, entrega_at: timeStr, entrega_user_id: cleanUserId, entrega_user_nome: operatorName, status_pagamento: 'pago' }
@@ -2939,7 +2992,15 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
     }
+    return true;
   }, [allPlaces, savedPlaces, selectedPlace, currentCoords, flyToLocation, user]);
+
+  const completePlaceWaypoint = useCallback(
+    (placeId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity, pickupPhotos?: string[]) =>
+      runOncePerKey(pendingWaypointCompletions.current, getBaseOrderId(resolvePlaceId(placeId)), () =>
+        performCompletePlaceWaypoint(placeId, receiverName, notes, proximity, pickupPhotos)),
+    [performCompletePlaceWaypoint, resolvePlaceId]
+  );
 
   // Reinicia / sincroniza as encomendas ativas diretamente do servidor
   const resetWorkflowToColetas = useCallback(() => {

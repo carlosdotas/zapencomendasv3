@@ -300,6 +300,8 @@ export interface BackendOrderMarker {
   tipo: 'coleta' | 'entrega' | 'troca' | string;
   local_id?: number | string;
   local_name?: string;
+  collection_restricted?: boolean;
+  collection_owner_id?: string | number | null;
   lat: number;
   lng: number;
 }

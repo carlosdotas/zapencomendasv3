@@ -27,6 +27,13 @@ import {
 } from '../types/map';
 import { request, startPolling } from './httpClient';
 
+export interface DefaultOrderLocation {
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+}
+
 export interface GlobalAppSettings {
   pricing: PricingSettings;
   cityPriceTable: CityPriceTable;
@@ -36,6 +43,7 @@ export interface GlobalAppSettings {
     defaultNavApp: 'google_maps' | 'waze' | null;
     saveAsDefault: boolean;
   };
+  defaultOrderLocation?: DefaultOrderLocation | null;
   server: {
     apiBaseUrl?: string;
   };

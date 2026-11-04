@@ -241,7 +241,7 @@ export const api = {
     userId?: string | number, 
     userName?: string,
     proximity?: BaixaProximity
-  ): Promise<ApiResponse<{ pedido_id: string | number; etapa: string }>> {
+  ): Promise<ApiResponse<{ pedido_id: string | number; etapa: string; collection_owner_id?: string | number | null }>> {
     const cleanId = String(pedidoId).replace(/^pedido-/, '').replace(/-(coleta|entrega|troca|retorno)$/, '').trim();
     return orderService.marcarColetaEntrega(cleanId || pedidoId, etapa, userId, userName, proximity);
   },
@@ -267,6 +267,10 @@ export const api = {
 
   async appendFoto(pedidoId: string | number, fotoPath: string, campo: 'mercadoria_foto' | 'coleta_foto' | 'entrega_foto' = 'coleta_foto'): Promise<ApiResponse<{ path: string }>> {
     return orderService.appendFoto(pedidoId, fotoPath, campo);
+  },
+
+  async removeFoto(pedidoId: string | number, fotoPath: string, campo: 'coleta_foto' | 'entrega_foto'): Promise<ApiResponse> {
+    return orderService.removeFoto(pedidoId, fotoPath, campo);
   },
 
   async registrarPresenca(

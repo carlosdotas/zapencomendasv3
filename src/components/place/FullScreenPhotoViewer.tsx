@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useMapStore } from '../../context/MapContext';
 import { 
   X, 
@@ -31,6 +31,11 @@ export const FullScreenPhotoViewer: React.FC = () => {
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
+  const [photoError, setPhotoError] = useState(false);
+
+  useEffect(() => {
+    setPhotoError(false);
+  }, [viewingPhotoUrl]);
 
   if (!viewingPhotoUrl) return null;
 
@@ -214,20 +219,23 @@ export const FullScreenPhotoViewer: React.FC = () => {
         onClick={closePhotoViewer}
       >
         <div className="relative max-w-full max-h-[62vh] sm:max-h-[68vh] flex items-center justify-center">
-          <img 
-            src={largeUrl} 
-            alt="Foto ampliada da encomenda"
-            onClick={(e) => e.stopPropagation()}
-            onError={(e) => {
-              if (mdUrl && e.currentTarget.src !== mdUrl) {
-                e.currentTarget.src = mdUrl;
-                return;
-              }
-              e.currentTarget.onerror = null;
-              e.currentTarget.src = 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=800&auto=format&fit=crop&q=80';
-            }}
-            className="max-w-full max-h-[62vh] sm:max-h-[68vh] object-contain rounded-2xl shadow-2xl border border-white/15" 
-          />
+          {photoError ? (
+            <p role="alert" className="rounded-xl bg-slate-800 px-4 py-3 text-sm text-white">Não foi possível carregar a foto da encomenda.</p>
+          ) : (
+            <img
+              src={largeUrl}
+              alt="Foto ampliada da encomenda"
+              onClick={(e) => e.stopPropagation()}
+              onError={(e) => {
+                if (mdUrl !== largeUrl && e.currentTarget.getAttribute('src') !== mdUrl) {
+                  e.currentTarget.src = mdUrl;
+                } else {
+                  setPhotoError(true);
+                }
+              }}
+              className="max-w-full max-h-[62vh] sm:max-h-[68vh] object-contain rounded-2xl shadow-2xl border border-white/15"
+            />
+          )}
         </div>
 
         {/* OBSERVAÇÕES DO BANCO DE DADOS NA TELA DA FOTO */}

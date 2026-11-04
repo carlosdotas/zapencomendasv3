@@ -1,5 +1,6 @@
 import type { Request } from 'express';
 import { prisma } from './db';
+import { collectionOwnership } from '../src/utils/collectionOwnership';
 
 export interface AssignmentLike {
   orderId?: string;
@@ -97,6 +98,10 @@ const driversFromField = (raw: unknown): string[] => {
 
 /** Filtra a encomenda pela atribuição da parada ativa, sem misturar motoristas de outras etapas. */
 export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
+  const ownership = collectionOwnership(pedido);
+  if (ownership.collectionRestricted) {
+    return isPrivileged(caller) || Boolean(caller && ownership.collectionOwnerId === String(caller.id));
+  }
   // Restringe motoristas e requisições sem sessão (quem omite o token não pode escapar do filtro)
   if (caller && caller.role !== 'motorista') return true;
   const orderId = String(pedido?.id ?? '').match(/\d+/)?.[0] || '';

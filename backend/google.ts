@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { prisma } from './db';
 import { localToBackend } from './mappers';
+import { findNearbyNamedPlace } from './nearbyPlace';
 
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyATwFNGYw-Y0TGH3SrjwQelQD4EorVjlg4';
 
@@ -352,7 +353,10 @@ export function registerGoogleRoutes(app: Express, rootDir: string) {
       return;
     }
 
-    const cacheKey = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    const radiusParam = Number(req.query.snapRadius);
+    const snapRadius = req.query.snapRadius === undefined ? 45 :
+      Number.isFinite(radiusParam) ? Math.min(45, Math.max(0, radiusParam)) : 45;
+    const cacheKey = `v3:${snapRadius}:${lat.toFixed(5)},${lng.toFixed(5)}`;
     const cached = reverseCache.get(cacheKey);
     if (fresh(cached)) {
       res.setHeader('X-Cache', 'HIT');
@@ -374,7 +378,7 @@ export function registerGoogleRoutes(app: Express, rootDir: string) {
         const rLng = (loc.lng! - lng) * Math.PI / 180;
         const a = Math.sin(rLat / 2) ** 2 + Math.cos(lat * Math.PI / 180) * Math.cos(loc.lat! * Math.PI / 180) * Math.sin(rLng / 2) ** 2;
         const dist = 6371e3 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        if (dist <= 45 && dist < minDist) {
+        if (dist <= snapRadius && dist < minDist) {
           minDist = dist;
           closest = loc;
         }
@@ -408,9 +412,7 @@ export function registerGoogleRoutes(app: Express, rootDir: string) {
         const nearbyUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&rankby=distance&type=establishment&key=${GOOGLE_MAPS_API_KEY}&language=pt-BR`;
         const nearbyJson: any = await (await fetch(nearbyUrl)).json();
         if (Array.isArray(nearbyJson.results) && nearbyJson.results.length > 0) {
-          const found = nearbyJson.results.find((r: any) =>
-            r.name && r.types && ['establishment', 'point_of_interest', 'store', 'shopping_mall', 'restaurant', 'pharmacy'].some(t => r.types.includes(t))
-          ) || nearbyJson.results[0];
+          const found = findNearbyNamedPlace(nearbyJson.results, { lat, lng }, 10);
           if (found?.name) {
             const rawType = found.types?.[0] || 'establishment';
             poiData = {

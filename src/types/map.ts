@@ -24,6 +24,7 @@ export interface Place {
   name: string;
   category?: string;
   isUnnamed?: boolean;
+  isResolvingAddress?: boolean;
   address: string;
   coordinates: LocationCoordinates;
   rating?: number;
@@ -36,10 +37,15 @@ export interface Place {
   description?: string;
   imageUrl?: string;
   photos?: string[];
+  pickupPhotos?: string[];
+  deliveryPhotos?: string[];
+  collectionRestricted?: boolean;
+  collectionOwnerId?: string;
   customerName?: string;
   customerPhone?: string;
   customerId?: string;
   customerAddress?: string;
+  defaultLocationName?: string;
   customerCoordinates?: LocationCoordinates;
   sellerName?: string;
   sellerPhone?: string;

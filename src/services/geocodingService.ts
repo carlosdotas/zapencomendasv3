@@ -1,6 +1,6 @@
 import { Place, LocationCoordinates } from '../types/map';
 import { getCustomerPlaceName, isUnnamedOrGenericPlace } from '../utils/customerLocationUtils';
-import { isStreetOrAddress, resolveCommercialClosingTime } from '../utils/placeUtils';
+import { calculateDistanceMeters, isStreetOrAddress, resolveCommercialClosingTime } from '../utils/placeUtils';
 import { placeService } from './placeService';
 
 export const GOOGLE_MAPS_API_KEY = 'AIzaSyATwFNGYw-Y0TGH3SrjwQelQD4EorVjlg4';
@@ -516,9 +516,9 @@ export async function searchAddress(query: string, customerName?: string): Promi
  * Converte coordenadas (lat, lng) em endereço textual completo formatado
  * Usa cache de coordenadas arredondadas para evitar chamadas de API repetitivas
  */
-export async function reverseGeocode(coords: LocationCoordinates): Promise<Place> {
+export async function reverseGeocode(coords: LocationCoordinates, snapRadiusMeters = 45): Promise<Place> {
   // 0. Verifica cache local do cliente
-  const revKey = `${coords.lat.toFixed(4)},${coords.lng.toFixed(4)}`;
+  const revKey = `v3:${snapRadiusMeters}:${coords.lat.toFixed(5)},${coords.lng.toFixed(5)}`;
   const cachedRev = reverseMemoryCache.get(revKey);
   if (cachedRev && (Date.now() - cachedRev.timestamp < CLIENT_CACHE_TTL_MS)) {
     console.log(`[Cache HIT - Frontend Reverse] Coordenadas ${revKey} retornadas do cache.`);
@@ -527,7 +527,7 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
 
   // 0.1 SNAPPING DE LOCAL REGISTRADO (se clicou perto de algum local cadastrado <= 45m)
   try {
-    const nearbyFb = placeService.getClosestLocalSync(coords.lat, coords.lng, 45);
+    const nearbyFb = placeService.getClosestLocalSync(coords.lat, coords.lng, snapRadiusMeters);
     if (nearbyFb && nearbyFb.local) {
       const l = nearbyFb.local;
       const fullAddr = l.endereco || [l.rua, l.numero, l.setor, l.cidade].filter(Boolean).join(', ') || l.name;
@@ -543,8 +543,8 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
       const resPlace: Place = {
         id: `pin-fb-${l.id}`,
         name: l.name,
-        customerName: 'Cliente EncomendasZap',
-        customerPhone: l.telefone || '5562981234500',
+        customerName: '',
+        customerPhone: l.telefone || '',
         managerName: 'Central EncomendasZap Operações',
         managerPhone: '5562991112200',
         originCity: l.cidade || 'Goiânia - GO',
@@ -600,7 +600,7 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
     // 1.1 Tenta primeiro o endpoint local proxy do Express
     let proxyRes: Response | null = null;
     try {
-      proxyRes = await fetch(`/api/google/reverse?lat=${coords.lat}&lng=${coords.lng}`, {
+      proxyRes = await fetch(`/api/google/reverse?lat=${coords.lat}&lng=${coords.lng}&snapRadius=${snapRadiusMeters}`, {
         signal: controller.signal
       });
     } catch {}
@@ -670,15 +670,17 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
         const streetName = route ? `${route}${number ? ', ' + number : ''}` : '';
 
         // Tenta achar estabelecimento/POI na lista de resultados do Google
-        const poiCandidate = gData.results.find((r: any) => 
-          r.types && (
+        const poiCandidate = gData.results.find((r: any) =>
+          r.name && typeof r.geometry?.location?.lat === 'number' &&
+          typeof r.geometry?.location?.lng === 'number' &&
+          calculateDistanceMeters(coords, r.geometry.location) <= 10 && r.types && (
             r.types.includes('point_of_interest') || 
             r.types.includes('establishment') ||
             r.types.includes('store') ||
             r.types.includes('shopping_mall')
           )
         );
-        const poiName = poiCandidate?.name || poiCandidate?.formatted_address?.split(',')[0];
+        const poiName = poiCandidate?.name;
 
         const finalName = poiName || streetName || neighborhood || city || 'Ponto no Mapa';
         const isStreet = isStreetOrAddress({
@@ -701,7 +703,7 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
           operationType: chosenOperation,
           vehicleType: chosenVehicle,
           packageType: chosenPackage,
-          category: isStreet ? 'Via pública / Endereço' : (poiCandidate ? 'Ponto de Interesse' : 'Google Maps'),
+          category: isStreet ? 'Via pública / Endereço' : (poiName ? 'Ponto de Interesse' : 'Via pública / Endereço'),
           address: item.formatted_address,
           coordinates: coords,
           openNow: isStreet ? undefined : true,
@@ -785,8 +787,8 @@ export async function reverseGeocode(coords: LocationCoordinates): Promise<Place
   const fallbackPlace: Place = {
     id: `pin-${Date.now()}`,
     name: 'Ponto Marcado no Mapa',
-    customerName: 'Cliente EncomendasZap',
-    customerPhone: '5562981234500',
+    customerName: '',
+    customerPhone: '',
     managerName: 'Central EncomendasZap Operações',
     managerPhone: '5562991112200',
     originCity: 'Goiânia - GO',

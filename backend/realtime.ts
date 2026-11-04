@@ -2,7 +2,8 @@ import type { Express, Request, Response } from 'express';
 import { WebSocket, type WebSocketServer } from 'ws';
 import { prisma } from './db';
 import { parseRawJsonBody } from './routes';
-import { parseExtra, toInt } from './mappers';
+import { parseExtra, pedidoToBackend, toInt } from './mappers';
+import { canAssignCollectedOrder, collectionOwnership } from '../src/utils/collectionOwnership';
 import { notifyOrderProgress, notifyUser } from './notifications';
 import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, isConfirmedDriverClaim, assignmentsVisibleTo } from './access';
 import { getDriverPermanentColor } from '../src/utils/driverColorUtils';
@@ -186,6 +187,17 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
     if (!isPrivileged(caller) && !(caller.role === 'motorista' && isAssignmentMine({ driverId, driverPhone }, caller))) {
       res.status(403).json({ success: false, message: 'Sem permissão para atribuir este pedido.' });
       return;
+    }
+    const numericOrderId = toInt(numOfKey(String(orderId)));
+    if (numericOrderId) {
+      const order = await prisma.orders.findUnique({ where: { id: numericOrderId } });
+      if (order) {
+        const owner = collectionOwnership(pedidoToBackend(order));
+        if (!canAssignCollectedOrder(owner, String(driverId), Boolean(claim))) {
+          res.status(403).json({ success: false, message: 'Após a coleta, o pedido fica reservado a quem coletou.' });
+          return;
+        }
+      }
     }
     // Aceite de pedido: se outro motorista já aceitou (em qualquer chave do mesmo pedido/operação), recusa
     if (claim || !isPrivileged(caller)) {

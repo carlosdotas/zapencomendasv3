@@ -108,7 +108,7 @@ export function buildMapOrderPayload(place: Place): Partial<BackendPedido> {
   return {
     data: place.data || place.scheduledDate,
     etapa: 'pendente',
-    cliente: place.customerName?.trim() || 'Cliente EncomendasZap',
+    cliente: place.customerName?.trim() || '',
     phone: place.customerPhone || '',
     clientes_id: place.customerId && /^\d+$/.test(place.customerId) ? Number(place.customerId) : undefined,
     cidade: place.originCity || 'Goiânia',
@@ -164,6 +164,8 @@ export function buildMapOrderPayload(place: Place): Partial<BackendPedido> {
       paymentAdjustmentMode: place.paymentAdjustmentMode
     }),
     local: place.name,
+    coleta_foto: place.pickupPhotos?.length ? JSON.stringify(place.pickupPhotos) : undefined,
+    entrega_foto: place.deliveryPhotos?.length ? JSON.stringify(place.deliveryPhotos) : undefined,
     coleta_local: routePointName(place, operation, 'pickup', Boolean(pickupCoordinates)),
     coleta_nome: routePointName(place, operation, 'pickup', Boolean(pickupCoordinates)),
     coleta_data: place.data || place.scheduledDate,

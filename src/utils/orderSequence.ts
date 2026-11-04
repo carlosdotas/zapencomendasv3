@@ -245,7 +245,11 @@ export function filterPlacesBySequence(
     if (group.length === 0) continue;
 
     if (hasSpecificFilter) {
+      const seenStages = new Set<string>();
       for (const p of group) {
+        const stage = p.orderStage === 'retorno' ? 'retorno' : (p.operationType || '');
+        if (seenStages.has(stage)) continue;
+        seenStages.add(stage);
         result.push(p);
       }
       continue;

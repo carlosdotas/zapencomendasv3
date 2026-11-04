@@ -4,6 +4,11 @@ import crypto from 'crypto';
 import { prisma } from './db';
 import { resolveCaller, canCallerSeeOrder, isPrivileged, assignmentStore } from './access';
 import { notifyNewOrder, notifyOrderProgress, etapaEvent } from './notifications';
+import { hasOrderPhoto, removeOrderPhoto } from './orderPhotos';
+import { canViewDriverCollections, collectionSummary, openDriverCollectionsWhere } from './driverCollections';
+import { CLOSED_ORDER_STAGES } from './orderStatus';
+import { claimPickupTransition } from './pickupTransition';
+import { collectionOwnership, isAfterPickupStage } from '../src/utils/collectionOwnership';
 import {
   parseExtra,
   userToBackend,
@@ -180,7 +185,15 @@ async function applyEtapa(
   const data = pedidoFromBackend(patch, existing);
   // Sem pedido existente não cria um novo: isso gerava pedidos "fantasmas" já finalizados.
   if (!existing) return null;
-  const updated = await prisma.orders.update({ where: { id: existing.id }, data });
+  let updated;
+  if (etapa === 'coletado') {
+    if (isAfterPickupStage(pedidoToBackend(existing).etapa)) return null;
+    if (!await claimPickupTransition(prisma.orders, existing, data)) return null;
+    updated = await prisma.orders.findUnique({ where: { id: existing.id } });
+    if (!updated) return null;
+  } else {
+    updated = await prisma.orders.update({ where: { id: existing.id }, data });
+  }
   await logStage(
     existing.id,
     existing.stage,
@@ -245,10 +258,10 @@ async function searchPedidosWhere(body: any) {
   if (body.data_ini) and.push({ date: { gte: String(body.data_ini).slice(0, 10) } });
   if (body.data_fim) and.push({ date: { lte: String(body.data_fim).slice(0, 10) } });
   if (body.active_only === true || body.active_only === 'true' || body.active_only === 1) {
-    and.push({ stage: { notIn: ['entregue', 'finalizado', 'cancelado'] } });
+    and.push({ stage: { notIn: CLOSED_ORDER_STAGES } });
   }
   if (body.completed_only === true || body.completed_only === 'true' || body.completed_only === 1) {
-    and.push({ stage: { in: ['entregue', 'finalizado', 'cancelado'] } });
+    and.push({ stage: { in: CLOSED_ORDER_STAGES } });
   }
   if (and.length) where.AND = and;
   return where;
@@ -480,6 +493,29 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
   // ------------------------------------------------------------------
   // PEDIDOS
   // ------------------------------------------------------------------
+  route(app, '/pedidos/coletas_motorista', async (req, res, body) => {
+    const rawId = String(body.motorista_id ?? '').trim();
+    const driverId = /^\d+$/.test(rawId) ? Number(rawId) : NaN;
+    if (!Number.isSafeInteger(driverId) || driverId <= 0) {
+      res.status(400).json({ success: false, message: 'Motorista inválido.' });
+      return;
+    }
+    const caller = await resolveCaller(req, body);
+    if (!canViewDriverCollections(caller, driverId)) {
+      res.status(403).json({ success: false, message: 'Não é permitido consultar as coletas deste motorista.' });
+      return;
+    }
+    const page = Math.max(1, parseInt(body.page, 10) || 1);
+    const limit = 30;
+    const where = openDriverCollectionsWhere(driverId);
+    const [rows, total] = await Promise.all([
+      prisma.orders.findMany({ where, orderBy: { id: 'desc' }, skip: (page - 1) * limit, take: limit }),
+      prisma.orders.count({ where })
+    ]);
+    const orders = await pedidosToBackend(rows);
+    res.json({ success: true, data: orders.map(collectionSummary), page, total, hasMore: page * limit < total });
+  });
+
   route(app, '/pedidos/list_pedidos', async (req, res, body) => {
     const where = await searchPedidosWhere(body);
     const etapas: string[] | null = body.etapa
@@ -548,6 +584,13 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       res.status(404).json({ success: false, message: 'Pedido não encontrado' });
       return;
     }
+    if (existing && Object.prototype.hasOwnProperty.call(body, 'coleta_user_id')) {
+      const owner = collectionOwnership(pedidoToBackend(existing));
+      if (owner.collectionRestricted && String(body.coleta_user_id ?? '') !== String(owner.collectionOwnerId ?? '')) {
+        res.status(409).json({ success: false, message: 'A coleta já foi registrada e não pode ser atribuída a outro usuário.' });
+        return;
+      }
+    }
     const data = pedidoFromBackend(body, existing);
     let saved;
     if (existing) {
@@ -577,16 +620,29 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     const existing = await findPedido(body.pedido_id ?? body.id);
     if (await orderForbidden(req, res, body, existing)) return;
     const etapa = String(body.etapa || '');
-    const updated = await applyEtapa(existing, etapa, body.user_id, body.usuario_nome || body.user_nome, {
+    const caller = await resolveCaller(req, body);
+    if (etapa === 'coletado' && !caller) {
+      res.status(401).json({ success: false, message: 'Faça login para registrar a coleta.' });
+      return;
+    }
+    if (existing && etapa === 'coletado' && !hasOrderPhoto(pedidoToBackend(existing).coleta_foto)) {
+      res.status(400).json({ success: false, message: 'A foto da coleta é obrigatória para finalizar a coleta.' });
+      return;
+    }
+    const updated = await applyEtapa(existing, etapa, etapa === 'coletado' ? caller?.id : body.user_id, body.usuario_nome || body.user_nome, {
       distance: body.distancia_m,
       lat: body.baixa_lat,
       lng: body.baixa_lng
     });
     if (!updated) {
-      res.status(404).json({ success: false, message: 'Pedido não encontrado' });
+      if (existing && etapa === 'coletado') {
+        res.status(409).json({ success: false, message: 'A coleta já foi registrada ou a etapa mudou. Atualize o pedido.' });
+      } else {
+        res.status(404).json({ success: false, message: 'Pedido não encontrado' });
+      }
       return;
     }
-    res.json({ success: true, data: { pedido_id: updated.id, etapa } });
+    res.json({ success: true, data: { pedido_id: updated.id, etapa, collection_owner_id: updated.collector_id } });
   });
 
   // Hora de chegada e tempo de espera no local: só conta enquanto o motorista está perto
@@ -672,7 +728,20 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     if (existing) {
       const view = pedidoToBackend(existing);
       const next = (NEXT_ETAPA[view.etapa] || (() => 'finalizado'))(view.tipo_encomenda);
-      await applyEtapa(existing, next, body.user_id);
+      const caller = next === 'coletado' ? await resolveCaller(req, body) : null;
+      if (next === 'coletado' && !caller) {
+        res.status(401).json({ success: false, message: 'Faça login para registrar a coleta.' });
+        return;
+      }
+      if (next === 'coletado' && !hasOrderPhoto(view.coleta_foto)) {
+        res.status(400).json({ success: false, message: 'A foto da coleta é obrigatória para finalizar a coleta.' });
+        return;
+      }
+      const updated = await applyEtapa(existing, next, next === 'coletado' ? caller?.id : body.user_id);
+      if (!updated && next === 'coletado') {
+        res.status(409).json({ success: false, message: 'A coleta já foi registrada ou a etapa mudou. Atualize o pedido.' });
+        return;
+      }
     }
     res.json({ success: true });
   });
@@ -704,6 +773,14 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     if (await orderForbidden(req, res, body, existing)) return;
     const foto = body.foto;
     const campo = String(body.campo || 'coleta_foto');
+    if (!existing) {
+      res.status(404).json({ success: false, message: 'Pedido não encontrado para anexar a foto.' });
+      return;
+    }
+    if (!['coleta_foto', 'entrega_foto', 'mercadoria_foto'].includes(campo) || typeof foto !== 'string' || !foto.trim()) {
+      res.status(400).json({ success: false, message: 'Foto ou campo inválido.' });
+      return;
+    }
     if (existing && foto) {
       const current = pedidoToBackend(existing)[campo];
       const list: string[] = [];
@@ -715,8 +792,34 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       }
       list.push(foto);
       await prisma.orders.update({ where: { id: existing.id }, data: pedidoFromBackend({ [campo]: JSON.stringify(list) }, existing) });
+      deps.notifyOrdersChanged?.();
     }
     res.json({ success: true, data: { path: foto } });
+  });
+
+  route(app, '/pedidos/remove_foto', async (req, res, body) => {
+    const existing = await findPedido(body.pedido_id ?? body.id);
+    if (!existing) {
+      res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
+      return;
+    }
+    if (await orderForbidden(req, res, body, existing)) return;
+    const campo = String(body.campo || '');
+    if (!['coleta_foto', 'entrega_foto'].includes(campo) || typeof body.foto !== 'string' || !body.foto.trim()) {
+      res.status(400).json({ success: false, message: 'Foto ou campo inválido.' });
+      return;
+    }
+    let remaining: string[];
+    try {
+      remaining = removeOrderPhoto(pedidoToBackend(existing)[campo], body.foto);
+    } catch (error) {
+      console.error('[Fotos] Não foi possível remover foto:', error);
+      res.status(400).json({ success: false, message: 'Não foi possível ler a lista de fotos do pedido.' });
+      return;
+    }
+    await prisma.orders.update({ where: { id: existing.id }, data: pedidoFromBackend({ [campo]: JSON.stringify(remaining) }, existing) });
+    deps.notifyOrdersChanged?.();
+    res.json({ success: true });
   });
 
   route(app, '/pedidos/registrar_presenca', async (req, res, body) => {
@@ -1299,7 +1402,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
         cliente: row.client_name,
         data: row.date,
         tipo_encomenda: view.tipo_encomenda,
-        is_exchange: isExchange
+        is_exchange: isExchange,
+        collection_restricted: collectionOwnership(view).collectionRestricted,
+        collection_owner_id: collectionOwnership(view).collectionOwnerId
       };
 
       const pickupLoc = row.pickup_location_id ? locations.get(row.pickup_location_id) : null;

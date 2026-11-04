@@ -274,6 +274,7 @@ class RealtimeAssignmentService {
    * 2. Não possui motorista atribuído e não está marcado como 'privado'.
    */
   public isPublicOrder(place: Place): boolean {
+    if (place.collectionRestricted) return false;
     if (place.orderVisibility === 'privado') {
       return false;
     }
@@ -302,6 +303,9 @@ class RealtimeAssignmentService {
    */
   public isDirectlyAssignedToUser(place: Place, user?: UserProfile | null): boolean {
     if (!user) return false;
+    if (place.collectionRestricted) {
+      return Boolean(place.collectionOwnerId && String(user.id || '').trim() === place.collectionOwnerId);
+    }
 
     // Normaliza dados do usuário logado
     const userPhoneClean = (user.phone || '').replace(/\D/g, '');

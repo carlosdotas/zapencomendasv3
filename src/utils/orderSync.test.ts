@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runOncePerKey, shouldApplyOrderSync } from './orderSync';
+import { mergeCompletedWaypointMarks } from './completedWaypointMarks';
+import type { CompletedWaypointMark } from '../types/map';
 
 test('rejects stale order syncs after a newer sync or local order mutation', () => {
   const snapshot = { requestVersion: 4, mutationVersion: 2 };
@@ -19,6 +21,7 @@ test('coalesces concurrent order creation requests and allows retry after comple
     return new Promise<string>(resolve => {
       resolveSave = resolve;
     });
+
   };
 
   const first = runOncePerKey(pending, 'draft-1', operation);
@@ -33,4 +36,20 @@ test('coalesces concurrent order creation requests and allows retry after comple
 
   const retry = runOncePerKey(pending, 'draft-1', async () => 'pedido-102');
   assert.equal(await retry, 'pedido-102');
+});
+
+test('merges local and server pickup marks for the same order in either arrival order', () => {
+  const local: CompletedWaypointMark = {
+    id: 'mark-local', orderId: 'pedido-42-coleta', orderCode: 'EZ-42-GO',
+    operationType: 'coleta', completedAt: 1, timeStr: '12:00', completedDate: '2026-11-04',
+    placeName: 'Coleta', address: '', coordinates: { lat: 1, lng: 2 }, status: 'success'
+  };
+  const server: CompletedWaypointMark = { ...local, id: 'backend-coleta-42', orderId: 'pedido-42' };
+  const otherOrder = { ...server, id: 'backend-coleta-43', orderId: 'pedido-43', orderCode: 'EZ-43-GO' };
+  const failed = { ...local, id: 'failed-42', status: 'failed' as const };
+  const delivery = { ...local, id: 'delivery-42', operationType: 'entrega' as const };
+
+  assert.deepEqual(mergeCompletedWaypointMarks([local], [server, otherOrder, failed, delivery]), [local, otherOrder, failed, delivery]);
+  assert.deepEqual(mergeCompletedWaypointMarks([server], [local]), [local]);
+  assert.deepEqual(mergeCompletedWaypointMarks([], [server, local]), [local]);
 });

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { 
   X, 
   MessageCircle, 
@@ -18,9 +18,119 @@ import { useMapStore } from '../../context/MapContext';
 import { formatLastSeen } from '../../utils/driverUtils';
 import { formatDriverLastSeen } from '../../services/driverTrackingClient';
 import { getDriverPermanentColor } from '../../utils/driverColorUtils';
+import { extractPhotoUrls, formatPhotoUrl } from '../../services/apiAdapters';
+import { listDriverCollections, type DriverCollection } from '../../services/driverCollectionsService';
 
 export const DriverDetailCard: React.FC = () => {
-  const { selectedDriver, setSelectedDriver, flyToLocation, calculateRouteToPlace, selectedPlace } = useMapStore();
+  const { selectedDriver, setSelectedDriver, flyToLocation, openPhotoViewer } = useMapStore();
+  const driverId = selectedDriver?.id;
+  const [collections, setCollections] = useState<DriverCollection[]>([]);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [retry, setRetry] = useState(0);
+  const requestVersion = useRef(0);
+
+  useEffect(() => {
+    const version = ++requestVersion.current;
+    setCollections([]);
+    setPage(0);
+    setHasMore(false);
+    setError('');
+    if (!driverId) {
+      setLoading(false);
+      if (driverId === '') setError('Não foi possível identificar o motorista.');
+      return;
+    }
+    setLoading(true);
+    void listDriverCollections(driverId).then(response => {
+      if (requestVersion.current !== version) return;
+      if (!response.success || !Array.isArray(response.data)) {
+        setError(response.message || 'Não foi possível carregar as coletas.');
+      } else {
+        setCollections(response.data);
+        setPage(1);
+        setHasMore(Boolean(response.hasMore));
+      }
+      setLoading(false);
+    });
+    return () => { requestVersion.current += 1; };
+  }, [driverId, retry]);
+
+  useEffect(() => {
+    if (!driverId || page === 0 || loading) return;
+    let active = true;
+    let running = false;
+    const timer = setInterval(() => {
+      if (running) return;
+      running = true;
+      void (async () => {
+        const refreshed: DriverCollection[] = [];
+        const seen = new Set<string>();
+        let lastPage = 0;
+        let more = false;
+        for (let currentPage = 1; currentPage <= page; currentPage += 1) {
+          const response = await listDriverCollections(driverId, currentPage);
+          if (!active) return;
+          if (!response.success || !Array.isArray(response.data)) {
+            setCollections([]);
+            setPage(0);
+            setHasMore(false);
+            setError(response.message || 'Não foi possível atualizar as coletas.');
+            return;
+          }
+          for (const order of response.data) {
+            if (!seen.has(order.id)) {
+              seen.add(order.id);
+              refreshed.push(order);
+            }
+          }
+          lastPage = currentPage;
+          more = Boolean(response.hasMore);
+          if (!more) break;
+        }
+        if (!active) return;
+        setCollections(refreshed);
+        setPage(lastPage);
+        setHasMore(more);
+        setError('');
+      })().catch(error => {
+        console.error('[Driver collections] Falha ao atualizar coletas:', error);
+        if (active) {
+          setCollections([]);
+          setPage(0);
+          setHasMore(false);
+          setError('Não foi possível atualizar as coletas.');
+        }
+      }).finally(() => { running = false; });
+    }, 15000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [driverId, page, loading]);
+
+  const loadMore = async () => {
+    if (!driverId || loading || !hasMore) return;
+    const version = requestVersion.current;
+    setLoading(true);
+    setError('');
+    const response = await listDriverCollections(driverId, page + 1);
+    if (requestVersion.current !== version) return;
+    if (!response.success || !Array.isArray(response.data)) {
+      setError(response.message || 'Não foi possível carregar mais coletas.');
+    } else {
+      const nextCollections = response.data;
+      setCollections(previous => {
+        const ids = new Set(previous.map(order => order.id));
+        return [...previous, ...nextCollections.filter(order => !ids.has(order.id))];
+      });
+      setPage(page + 1);
+      setHasMore(Boolean(response.hasMore));
+    }
+    setLoading(false);
+  };
 
   if (!selectedDriver) return null;
   const driverColor = selectedDriver.color || getDriverPermanentColor(selectedDriver.id || selectedDriver.phone || selectedDriver.name);
@@ -57,7 +167,7 @@ export const DriverDetailCard: React.FC = () => {
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 flex justify-center pointer-events-none p-3 sm:p-4 animate-in slide-in-from-bottom-6 duration-200">
-      <div className="bg-white rounded-3xl shadow-2xl border-2 border-slate-200/90 w-full max-w-md pointer-events-auto overflow-hidden flex flex-col">
+      <div className="bg-white rounded-3xl shadow-2xl border-2 border-slate-200/90 w-full max-w-md max-h-[85dvh] pointer-events-auto overflow-hidden flex flex-col">
         
         {/* Header com a cor do motorista e Foto do Perfil */}
         <div 
@@ -95,7 +205,7 @@ export const DriverDetailCard: React.FC = () => {
                 )}
               </div>
               <p className="text-xs text-white/90 font-semibold truncate">
-                {selectedDriver.vehicleModel} • {selectedDriver.vehiclePlate}
+                {[selectedDriver.vehicleModel, selectedDriver.vehiclePlate].filter(Boolean).join(' • ')}
               </p>
             </div>
           </div>
@@ -110,7 +220,7 @@ export const DriverDetailCard: React.FC = () => {
         </div>
 
         {/* Corpo com Informações do Motorista */}
-        <div className="p-3.5 flex flex-col gap-3">
+        <div className="p-3.5 flex flex-col gap-3 overflow-y-auto">
           
           {/* Barra de Status de Rastreamento & Última Vez Visto */}
           <div className="flex items-center justify-between px-3 py-2 rounded-2xl bg-slate-50 border border-slate-200/90 text-xs">
@@ -158,7 +268,7 @@ export const DriverDetailCard: React.FC = () => {
                   style={{ backgroundColor: driverColor }}
                 />
                 <span className="text-xs font-black text-slate-800">
-                  {selectedDriver.status === 'em_rota' ? 'Em rota' : 'Disponível'}
+                  {selectedDriver.status === 'em_rota' ? 'Em rota' : selectedDriver.status === 'disponivel' ? 'Disponível' : selectedDriver.status === 'em_pausa' ? 'Em pausa' : 'Offline'}
                 </span>
               </div>
             </div>
@@ -180,7 +290,7 @@ export const DriverDetailCard: React.FC = () => {
               <div className="flex items-center gap-1 mt-0.5 text-amber-600">
                 <Star className="w-3.5 h-3.5 fill-current" />
                 <span className="text-xs font-black text-slate-800">
-                  {selectedDriver.rating || 4.9}
+                  {selectedDriver.rating ?? '—'}
                 </span>
               </div>
             </div>
@@ -208,6 +318,56 @@ export const DriverDetailCard: React.FC = () => {
               </span>
             </div>
           )}
+
+          <section aria-label="Encomendas coletadas em aberto">
+            <h3 className="text-xs font-black uppercase tracking-wide text-slate-700">Encomendas coletadas em aberto</h3>
+            <div className="mt-2 space-y-2">
+              {collections.map(order => {
+                const photo = extractPhotoUrls(order.photo, 'md')[0];
+                return (
+                  <div key={order.id} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2">
+                    {photo ? (
+                      <button
+                        type="button"
+                        aria-label={`Abrir foto da coleta ${order.id}`}
+                        onClick={() => openPhotoViewer(formatPhotoUrl(photo, 'lg') || photo, {
+                          id: `pedido-${order.id}-coleta`,
+                          name: order.pickupName,
+                          address: order.pickupAddress,
+                          coordinates: { lat: 0, lng: 0 },
+                          operationType: 'coleta',
+                          customerName: order.customerName
+                        })}
+                        className="h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-slate-200"
+                      >
+                        <img src={photo} alt="Foto da coleta indisponível" className="h-full w-full object-cover" />
+                      </button>
+                    ) : (
+                      <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-slate-200 text-[10px] font-bold text-slate-600">Sem foto</div>
+                    )}
+                    <div className="min-w-0">
+                      <p className="break-words text-xs font-black text-slate-900">{order.pickupName}</p>
+                      <p className="break-words text-xs text-slate-600">Cliente: {order.customerName}</p>
+                      <p className="text-[10px] text-slate-500">Pedido #{order.id}</p>
+                    </div>
+                  </div>
+                );
+              })}
+              {loading && <p className="text-xs text-slate-500" role="status">Carregando coletas...</p>}
+              {error && (
+                <div role="alert" className="text-xs text-red-700">
+                  {error}{' '}
+                  <button type="button" className="font-bold underline" onClick={() => setRetry(value => value + 1)}>
+                    Tentar novamente
+                  </button>
+                </div>
+              )}
+              {!loading && !error && collections.length === 0 && <p className="text-xs text-slate-500">Nenhuma encomenda coletada em aberto para este motorista.</p>}
+              {!loading && !error && hasMore && (
+                <button type="button" onClick={() => void loadMore()} className="text-xs font-bold text-blue-700 underline">Mostrar mais</button>
+              )}
+            </div>
+          </section>
 
           {/* Ações: WhatsApp + Ligar + Centralizar */}
           <div className="grid grid-cols-2 gap-2 pt-1">

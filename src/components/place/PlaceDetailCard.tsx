@@ -80,7 +80,12 @@ import {
 } from '../../utils/customerLocationUtils';
 import { extractNumericId } from '../../utils/orderSequence';
 import { isTemporaryOrderId } from '../../utils/orderIds';
+import { getSuggestedOrderPlaceName } from '../../utils/orderPlaceName';
+import { resolveOrderLocationsForSave } from '../../utils/orderDefaultLocation';
+import { persistOrderPhoto } from '../../services/orderPhotoService';
 import { api } from '../../services/api';
+import { settingsService } from '../../services/settingsService';
+import { placeService } from '../../services/placeService';
 import { formatPhotoUrl, extractPhotoUrls, extractDriverAssignmentFromPedido } from '../../services/apiAdapters';
 
 // Formata número de telefone para exibição amigável
@@ -447,6 +452,45 @@ export const PlaceDetailCard: React.FC = () => {
   const [routeDriverTarget, setRouteDriverTarget] = useState<'pickup' | 'exchange' | 'delivery' | null>(null);
   const [driverToast, setDriverToast] = useState<string | null>(null);
   const hasCustomerRoute = Boolean(orderResolvedLocations?.canTraceRoute && !customerMissingLocation);
+
+  // Define manualmente o outro ponto da rota (o local padrão só entra ao salvar sem local definido)
+  const [isCounterpartPickerOpen, setIsCounterpartPickerOpen] = useState(false);
+  const [counterpartQuery, setCounterpartQuery] = useState('');
+  const [counterpartResults, setCounterpartResults] = useState<Place[]>([]);
+
+  useEffect(() => {
+    const q = counterpartQuery.trim();
+    if (!isCounterpartPickerOpen || q.length < 2) {
+      setCounterpartResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const found = await placeService.searchPlaces(q, 8);
+      if (!cancelled) setCounterpartResults(found);
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [counterpartQuery, isCounterpartPickerOpen]);
+
+  const applyCounterpartLocation = (place: Place) => {
+    if (!selectedPlace || selectedPlace.operationType === 'troca') return;
+    const address = place.address || place.name;
+    const updates: Partial<Place> = selectedPlace.operationType === 'entrega'
+      ? { pickupName: place.name, pickupAddress: address, pickupCoordinates: place.coordinates }
+      : { deliveryName: place.name, deliveryAddress: address, deliveryCoordinates: place.coordinates };
+    if (isNewOrderDraft) setSelectedPlace({ ...selectedPlace, ...updates });
+    else updatePlaceDetails(selectedPlace.id, updates);
+    setIsCounterpartPickerOpen(false);
+    setCounterpartQuery('');
+  };
+
+  const counterpartLabel = selectedPlace?.operationType === 'entrega' ? 'coleta' : 'entrega';
+  const showCounterpartButton = Boolean(
+    selectedPlace && canEdit && selectedPlace.operationType !== 'troca' && !hasCustomerRoute
+  );
   const getRouteSeller = (point: 'pickup' | 'exchange' | 'delivery') => {
     const fields = point === 'pickup'
       ? { name: selectedPlace?.pickupSellerName, phone: selectedPlace?.pickupSellerPhone, operation: 'coleta' }
@@ -816,14 +860,54 @@ export const PlaceDetailCard: React.FC = () => {
   const [editedExchangeNotes, setEditedExchangeNotes] = useState('');
   const [editedDeliveryNotes, setEditedDeliveryNotes] = useState('');
   const [draftPlaceName, setDraftPlaceName] = useState('');
+  const [showPlaceNameError, setShowPlaceNameError] = useState(false);
+  const placeNameInputRef = useRef<HTMLInputElement>(null);
+  const draftObservationRef = useRef<HTMLTextAreaElement>(null);
+  const placeNameDraftRef = useRef<{ id: string; edited: boolean } | null>(null);
+  const draftObservationEditedRef = useRef(false);
+  useEffect(() => {
+    if (!selectedPlace || !isNewOrderDraft || isDriverRole) return;
+    draftObservationEditedRef.current = false;
+    const timer = window.setTimeout(() => draftObservationRef.current?.focus(), 30);
+    return () => window.clearTimeout(timer);
+  }, [selectedPlace?.id, isNewOrderDraft, isDriverRole]);
+  useEffect(() => {
+    if (!selectedPlace || !isNewOrderDraft) {
+      placeNameDraftRef.current = null;
+      return;
+    }
+    if (placeNameDraftRef.current?.id !== selectedPlace.id) {
+      placeNameDraftRef.current = { id: selectedPlace.id, edited: false };
+      setShowPlaceNameError(false);
+    }
+    if (placeNameDraftRef.current.edited) return;
+    const suggestedName = getSuggestedOrderPlaceName(selectedPlace);
+    setDraftPlaceName(suggestedName);
+    if (selectedPlace.isResolvingAddress || suggestedName) return;
+    const timer = window.setTimeout(() => {
+      if (!draftObservationEditedRef.current &&
+          (document.activeElement === draftObservationRef.current || document.activeElement === document.body)) {
+        placeNameInputRef.current?.focus();
+      }
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [selectedPlace?.id, selectedPlace?.name, selectedPlace?.address, selectedPlace?.category, selectedPlace?.isUnnamed, selectedPlace?.isResolvingAddress, isNewOrderDraft]);
+  const isPlaceNameInvalid = !draftPlaceName.trim();
   const [draftOrderComment, setDraftOrderComment] = useState('');
   const [editingRouteComment, setEditingRouteComment] = useState<'pickup' | 'delivery' | null>(null);
+  const [viewNotePoint, setViewNotePoint] = useState<'pickup' | 'exchange' | 'delivery' | null>(null);
+  const [viewNoteText, setViewNoteText] = useState('');
 
   // Modal da Etapa Final com Detalhes, Rota, Preços e Compartilhar no Zap
   const [isFinalDetailsOpen, setIsFinalDetailsOpen] = useState(false);
 
   // Lista de Fotos personalizadas da encomenda/ponto (múltiplas fotos)
   const [customPhotos, setCustomPhotos] = useState<string[]>([]);
+  const photoUploadsRef = useRef(new Map<string, Promise<{ path?: string; error?: string; stage: 'coleta' | 'entrega' }>>());
+  const photoUploadQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const photoSourceRef = useRef(new Map<string, string>());
+  const pickupProofRef = useRef(new Set<string>());
+  const [isFinalizingPhoto, setIsFinalizingPhoto] = useState(false);
 
   // Distância calculada até o local
   const originCoords = userLocation || currentCoords;
@@ -938,18 +1022,18 @@ export const PlaceDetailCard: React.FC = () => {
       setDragY(0);
       currentDragYRef.current = 0;
       
-      // Carrega fotos salvas do local ou a foto padrão da encomenda normalizadas
-      // REGRA: Na entrega NÃO pode mostrar foto do local da coleta
+      // Carrega as fotos da etapa e, na entrega, as fotos da coleta.
       let initialPhotos: string[] = [];
-      const isColetaCard = selectedPlace.operationType === 'coleta' || selectedPlace.orderStage === 'coleta';
-      if (isColetaCard) {
-        if (selectedPlace.photos && selectedPlace.photos.length > 0) {
-          initialPhotos = extractPhotoUrls(selectedPlace.photos, 'md');
-        } else if (selectedPlace.imageUrl) {
-          const formatted = formatPhotoUrl(selectedPlace.imageUrl, 'md');
-          if (formatted) initialPhotos = [formatted];
-        }
+      if (selectedPlace.photos && selectedPlace.photos.length > 0) {
+        initialPhotos = extractPhotoUrls(selectedPlace.photos, 'md');
+      } else if (selectedPlace.imageUrl) {
+        const formatted = formatPhotoUrl(selectedPlace.imageUrl, 'md');
+        if (formatted) initialPhotos = [formatted];
       }
+      pickupProofRef.current = new Set(selectedPlace.pickupPhotos || []);
+      photoUploadsRef.current = new Map();
+      photoUploadQueueRef.current = Promise.resolve();
+      photoSourceRef.current = new Map();
       try {
         const saved = localStorage.getItem(`encomendaszap_photos_${selectedPlace.id}`);
         if (saved) {
@@ -981,7 +1065,6 @@ export const PlaceDetailCard: React.FC = () => {
       setEditedPickupNotes(selectedPlace.pickupNotes || '');
       setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
       setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
-      setDraftPlaceName(selectedPlace.name || '');
       setDraftOrderComment(
         selectedPlace.operationType === 'troca'
           ? selectedPlace.exchangeNotes || selectedPlace.observations || ''
@@ -1283,6 +1366,46 @@ export const PlaceDetailCard: React.FC = () => {
     }, 2000);
   };
 
+  const addCapturedPhoto = (dataUrl: string) => {
+    if (!selectedPlace || isFinalizingPhoto || isSavingOrder) return;
+    const place = selectedPlace;
+    const stage: 'coleta' | 'entrega' = place.operationType === 'entrega' || place.operationType === 'troca' ? 'entrega' : 'coleta';
+    const isDraft = isTemporaryOrderId(place.id);
+    const pickupProof = pickupProofRef.current;
+    const photoSources = photoSourceRef.current;
+    if (stage === 'coleta') pickupProof.add(dataUrl);
+    setCustomPhotos(prev => [...prev, dataUrl]);
+    setPhotoErrorMsg('');
+
+    const task = photoUploadQueueRef.current.then(async () => {
+      try {
+        const orderId = isDraft ? undefined : (String(place.orderId || place.pedido_id || place.id).match(/\d+/)?.[0]);
+        if (!isDraft && !orderId) throw new Error('Não foi possível identificar o pedido para anexar a foto.');
+        const path = await persistOrderPhoto(api, dataUrl, stage, orderId);
+        const photo = formatPhotoUrl(path, 'md') || path;
+        photoSources.set(photo, dataUrl);
+        if (pickupProof.delete(dataUrl)) pickupProof.add(photo);
+        if (currentActivePlaceIdRef.current === place.id) {
+          setCustomPhotos(prev => prev.map(item => item === dataUrl ? photo : item));
+          setSelectedPlace(prev => {
+            if (!prev || prev.id !== place.id) return prev;
+            const field = stage === 'coleta' ? 'pickupPhotos' : 'deliveryPhotos';
+            const photos = [...(prev[field] || []), photo];
+            return { ...prev, [field]: photos, imageUrl: photo, photos: [photo, ...(prev.photos || [])] };
+          });
+        }
+        return { path, stage };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Não foi possível salvar a foto.';
+        console.error('[Fotos] Falha ao salvar foto do pedido:', error);
+        if (currentActivePlaceIdRef.current === place.id) setPhotoErrorMsg(message);
+        return { error: message, stage };
+      }
+    });
+    photoUploadsRef.current.set(dataUrl, task);
+    photoUploadQueueRef.current = task.then(() => undefined);
+  };
+
   // Disparador de foto estilo Samsung Camera (as fotos saem embaixo e a câmera continua aberta!)
   const handleTakeShutterPhoto = () => {
     // Se o stream WebRTC não estiver ativo ou houver restrição no navegador,
@@ -1320,33 +1443,7 @@ export const PlaceDetailCard: React.FC = () => {
 
       const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
       
-      // Adiciona imediatamente à lista (aparece no carrossel inferior sem fechar a câmera!)
-      setCustomPhotos((prev) => {
-        const next = [...prev, dataUrl];
-        if (selectedPlace) {
-          try {
-            localStorage.setItem(`encomendaszap_photos_${selectedPlace.id}`, JSON.stringify(next));
-          } catch {}
-          updatePlaceDetails(selectedPlace.id, { imageUrl: next[0], photos: next });
-        }
-        return next;
-      });
-
-      setPhotoErrorMsg('');
-
-      // Sincroniza em segundo plano com a API do servidor Express
-      if (selectedPlace) {
-        const tipo = selectedPlace.operationType === 'entrega' ? 'entrega' : 'coleta';
-        const numericPedidoId = selectedPlace.id.match(/\d+/)?.[0] || '';
-        const campo = selectedPlace.operationType === 'entrega' ? 'entrega_foto' : 'coleta_foto';
-
-        api.uploadFoto(dataUrl, tipo).then(uploadRes => {
-          const uploadedPath = uploadRes?.path || (uploadRes?.data as any)?.path;
-          if (uploadedPath && numericPedidoId) {
-            api.appendFoto(numericPedidoId, uploadedPath, campo).catch(() => {});
-          }
-        }).catch(() => {});
-      }
+      addCapturedPhoto(dataUrl);
     }
   };
 
@@ -1358,34 +1455,10 @@ export const PlaceDetailCard: React.FC = () => {
         const reader = new FileReader();
         reader.onload = (event) => {
           if (event.target?.result) {
-            const dataUrl = event.target.result as string;
-            setCustomPhotos((prev) => {
-              const next = [...prev, dataUrl];
-              if (selectedPlace) {
-                try {
-                  localStorage.setItem(`encomendaszap_photos_${selectedPlace.id}`, JSON.stringify(next));
-                } catch {}
-                updatePlaceDetails(selectedPlace.id, { imageUrl: next[0], photos: next });
-              }
-              return next;
-            });
-
-            setPhotoErrorMsg('');
-
-            if (selectedPlace) {
-              const tipo = selectedPlace.operationType === 'entrega' ? 'entrega' : 'coleta';
-              const numericPedidoId = selectedPlace.id.match(/\d+/)?.[0] || '';
-              const campo = selectedPlace.operationType === 'entrega' ? 'entrega_foto' : 'coleta_foto';
-
-              api.uploadFoto(dataUrl, tipo).then(uploadRes => {
-                const uploadedPath = uploadRes?.path || (uploadRes?.data as any)?.path;
-                if (uploadedPath && numericPedidoId) {
-                  api.appendFoto(numericPedidoId, uploadedPath, campo).catch(() => {});
-                }
-              }).catch(() => {});
-            }
+            addCapturedPhoto(event.target.result as string);
           }
         };
+        reader.onerror = () => setPhotoErrorMsg('Não foi possível ler a foto selecionada.');
         reader.readAsDataURL(file);
       });
     }
@@ -1402,13 +1475,18 @@ export const PlaceDetailCard: React.FC = () => {
   };
 
   // Finalizar Registro da Operação direto da Câmera
-  const handleFinalizeRegistration = (confirmedFar?: BaixaProximity) => {
+  const handleFinalizeRegistration = async (confirmedFar?: BaixaProximity) => {
+    if (!selectedPlace || isFinalizingPhoto) return;
     setPhotoErrorMsg('');
 
     // Validação de foto obrigatória na Coleta em caso de sucesso
     const isColetaOp = selectedPlace?.orderStage === 'coleta' || selectedPlace?.operationType === 'coleta';
-    if (isColetaOp && operationStatus === 'success' && customPhotos.length === 0) {
+    if (isColetaOp && operationStatus === 'success' && pickupProofRef.current.size === 0) {
       setPhotoErrorMsg('Foto obrigatória: aponte a câmera e tire a foto da mercadoria para finalizar a coleta.');
+      return;
+    }
+    if (isTemporaryOrderId(selectedPlace.id)) {
+      setPhotoErrorMsg('Salve o pedido antes de registrar a coleta ou entrega.');
       return;
     }
 
@@ -1418,41 +1496,101 @@ export const PlaceDetailCard: React.FC = () => {
       return;
     }
 
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    setIsFinalizingPhoto(true);
+    try {
+      const uploads = await Promise.all(photoUploadsRef.current.values());
+      const failedUpload = uploads.find(upload => upload.error);
+      if (failedUpload) {
+        setPhotoErrorMsg(`Não foi possível salvar a foto: ${failedUpload.error}. Remova a foto e tente novamente.`);
+        return;
+      }
+      const completed = operationStatus === 'success'
+        ? await completePlaceWaypoint(selectedPlace.id, receiverName, notes, confirmedFar, Array.from(pickupProofRef.current))
+        : await completePlaceWaypoint(selectedPlace.id, `Insucesso: ${failReason}`, `Tentativa sem sucesso: ${failReason}${notes ? ` - ${notes}` : ''}`, confirmedFar);
+      if (!completed) return;
 
-    setRegisteredOutcome({
-      status: operationStatus,
-      time: timeStr,
-      details: operationStatus === 'success' 
-        ? `${receiverName ? `Por: ${receiverName} • ` : ''}${volumeQuantity} vol` 
-        : failReason
-    });
-
-    if (operationStatus === 'success' && selectedPlace) {
-      completePlaceWaypoint(selectedPlace.id, receiverName, notes, confirmedFar);
-    } else if (operationStatus === 'failed' && selectedPlace) {
-      const failureNote = `Tentativa sem sucesso: ${failReason}${notes ? ` - ${notes}` : ''}`;
-      completePlaceWaypoint(selectedPlace.id, `Insucesso: ${failReason}`, failureNote, confirmedFar);
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      setRegisteredOutcome({
+        status: operationStatus,
+        time: timeStr,
+        details: operationStatus === 'success'
+          ? `${receiverName ? `Por: ${receiverName} • ` : ''}${volumeQuantity} vol`
+          : failReason
+      });
+      closeFullScreenCamera();
+      setShowOperationModal(false);
+    } finally {
+      setIsFinalizingPhoto(false);
     }
-
-    closeFullScreenCamera();
-    setShowOperationModal(false);
   };
 
   // Excluir uma foto da lista
-  const handleDeletePhoto = (indexToDelete: number, e?: React.MouseEvent) => {
+  const handleDeletePhoto = async (indexToDelete: number, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    setCustomPhotos((prev) => {
-      const next = prev.filter((_, idx) => idx !== indexToDelete);
-      if (selectedPlace) {
-        try {
-          localStorage.setItem(`encomendaszap_photos_${selectedPlace.id}`, JSON.stringify(next));
-        } catch {}
-        updatePlaceDetails(selectedPlace.id, { imageUrl: next[0] || undefined });
+    if (!selectedPlace || isFinalizingPhoto) return;
+    const removed = customPhotos[indexToDelete];
+    if (!removed) return;
+    const pickupProof = pickupProofRef.current;
+    const photoUploads = photoUploadsRef.current;
+    const photoSources = photoSourceRef.current;
+    setIsFinalizingPhoto(true);
+    setPhotoErrorMsg('');
+    try {
+      const source = photoSources.get(removed) || removed;
+      const upload = await photoUploads.get(source);
+      const photo = upload?.path ? (formatPhotoUrl(upload.path, 'md') || upload.path) : removed;
+      const stage = upload?.stage ||
+        (selectedPlace.deliveryPhotos?.includes(photo) ? 'entrega' :
+          selectedPlace.pickupPhotos?.includes(photo) ? 'coleta' : undefined);
+      if (stage && !upload?.error && !isTemporaryOrderId(selectedPlace.id)) {
+        const orderId = String(selectedPlace.orderId || selectedPlace.pedido_id || selectedPlace.id).match(/\d+/)?.[0];
+        if (!orderId) throw new Error('Não foi possível identificar o pedido.');
+        const result = await api.removeFoto(orderId, upload?.path || photo, stage === 'coleta' ? 'coleta_foto' : 'entrega_foto');
+        if (!result.success) throw new Error(result.message || 'Não foi possível remover a foto.');
       }
-      return next;
-    });
+      pickupProof.delete(source);
+      pickupProof.delete(photo);
+      photoUploads.delete(source);
+      photoSources.delete(photo);
+      try {
+        const key = `encomendaszap_photos_${selectedPlace.id}`;
+        const saved = localStorage.getItem(key);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            localStorage.setItem(key, JSON.stringify(parsed.filter(item =>
+              typeof item !== 'string' || (formatPhotoUrl(item, 'md') || item) !== photo
+            )));
+          }
+        }
+      } catch (error) {
+        console.error('[Fotos] Não foi possível atualizar as fotos locais:', error);
+        if (currentActivePlaceIdRef.current === selectedPlace.id) {
+          setPhotoErrorMsg('Foto removida do pedido, mas não foi possível atualizar as fotos locais.');
+        }
+      }
+      if (currentActivePlaceIdRef.current === selectedPlace.id) {
+        setCustomPhotos(prev => prev.filter(item => item !== removed && item !== photo));
+      }
+      setSelectedPlace(prev => {
+        if (!prev || prev.id !== selectedPlace.id) return prev;
+        const photos = (prev.photos || []).filter(item => item !== photo && item !== removed);
+        return {
+          ...prev,
+          photos,
+          imageUrl: photos[0],
+          pickupPhotos: prev.pickupPhotos?.filter(item => item !== photo),
+          deliveryPhotos: prev.deliveryPhotos?.filter(item => item !== photo)
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Não foi possível remover a foto.';
+      console.error('[Fotos] Falha ao remover foto:', error);
+      if (currentActivePlaceIdRef.current === selectedPlace.id) setPhotoErrorMsg(message);
+    } finally {
+      setIsFinalizingPhoto(false);
+    }
   };
 
   // Descartar foto do preview e voltar para o visor
@@ -1464,33 +1602,7 @@ export const PlaceDetailCard: React.FC = () => {
   };
 
   // Finalizar Registro da Operação
-  const handleSaveOperation = (confirmedFar?: BaixaProximity) => {
-    setPhotoErrorMsg('');
-    const far = confirmedFar || getBaixaProximity();
-    if (far && !confirmedFar) {
-      setFarWarning({ proximity: far, proceed: () => handleSaveOperation(far) });
-      return;
-    }
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    
-    setRegisteredOutcome({
-      status: operationStatus,
-      time: timeStr,
-      details: operationStatus === 'success' 
-        ? `${receiverName ? `Por: ${receiverName} • ` : ''}${volumesCount}` 
-        : failReason
-    });
-
-    if (operationStatus === 'success' && selectedPlace) {
-      completePlaceWaypoint(selectedPlace.id, receiverName, notes, confirmedFar);
-    } else if (operationStatus === 'failed' && selectedPlace) {
-      const failureNote = `Tentativa sem sucesso: ${failReason}${notes ? ` - ${notes}` : ''}`;
-      completePlaceWaypoint(selectedPlace.id, `Insucesso: ${failReason}`, failureNote, confirmedFar);
-    }
-
-    setShowOperationModal(false);
-  };
+  const handleSaveOperation = (confirmedFar?: BaixaProximity) => handleFinalizeRegistration(confirmedFar);
 
   if (!selectedPlace) return null;
 
@@ -1517,6 +1629,7 @@ export const PlaceDetailCard: React.FC = () => {
   const selectedDriverName = selectedPlace.assignedDriverName || assignedDriverObj?.name || '';
   const renderRoutePointDetails = (point: 'pickup' | 'exchange' | 'delivery') => {
     const seller = getRouteSeller(point);
+    if (!canEdit && hasCustomerRoute) return null;
     const notes = point === 'pickup'
       ? selectedPlace.pickupNotes || selectedPlace.observations || ''
       : point === 'exchange'
@@ -1542,8 +1655,156 @@ export const PlaceDetailCard: React.FC = () => {
       </div>
     );
   };
+  const renderViewRoutePointActions = (point: 'pickup' | 'exchange' | 'delivery') => {
+    if (isNewOrderDraft || canEdit) return null;
+    const seller = getRouteSeller(point);
+    const driver = getRouteDriver(point);
+    const label = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
+    const driverDisplayName = driver.name || (point === activeRoutePoint ? assignedDriverObj?.name : '') || '';
+    const driverPhoneNumber = driver.phone || (point === activeRoutePoint ? assignedDriverObj?.phone : '') || '';
+    const hasDriver = Boolean(driverDisplayName || driver.id);
+    const canPickDriver = canEdit && canManageDriverAssignment;
+    const note = (point === 'pickup'
+      ? selectedPlace.pickupNotes
+      : point === 'exchange'
+        ? selectedPlace.exchangeNotes
+        : selectedPlace.deliveryNotes) || (point === activeRoutePoint ? selectedPlace.observations : '') || '';
+    const isEditingNote = viewNotePoint === point;
+    const VisibilityIcon = driver.visibility === 'privado' ? Lock : Globe;
+
+    const openSeller = () => {
+      setRouteSellerTarget(point);
+      setIsSellerModalOpen(true);
+    };
+    const openDriver = () => {
+      setRouteDriverTarget(point);
+      setIsDriverSelectorOpen(true);
+    };
+    const saveNote = () => {
+      const value = viewNoteText.trim();
+      const routeNote = point === 'pickup'
+        ? { pickupNotes: value }
+        : point === 'exchange'
+          ? { exchangeNotes: value }
+          : { deliveryNotes: value };
+      updatePlaceDetails(selectedPlace.id, {
+        ...routeNote,
+        ...(point === activeRoutePoint ? { observations: value } : {})
+      });
+      setViewNotePoint(null);
+      setSaveSuccessToast(`Comentário da ${label} salvo.`);
+      setTimeout(() => setSaveSuccessToast(null), 3000);
+    };
+
+    const contactButton = (
+      colors: string,
+      title: string,
+      name: string,
+      phone: string,
+      icon: React.ReactNode,
+      onEdit?: () => void
+    ) => (
+      <div className="flex min-w-0 flex-1 basis-[46%] items-stretch gap-0.5">
+        <button
+          type="button"
+          disabled={!phone}
+          onClick={() => handleWhatsApp(phone, name)}
+          className={`inline-flex min-w-0 flex-1 items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-black text-white shadow-sm transition-colors disabled:opacity-70 ${colors}`}
+          title={phone ? `Chamar ${name} no WhatsApp` : 'Sem telefone cadastrado'}
+        >
+          {icon}
+          <span className="min-w-0 flex-1 whitespace-normal break-words text-left leading-tight">
+            <span>{title}</span><br />
+            <span className="font-semibold">{name}</span><br />
+            <span className="text-[9px] font-bold text-white/90">{phone ? 'Clique para chamar no zap' : 'Sem telefone'}</span>
+          </span>
+        </button>
+        {onEdit && (
+          <button
+            type="button"
+            onClick={onEdit}
+            className={`inline-flex w-7 shrink-0 items-center justify-center rounded-lg text-white shadow-sm ${colors}`}
+            title={`Alterar ${title.toLowerCase()}`}
+          >
+            <Edit3 className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+    );
+
+    const addButton = (colors: string, text: string, icon: React.ReactNode, onClick: () => void) => (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`inline-flex min-w-0 flex-1 basis-[46%] items-center justify-between gap-1.5 rounded-lg px-2 py-2 text-[10px] font-black text-white shadow-sm transition-colors ${colors}`}
+      >
+        {icon}
+        <span className="min-w-0 flex-1 whitespace-normal break-words text-center leading-tight">{text}</span>
+      </button>
+    );
+
+    const sellerColors = 'border border-orange-700 bg-orange-500 hover:bg-orange-600';
+    const driverColors = 'border border-emerald-700 bg-emerald-600 hover:bg-emerald-700';
+    const showSeller = Boolean(seller.name) || canEdit;
+    const showDriver = hasDriver || canPickDriver;
+
+    if (!showSeller && !showDriver && !note.trim() && !canEdit) return null;
+
+    return (
+      <div className="mt-2 space-y-1.5">
+        {(showSeller || showDriver) && (
+          <div className="flex flex-wrap gap-1">
+            {showSeller && (seller.name
+              ? contactButton(sellerColors, 'Vendedor', seller.name, seller.phone, <UserCheck className="h-3.5 w-3.5 shrink-0" />, canEdit ? openSeller : undefined)
+              : addButton(sellerColors, 'Definir vendedor', <UserCheck className="h-3.5 w-3.5 shrink-0" />, openSeller))}
+            {showDriver && (hasDriver
+              ? contactButton(driverColors, 'Motorista', driverDisplayName || `#${driver.id}`, driverPhoneNumber, <VisibilityIcon className="h-3.5 w-3.5 shrink-0" />, canPickDriver ? openDriver : undefined)
+              : addButton(driverColors, 'Motorista', <VisibilityIcon className="h-3.5 w-3.5 shrink-0" />, openDriver))}
+          </div>
+        )}
+        {canEdit ? (
+          <label className="block rounded-xl border-2 border-red-300 bg-red-50/70 p-1.5 shadow-sm">
+            <span className="mb-1 flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-red-700">
+              <FileText className="h-3 w-3 shrink-0" />
+              Observações da {label}
+            </span>
+            <textarea
+            value={isEditingNote ? viewNoteText : note}
+            onFocus={() => {
+              if (!isEditingNote) {
+                setViewNoteText(note);
+                setViewNotePoint(point);
+              }
+            }}
+            onChange={event => {
+              setViewNotePoint(point);
+              setViewNoteText(event.target.value);
+            }}
+            onBlur={() => {
+              if (isEditingNote) {
+                saveNote();
+                setViewNotePoint(null);
+              }
+            }}
+            rows={3}
+            placeholder={`Escreva as observações da ${label}...`}
+            className="w-full resize-y rounded-lg border border-red-200 bg-white px-2 py-1.5 text-xs font-bold text-red-600 outline-none placeholder:font-medium placeholder:text-red-300 focus:border-red-500 focus:ring-2 focus:ring-red-100"
+          />
+          </label>
+        ) : note.trim() ? (
+          <div className="rounded-xl border-2 border-red-300 bg-red-50 p-1.5">
+            <span className="mb-0.5 flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-red-700">
+              <FileText className="h-3 w-3 shrink-0" />
+              Observações da {label}
+            </span>
+            <p className="whitespace-pre-wrap break-words text-xs font-bold leading-snug text-red-600">{note}</p>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
   const renderDraftRoutePointActions = (point: 'pickup' | 'exchange' | 'delivery') => {
-    if (!isNewOrderDraft || !canEdit || !hasCustomerRoute) return null;
+    if (!canEdit || !hasCustomerRoute) return null;
     const seller = getRouteSeller(point);
     const driver = getRouteDriver(point);
     const label = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
@@ -1585,9 +1846,16 @@ export const PlaceDetailCard: React.FC = () => {
             {driver.name && <Edit3 className="h-2.5 w-2.5 shrink-0" />}
           </button>
         </div>
-        <textarea
+        <label className="block rounded-xl border-2 border-red-300 bg-red-50/70 p-1.5 shadow-sm">
+          <span className="mb-1 flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-red-700">
+            <FileText className="h-3 w-3 shrink-0" />
+            Observações da {label}
+          </span>
+          <textarea
+          ref={isNewOrderDraft && point === activeRoutePoint ? draftObservationRef : undefined}
           value={note}
           onChange={event => {
+            if (isNewOrderDraft && point === activeRoutePoint) draftObservationEditedRef.current = true;
             const value = event.target.value;
             const routeNote = point === 'pickup'
               ? { pickupNotes: value }
@@ -1601,20 +1869,17 @@ export const PlaceDetailCard: React.FC = () => {
             });
             if (point === activeRoutePoint) setDraftOrderComment(value);
           }}
-          rows={2}
-          placeholder={`Comentários para ${label}...`}
-          className="w-full resize-y rounded-lg border border-amber-200 bg-amber-50/50 px-2 py-1.5 text-[11px] font-medium text-slate-800 outline-none focus:border-amber-500 focus:bg-white focus:ring-1 focus:ring-amber-100"
+          rows={3}
+          placeholder={`Escreva as observações da ${label}...`}
+          className="w-full resize-y rounded-lg border border-red-200 bg-white px-2 py-1.5 text-xs font-bold text-red-600 outline-none placeholder:font-medium placeholder:text-red-300 focus:border-red-500 focus:ring-2 focus:ring-red-100"
         />
+        </label>
       </div>
     );
   };
 
   // Primeira foto do local/encomenda para identificação visual imediata
-  // REGRA: Na entrega NÃO pode mostrar foto do local, apenas na coleta
-  const isColetaCard = selectedPlace.operationType === 'coleta' || selectedPlace.orderStage === 'coleta';
-  const rawFirstPhoto = isColetaCard 
-    ? (customPhotos[0] || selectedPlace.imageUrl || null)
-    : (customPhotos[0] || null);
+  const rawFirstPhoto = customPhotos[0] || selectedPlace.imageUrl || selectedPlace.pickupPhotos?.[0] || null;
   const firstPhoto = rawFirstPhoto ? (formatPhotoUrl(rawFirstPhoto, 'md') || rawFirstPhoto) : null;
 
   // Handlers para seleção e cadastro de clientes / responsáveis
@@ -1629,7 +1894,7 @@ export const PlaceDetailCard: React.FC = () => {
     if (selectorTargetField === 'customer') {
       const op = selectedPlace.operationType || 'coleta';
       const isGeneric = isUnnamedOrGenericPlace(selectedPlace);
-      const placeName = (isGeneric && customer.fullName) ? getCustomerPlaceName(customer.fullName) : selectedPlace.name;
+      const placeName = selectedPlace.name;
 
       const tempPlace: Place = {
         ...selectedPlace,
@@ -1725,7 +1990,7 @@ export const PlaceDetailCard: React.FC = () => {
       if (selectorTargetField === 'customer') {
         const op = selectedPlace.operationType || 'coleta';
         const isGeneric = isUnnamedOrGenericPlace(selectedPlace);
-        const placeName = (isGeneric && newCustomer.fullName) ? getCustomerPlaceName(newCustomer.fullName) : selectedPlace.name;
+        const placeName = selectedPlace.name;
 
         const tempPlace: Place = {
           ...selectedPlace,
@@ -2155,8 +2420,24 @@ ${horarioText}
 
   // Salva a encomenda/pedido no banco de dados e mapa conforme as regras de Coleta, Entrega e Troca
   const handleSavePlaceOrder = async () => {
-    if (!selectedPlace || isDriverRole || isSavingOrder) return;
+    if (!selectedPlace || isDriverRole || isSavingOrder || isFinalizingPhoto) return;
     const op = selectedPlace.operationType || 'coleta';
+    if (isNewOrderDraft && isPlaceNameInvalid) {
+      setShowPlaceNameError(true);
+      placeNameInputRef.current?.focus();
+      return;
+    }
+    let uploadedPhotos: { path?: string; error?: string; stage: 'coleta' | 'entrega' }[] = [];
+    if (isNewOrderDraft && photoUploadsRef.current.size) {
+      setIsSavingOrder(true);
+      uploadedPhotos = await Promise.all(photoUploadsRef.current.values());
+      const failedUpload = uploadedPhotos.find(upload => upload.error);
+      if (failedUpload) {
+        setIsSavingOrder(false);
+        window.alert(`Não foi possível salvar a foto: ${failedUpload.error}. Remova a foto e tente novamente.`);
+        return;
+      }
+    }
     const finalObs = isNewOrderDraft && !hasCustomerRoute
       ? draftOrderComment
       : isEditingObservations ? editedObservations : (selectedPlace.observations || '');
@@ -2167,11 +2448,11 @@ ${horarioText}
           ? { deliveryNotes: draftOrderComment }
           : { pickupNotes: draftOrderComment }
       : {};
-    const resolved = getOrderLocationsForOperation(selectedPlace, op, customers);
-
-    let updated: Place = {
+    const updated = resolveOrderLocationsForSave({
       ...selectedPlace,
-      name: isNewOrderDraft ? draftPlaceName.trim() || selectedPlace.name : selectedPlace.name,
+      name: isNewOrderDraft ? draftPlaceName.trim() : selectedPlace.name,
+      pickupPhotos: Array.from(new Set([...(selectedPlace.pickupPhotos || []), ...uploadedPhotos.filter(upload => upload.stage === 'coleta' && upload.path).map(upload => upload.path!)].map(photo => formatPhotoUrl(photo, 'md') || photo))),
+      deliveryPhotos: Array.from(new Set([...(selectedPlace.deliveryPhotos || []), ...uploadedPhotos.filter(upload => upload.stage === 'entrega' && upload.path).map(upload => upload.path!)].map(photo => formatPhotoUrl(photo, 'md') || photo))),
       observations: finalObs,
       ...draftRouteNotes,
       ...(isEditingObservations
@@ -2181,56 +2462,9 @@ ${horarioText}
             deliveryNotes: editedDeliveryNotes
           }
         : {})
-    };
+    }, customers, settingsService.getSettings().defaultOrderLocation);
 
     clearActiveRoute();
-    if (resolved.canTraceRoute) {
-      if (op === 'coleta') {
-        // Coleta: o local de entrega é do cliente
-        updated.pickupAddress = selectedPlace.address;
-        updated.pickupCoordinates = selectedPlace.coordinates;
-        updated.deliveryAddress = resolved.deliveryAddress;
-        updated.deliveryCoordinates = resolved.deliveryCoordinates;
-        if (resolved.summaryDestName && !updated.deliveryContact) {
-          updated.deliveryContact = resolved.summaryDestName;
-        }
-      } else if (op === 'entrega') {
-        // Entrega: o local de coleta é do cliente
-        updated.pickupAddress = resolved.pickupAddress;
-        updated.pickupCoordinates = resolved.pickupCoordinates;
-        updated.deliveryAddress = selectedPlace.address;
-        updated.deliveryCoordinates = selectedPlace.coordinates;
-        if (resolved.summaryOriginName && !updated.pickupContact) {
-          updated.pickupContact = resolved.summaryOriginName;
-        }
-      } else if (op === 'troca') {
-        // Troca: coleta no cliente, troca no local de troca, entrega no cliente
-        updated.pickupAddress = resolved.pickupAddress;
-        updated.pickupCoordinates = resolved.pickupCoordinates;
-        updated.exchangeAddress = selectedPlace.address;
-        updated.exchangeCoordinates = selectedPlace.coordinates;
-        updated.deliveryAddress = resolved.deliveryAddress;
-        updated.deliveryCoordinates = resolved.deliveryCoordinates;
-        if (resolved.summaryOriginName && !updated.pickupContact) {
-          updated.pickupContact = resolved.summaryOriginName;
-        }
-        if (resolved.summaryDestName && !updated.deliveryContact) {
-          updated.deliveryContact = resolved.summaryDestName;
-        }
-      }
-    } else {
-      if (op === 'coleta') {
-        updated.pickupAddress = selectedPlace.address;
-        updated.pickupCoordinates = selectedPlace.coordinates;
-      } else if (op === 'entrega') {
-        updated.deliveryAddress = selectedPlace.address;
-        updated.deliveryCoordinates = selectedPlace.coordinates;
-      } else if (op === 'troca') {
-        updated.exchangeAddress = selectedPlace.address;
-        updated.exchangeCoordinates = selectedPlace.coordinates;
-      }
-    }
-
     if (isAlreadySaved) {
       updatePlaceDetails(selectedPlace.id, updated);
       setSelectedPlace(updated);
@@ -3148,16 +3382,7 @@ ${horarioText}
                   <>
                     <img 
                       src={firstPhoto} 
-                      alt="Foto da Encomenda" 
-                      onError={(e) => { 
-                        const mdFallback = formatPhotoUrl(firstPhoto, 'md');
-                        if (mdFallback && e.currentTarget.src !== mdFallback) {
-                          e.currentTarget.src = mdFallback;
-                          return;
-                        }
-                        e.currentTarget.onerror = null; 
-                        e.currentTarget.src = 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=300&auto=format&fit=crop&q=80'; 
-                      }}
+                      alt="Foto da encomenda indisponível"
                       className="w-full h-full object-cover transition-transform group-hover:scale-105" 
                     />
                     <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
@@ -3181,11 +3406,18 @@ ${horarioText}
                     {isNewOrderDraft && canEdit ? (
                       <input
                         aria-label="Nome do local"
+                        ref={placeNameInputRef}
                         value={draftPlaceName}
-                        onChange={event => setDraftPlaceName(event.target.value)}
+                        onChange={event => {
+                          if (placeNameDraftRef.current) placeNameDraftRef.current.edited = true;
+                          setDraftPlaceName(event.target.value);
+                        }}
                         onClick={event => event.stopPropagation()}
-                        placeholder="Nome do local"
-                        className="w-full min-w-0 rounded-lg border border-slate-300 bg-white px-2 py-1 text-lg font-black tracking-tight text-slate-900 outline-none focus:border-[#0B5187] focus:ring-2 focus:ring-blue-100 sm:text-xl"
+                        aria-required="true"
+                        aria-invalid={showPlaceNameError && isPlaceNameInvalid}
+                        aria-describedby={showPlaceNameError && isPlaceNameInvalid ? 'place-name-error' : undefined}
+                        placeholder={selectedPlace.isResolvingAddress ? 'Buscando nome do local...' : 'Nome do local (obrigatório)'}
+                        className={`w-full min-w-0 rounded-lg border ${showPlaceNameError && isPlaceNameInvalid ? 'border-red-500 ring-2 ring-red-100' : 'border-slate-300'} bg-white px-2 py-1 text-lg font-black tracking-tight text-slate-900 outline-none focus:border-[#0B5187] focus:ring-2 focus:ring-blue-100 sm:text-xl`}
                       />
                     ) : (
                       <h2 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight leading-tight">
@@ -3194,7 +3426,7 @@ ${horarioText}
                     )}
                   </div>
 
-                  {distanceFormatted && (
+                  {!isNewOrderDraft && distanceFormatted && (
                     <div 
                       className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-blue-50/90 border border-blue-200 text-[#0B5187] shadow-2xs"
                       title={`Distância até o local: ${distanceFormatted}`}
@@ -3205,6 +3437,12 @@ ${horarioText}
                   )}
                 </div>
 
+                {isNewOrderDraft && showPlaceNameError && isPlaceNameInvalid && (
+                  <p id="place-name-error" role="alert" className="mt-1 text-xs font-bold text-red-600">
+                    Informe o nome do local para salvar o pedido.
+                  </p>
+                )}
+
                 {/* Endereço do local */}
                 <p className="text-xs text-slate-500 font-medium truncate mt-0.5" title={selectedPlace.address}>
                   {selectedPlace.address}
@@ -3212,6 +3450,7 @@ ${horarioText}
 
                 {isDriverRole && <ArrivalInfo placeId={selectedPlace.id} />}
 
+              <div className="flex flex-wrap items-center gap-x-2">
               {isStreetOrAddress(selectedPlace) ? (
                 <div className="mt-1.5 flex items-center gap-2 text-xs sm:text-sm font-medium flex-wrap">
                   <span className="inline-flex items-center gap-1.5 text-[#0B5187] bg-blue-50 border border-blue-200/90 px-2 py-0.5 rounded-lg font-bold text-[11px] sm:text-xs shadow-2xs">
@@ -3271,10 +3510,20 @@ ${horarioText}
                   )}
                 </div>
               ) : null}
+              {isNewOrderDraft && distanceFormatted && (
+                <span
+                  className="mt-1.5 inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-slate-700 sm:text-sm"
+                  title={`Distância até o local: ${distanceFormatted}`}
+                >
+                  <Navigation className="h-3.5 w-3.5 shrink-0 text-slate-500 stroke-[2.4]" />
+                  <span className="font-bold">{distanceFormatted}</span>
+                </span>
+              )}
+              </div>
             </div>
           </div>
 
-          {isNewOrderDraft && canEdit && (
+          {canEdit && (
             <div className={hasCustomerRoute ? 'flex' : 'grid grid-cols-3 gap-2'}>
               <button
                 type="button"
@@ -3323,325 +3572,64 @@ ${horarioText}
           )}
 
 
-            {/* CLIENTE E VENDEDOR (RESPONSÁVEL) - motorista só vê os cartões preenchidos */}
-            {!isNewOrderDraft && (!isDriverRole || hasCustomer || (hasResponsible && !hasCustomerRoute)) && (
-            <div className={`w-full grid ${hasCustomerRoute || (isDriverRole && (hasCustomer !== hasResponsible)) ? 'grid-cols-1' : 'grid-cols-2'} gap-1.5 sm:gap-2 shrink-0`}>
-              {/* CARD 1: CLIENTE */}
-              {hasCustomer ? (
-                !isEditingOrder ? (
-                  /* MODO VISUALIZAÇÃO: O CARD INTEIRO É UM BOTÃO DE WHATSAPP DIRETO */
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (customerPhone) {
-                        handleWhatsApp(customerPhone, customerName);
-                      } else if (canEdit) {
-                        handleOpenCustomerSelector('customer');
-                      }
-                    }}
-                    className="relative flex flex-col justify-between p-2.5 rounded-xl bg-gradient-to-br from-emerald-50 via-white to-green-50 border-2 border-emerald-500/80 hover:border-emerald-600 hover:bg-emerald-50 active:scale-[0.98] shadow-xs hover:shadow-md transition-all cursor-pointer text-left w-full group min-h-[76px]"
-                    title={`Abrir WhatsApp para falar com ${customerName}`}
-                  >
-                    <div className="flex items-center justify-between w-full mb-1">
-                      <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-emerald-800 bg-emerald-100/90 px-1.5 py-0.5 rounded-md leading-none">
-                        <MessageCircle className="w-2.5 h-2.5 fill-current text-emerald-600" />
-                        Cliente WhatsApp
-                      </span>
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    </div>
+            {!isNewOrderDraft && !canEdit && hasCustomer && (
+              <button
+                type="button"
+                onClick={() => handleWhatsApp(customerPhone, customerName)}
+                disabled={!customerPhone}
+                className="inline-flex w-full min-w-0 items-center gap-1.5 rounded-xl border border-blue-700 bg-blue-600 px-2.5 py-2 text-[10px] font-black text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-70"
+                title={customerPhone ? `Chamar ${customerName} no WhatsApp` : 'Sem telefone cadastrado'}
+              >
+                <User className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 flex-1 whitespace-normal break-words text-left leading-tight">
+                  <span>Cliente</span><br />
+                  <span className="font-semibold">{customerName}</span><br />
+                  <span className="text-[9px] font-bold text-white/90">{customerPhone ? 'Clique para chamar no zap' : 'Sem telefone'}</span>
+                </span>
+              </button>
+            )}
 
-                    <div className="flex items-center gap-2 w-full my-0.5 min-w-0">
-                      <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-                        {customerName ? customerName.charAt(0).toUpperCase() : <User className="w-3.5 h-3.5" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-black text-slate-900 truncate leading-tight group-hover:text-emerald-700 transition-colors">
-                          {customerName}
-                        </p>
-                        <p className="text-[10px] text-emerald-700 font-bold truncate leading-tight mt-0.5 flex items-center gap-0.5">
-                          {customerPhone ? (
-                            <>
-                              <Phone className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                              <span>{formatPhoneDisplay(customerPhone)}</span>
-                            </>
-                          ) : (
-                            <span className="text-slate-400 italic">Toque para cadastrar tel</span>
-                          )}
-                        </p>
-                      </div>
-                    </div>
+            {!hasCustomerRoute && renderViewRoutePointActions(activeRoutePoint)}
 
-                    <div className="w-full mt-1 pt-1 border-t border-emerald-100/90 flex items-center justify-between text-[9.5px] font-black text-emerald-700">
-                      <span className="flex items-center gap-1">
-                        <MessageCircle className="w-3 h-3 fill-current text-emerald-600" />
-                        <span>Abrir WhatsApp</span>
-                      </span>
-                      <span className="text-emerald-600 text-[11px] group-hover:translate-x-0.5 transition-transform">➔</span>
-                    </div>
-                  </button>
-                ) : (
-                  /* MODO EDIÇÃO ATIVO: CAMPO EDITÁVEL COM BOTÃO TROCAR E REMOVER */
-                  <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-blue-50/90 via-white to-sky-50/60 border-2 border-red-300 shadow-2xs hover:shadow-xs transition-all">
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <span className="inline-flex items-center gap-1 text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider text-[#0B5187] bg-blue-100/90 px-1.5 py-0.5 rounded-md leading-none">
-                        <User className="w-2.5 h-2.5" />
-                        Cliente (Editando)
-                      </span>
-                      <div className="flex items-center gap-0.5">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenCustomerSelector('customer');
-                          }}
-                          className="text-[9px] font-bold text-[#0B5187] hover:text-blue-900 bg-white hover:bg-blue-100/80 border border-blue-200/90 px-1.5 py-0.5 rounded flex items-center gap-0.5 transition-colors cursor-pointer"
-                          title="Trocar cliente"
-                        >
-                          <Edit3 className="w-2.5 h-2.5" />
-                          Trocar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (!selectedPlace) return;
-                            updatePlaceDetails(selectedPlace.id, { customerName: '', customerPhone: '' });
-                          }}
-                          className="text-slate-400 hover:text-rose-600 p-0.5 rounded transition-colors cursor-pointer"
-                          title="Remover cliente"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleOpenCustomerSelector('customer')}
-                      className="flex items-center gap-1.5 text-left w-full my-0.5 group text-inherit min-w-0 cursor-pointer"
-                      title="Clique para alterar dados do cliente"
-                    >
-                      <div className="w-6 h-6 rounded-lg bg-[#0B5187] text-white flex items-center justify-center font-black text-[11px] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-                        {customerName ? customerName.charAt(0).toUpperCase() : <User className="w-3 h-3" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[11.5px] sm:text-xs font-black text-slate-900 truncate leading-tight group-hover:text-[#0B5187] transition-colors">
-                          {customerName}
-                        </p>
-                        <p className="text-[9.5px] text-slate-500 font-semibold truncate leading-tight mt-0.5 flex items-center gap-0.5">
-                          {customerPhone ? (
-                            <>
-                              <Phone className="w-2 h-2 text-slate-400 shrink-0" />
-                              <span>{formatPhoneDisplay(customerPhone)}</span>
-                            </>
-                          ) : (
-                            <span className="text-slate-400 italic">Sem telefone</span>
-                          )}
-                        </p>
-                      </div>
-                    </button>
-                  </div>
-                )
-              ) : isDriverRole ? null : (
-                /* Card Cliente Vazio - Campo para adicionar */
+            {showCounterpartButton && (
+              <div className="w-full space-y-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (!canEdit) {
-                      handleLockedEditAttempt();
-                      return;
-                    }
-                    handleOpenCustomerSelector('customer');
-                  }}
-                  className={`relative flex flex-col items-center justify-center p-2 rounded-xl bg-gradient-to-br from-blue-50/50 via-white to-sky-50/30 border-2 border-dashed border-blue-200 hover:border-[#0B5187] hover:bg-blue-50/70 active:scale-[0.99] shadow-2xs transition-all text-center min-h-[74px] ${canEdit ? 'cursor-pointer group' : 'cursor-default opacity-80'}`}
+                  onClick={() => setIsCounterpartPickerOpen(open => !open)}
+                  className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-[#0B5187]/50 bg-blue-50/60 px-3 py-2 text-[11px] font-black text-[#0B5187] hover:bg-blue-100/70 active:scale-[0.99] cursor-pointer"
                 >
-                  <div className="w-6 h-6 rounded-lg bg-blue-100/90 group-hover:bg-[#0B5187] text-[#0B5187] group-hover:text-white flex items-center justify-center mb-1 transition-all shadow-2xs group-hover:scale-105">
-                    <UserPlus className="w-3 h-3" />
-                  </div>
-                  <span className="text-[11px] font-black text-[#0B5187] block leading-tight">
-                    + Cliente
-                  </span>
-                  <span className="text-[9px] text-slate-400 font-medium block leading-tight mt-0.5">
-                    Quem solicita a encomenda
+                  <MapPin className="h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    {(selectedPlace.operationType === 'entrega' ? selectedPlace.pickupCoordinates : selectedPlace.deliveryCoordinates)
+                      ? `Local de ${counterpartLabel}: ${selectedPlace.operationType === 'entrega' ? selectedPlace.pickupAddress : selectedPlace.deliveryAddress}`
+                      : `Definir local de ${counterpartLabel}`}
                   </span>
                 </button>
-              )}
-
-              {/* CARD 2: VENDEDOR (RESPONSÁVEL) */}
-              {!hasCustomerRoute && (hasResponsible ? (
-                !isEditingOrder ? (
-                  /* MODO VISUALIZAÇÃO: O CARD INTEIRO É UM BOTÃO DE WHATSAPP DIRETO */
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (responsiblePhone) {
-                        handleWhatsApp(responsiblePhone, responsibleName);
-                      } else if (canEdit) {
-                        setIsSellerModalOpen(true);
-                      }
-                    }}
-                    className="relative flex flex-col justify-between p-2.5 rounded-xl bg-gradient-to-br from-emerald-50 via-white to-teal-50 border-2 border-emerald-500/80 hover:border-emerald-600 hover:bg-emerald-50 active:scale-[0.98] shadow-xs hover:shadow-md transition-all cursor-pointer text-left w-full group min-h-[76px]"
-                    title={`Abrir WhatsApp para falar com ${responsibleName}`}
-                  >
-                    <div className="flex items-center justify-between w-full mb-1">
-                      <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-wider text-emerald-800 bg-emerald-100/90 px-1.5 py-0.5 rounded-md leading-none">
-                        <MessageCircle className="w-2.5 h-2.5 fill-current text-emerald-600" />
-                        Vendedor WhatsApp
-                      </span>
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    </div>
-
-                    <div className="flex items-center gap-2 w-full my-0.5 min-w-0">
-                      <div className="w-7 h-7 rounded-lg bg-[#FF5E00] text-white flex items-center justify-center font-black text-xs shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-                        {responsibleName ? responsibleName.charAt(0).toUpperCase() : <UserCheck className="w-3.5 h-3.5" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-black text-slate-900 truncate leading-tight group-hover:text-emerald-700 transition-colors">
-                          {responsibleName}
-                        </p>
-                        <p className="text-[10px] text-emerald-700 font-bold truncate leading-tight mt-0.5 flex items-center gap-0.5">
-                          {responsiblePhone ? (
-                            <>
-                              <Phone className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                              <span>{formatPhoneDisplay(responsiblePhone)}</span>
-                            </>
-                          ) : (
-                            <span className="text-slate-400 italic">Toque para cadastrar tel</span>
-                          )}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="w-full mt-1 pt-1 border-t border-emerald-100/90 flex items-center justify-between text-[9.5px] font-black text-emerald-700">
-                      <span className="flex items-center gap-1">
-                        <MessageCircle className="w-3 h-3 fill-current text-emerald-600" />
-                        <span>Abrir WhatsApp</span>
-                      </span>
-                      <span className="text-emerald-600 text-[11px] group-hover:translate-x-0.5 transition-transform">➔</span>
-                    </div>
-                  </button>
-                ) : (
-                  /* MODO EDIÇÃO ATIVO: CAMPO EDITÁVEL COM BOTÃO EDITAR E REMOVER */
-                  <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-orange-50/90 via-white to-amber-50/60 border-2 border-red-300 shadow-2xs hover:shadow-xs transition-all">
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <span className="inline-flex items-center gap-1 text-[8.5px] sm:text-[9px] font-black uppercase tracking-wider text-[#FF5E00] bg-orange-100/90 px-1.5 py-0.5 rounded-md leading-none">
-                        <UserCheck className="w-2.5 h-2.5" />
-                        Vendedor (Editando)
-                      </span>
-                      <div className="flex items-center gap-0.5">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setIsSellerModalOpen(true);
-                          }}
-                          className="text-[9px] font-bold text-[#FF5E00] hover:text-orange-900 bg-white hover:bg-orange-100/80 border border-orange-200/90 px-1.5 py-0.5 rounded flex items-center gap-0.5 transition-colors cursor-pointer"
-                          title="Trocar vendedor / responsável"
-                        >
-                          <Edit3 className="w-2.5 h-2.5" />
-                          Trocar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (!selectedPlace) return;
-                            updatePlaceDetails(selectedPlace.id, {
-                              responsibleName: '',
-                              responsiblePhone: '',
-                              sellerName: '',
-                              sellerPhone: '',
-                              managerName: '',
-                              managerPhone: ''
-                            });
-                          }}
-                          className="text-slate-400 hover:text-rose-600 p-0.5 rounded transition-colors cursor-pointer"
-                          title="Remover vendedor / responsável"
-                        >
-                          <X className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => setIsSellerModalOpen(true)}
-                      className="flex items-center gap-1.5 text-left w-full my-0.5 group text-inherit min-w-0 cursor-pointer"
-                      title="Clique para editar vendedor / responsável ou buscar na agenda"
-                    >
-                      <div className="w-6 h-6 rounded-lg bg-[#FF5E00] text-white flex items-center justify-center font-black text-[11px] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-                        {responsibleName ? responsibleName.charAt(0).toUpperCase() : <UserCheck className="w-3 h-3" />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[11.5px] sm:text-xs font-black text-slate-900 truncate leading-tight group-hover:text-[#FF5E00] transition-colors">
-                          {responsibleName}
-                        </p>
-                        <p className="text-[9.5px] text-slate-500 font-semibold truncate leading-tight mt-0.5 flex items-center gap-0.5">
-                          {responsiblePhone ? (
-                            <>
-                              <Phone className="w-2 h-2 text-slate-400 shrink-0" />
-                              <span>{formatPhoneDisplay(responsiblePhone)}</span>
-                            </>
-                          ) : (
-                            <span className="text-slate-400 italic">Sem telefone</span>
-                          )}
-                        </p>
-                      </div>
-                    </button>
+                {isCounterpartPickerOpen && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-2 space-y-1.5 shadow-sm">
+                    <input
+                      autoFocus
+                      value={counterpartQuery}
+                      onChange={event => setCounterpartQuery(event.target.value)}
+                      placeholder={`Buscar local de ${counterpartLabel}...`}
+                      className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-[#0B5187]"
+                    />
+                    {counterpartResults.map(result => (
+                      <button
+                        key={result.id}
+                        type="button"
+                        onClick={() => applyCounterpartLocation(result)}
+                        className="w-full rounded-lg border border-slate-200 p-2 text-left hover:border-[#0B5187] hover:bg-blue-50/50 cursor-pointer"
+                      >
+                        <p className="text-xs font-black text-slate-900 break-words">{result.name}</p>
+                        <p className="text-[10px] text-slate-500 break-words">{result.address}</p>
+                      </button>
+                    ))}
                   </div>
-                )
-              ) : isDriverRole ? null : (
-                /* Card Vendedor Vazio - Campo para adicionar */
-                <div className="relative flex flex-col justify-between p-2 rounded-xl bg-gradient-to-br from-orange-50/50 via-white to-amber-50/30 border-2 border-dashed border-orange-200 hover:border-[#FF5E00] hover:bg-orange-50/60 transition-all min-h-[74px]">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canEdit) {
-                        handleLockedEditAttempt();
-                        return;
-                      }
-                      setIsSellerModalOpen(true);
-                    }}
-                    className={`flex flex-col items-center justify-center text-center w-full flex-1 ${canEdit ? 'cursor-pointer group' : 'cursor-default opacity-80'}`}
-                  >
-                    <div className="w-6 h-6 rounded-lg bg-orange-100/90 group-hover:bg-[#FF5E00] text-[#FF5E00] group-hover:text-white flex items-center justify-center mb-1 transition-all shadow-2xs group-hover:scale-105">
-                      <UserCheck className="w-3 h-3" />
-                    </div>
-                    <span className="text-[11px] font-black text-[#FF5E00] block leading-tight">
-                      + Vendedor (Responsável)
-                    </span>
-                    <span className="text-[9px] text-slate-400 font-medium block leading-tight mt-0.5">
-                      Quem atende no local
-                    </span>
-                  </button>
-
-                  {/* Atalho Inteligente: Copiar do Cliente com 1 clique se houver cliente preenchido */}
-                  {hasCustomer && canEdit && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (!selectedPlace) return;
-                        updatePlaceDetails(selectedPlace.id, {
-                          responsibleName: customerName,
-                          responsiblePhone: customerPhone,
-                          sellerName: customerName,
-                          sellerPhone: customerPhone,
-                          managerName: customerName,
-                          managerPhone: customerPhone
-                        });
-                      }}
-                      className="mt-1 w-full py-0.5 px-1 rounded-md bg-orange-100 hover:bg-orange-200 active:bg-orange-300 text-[#FF5E00] text-[8.5px] font-black flex items-center justify-center gap-0.5 transition-colors cursor-pointer shadow-2xs leading-tight"
-                      title="Copiar dados do cliente para o vendedor / responsável"
-                    >
-                      <Check className="w-2.5 h-2.5 stroke-[3]" />
-                      <span>Mesmo do cliente</span>
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
+                )}
+              </div>
             )}
+
 
             {/* Rota, pontos e configurações em um único painel compacto. */}
             {hasCustomerRoute ? (
@@ -3669,7 +3657,7 @@ ${horarioText}
                 <div className="text-[11px] space-y-1.5 bg-white p-2.5 rounded-xl border border-slate-200/80 shadow-2xs">
                   {operationType === 'coleta' && (
                     <>
-                      <div className="flex items-start gap-2">
+                      <div className={`flex items-start gap-2${isDriverRole && 'pickup' !== activeRoutePoint ? ' hidden' : ''}`}>
                         <span className="w-4 h-4 rounded-full bg-blue-100 text-[#0B5187] font-black text-[9px] flex items-center justify-center shrink-0 mt-0.5">
                           1
                         </span>
@@ -3682,9 +3670,10 @@ ${horarioText}
                           </p>
                           {renderRoutePointDetails('pickup')}
                           {renderDraftRoutePointActions('pickup')}
+                          {renderViewRoutePointActions('pickup')}
                         </div>
                       </div>
-                      <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
+                      <div className={`flex items-start gap-2 pt-1.5 border-t border-slate-100${isDriverRole && 'delivery' !== activeRoutePoint ? ' hidden' : ''}`}>
                         <span className="w-4 h-4 rounded-full bg-emerald-100 text-emerald-700 font-black text-[9px] flex items-center justify-center shrink-0 mt-0.5">
                           2
                         </span>
@@ -3697,6 +3686,7 @@ ${horarioText}
                           </p>
                           {renderRoutePointDetails('delivery')}
                           {renderDraftRoutePointActions('delivery')}
+                          {renderViewRoutePointActions('delivery')}
                         </div>
                       </div>
                     </>
@@ -3704,7 +3694,7 @@ ${horarioText}
 
                   {operationType === 'entrega' && (
                     <>
-                      <div className="flex items-start gap-2">
+                      <div className={`flex items-start gap-2${isDriverRole && 'pickup' !== activeRoutePoint ? ' hidden' : ''}`}>
                         <span className="w-4 h-4 rounded-full bg-orange-100 text-[#FF5E00] font-black text-[9px] flex items-center justify-center shrink-0 mt-0.5">
                           1
                         </span>
@@ -3717,9 +3707,10 @@ ${horarioText}
                           </p>
                           {renderRoutePointDetails('pickup')}
                           {renderDraftRoutePointActions('pickup')}
+                          {renderViewRoutePointActions('pickup')}
                         </div>
                       </div>
-                      <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
+                      <div className={`flex items-start gap-2 pt-1.5 border-t border-slate-100${isDriverRole && 'delivery' !== activeRoutePoint ? ' hidden' : ''}`}>
                         <span className="w-4 h-4 rounded-full bg-blue-100 text-[#0B5187] font-black text-[9px] flex items-center justify-center shrink-0 mt-0.5">
                           2
                         </span>
@@ -3732,6 +3723,7 @@ ${horarioText}
                           </p>
                           {renderRoutePointDetails('delivery')}
                           {renderDraftRoutePointActions('delivery')}
+                          {renderViewRoutePointActions('delivery')}
                         </div>
                       </div>
                     </>
@@ -3739,7 +3731,7 @@ ${horarioText}
 
                   {operationType === 'troca' && (
                     <>
-                      <div className="flex items-start gap-2">
+                      <div className={`flex items-start gap-2${isDriverRole && 'pickup' !== activeRoutePoint ? ' hidden' : ''}`}>
                         <span className="w-4 h-4 rounded-full bg-purple-100 text-purple-700 font-black text-[9px] flex items-center justify-center shrink-0 mt-0.5">
                           1
                         </span>
@@ -3752,9 +3744,10 @@ ${horarioText}
                           </p>
                           {renderRoutePointDetails('pickup')}
                           {renderDraftRoutePointActions('pickup')}
+                          {renderViewRoutePointActions('pickup')}
                         </div>
                       </div>
-                      <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
+                      <div className={`flex items-start gap-2 pt-1.5 border-t border-slate-100${isDriverRole && 'exchange' !== activeRoutePoint ? ' hidden' : ''}`}>
                         <span className="w-4 h-4 rounded-full bg-blue-100 text-[#0B5187] font-black text-[9px] flex items-center justify-center shrink-0 mt-0.5">
                           2
                         </span>
@@ -3767,9 +3760,10 @@ ${horarioText}
                           </p>
                           {renderRoutePointDetails('exchange')}
                           {renderDraftRoutePointActions('exchange')}
+                          {renderViewRoutePointActions('exchange')}
                         </div>
                       </div>
-                      <div className="flex items-start gap-2 pt-1.5 border-t border-slate-100">
+                      <div className={`flex items-start gap-2 pt-1.5 border-t border-slate-100${isDriverRole && 'delivery' !== activeRoutePoint ? ' hidden' : ''}`}>
                         <span className="w-4 h-4 rounded-full bg-emerald-100 text-emerald-700 font-black text-[9px] flex items-center justify-center shrink-0 mt-0.5">
                           3
                         </span>
@@ -3782,6 +3776,7 @@ ${horarioText}
                           </p>
                           {renderRoutePointDetails('delivery')}
                           {renderDraftRoutePointActions('delivery')}
+                          {renderViewRoutePointActions('delivery')}
                         </div>
                       </div>
                     </>
@@ -3789,225 +3784,17 @@ ${horarioText}
                 </div>
                 )}
 
-                {/* Botões de Ação para Traçar / Atualizar Rota no Mapa */}
-                <div className="flex items-center gap-2">
+                {activeRoute && (
                   <button
                     type="button"
-                    onClick={handleTraceOrderRoute}
-                    disabled={isTracingRoute}
-                    className="flex-1 py-2 px-3 rounded-xl bg-[#0B5187] hover:bg-[#083D66] active:scale-95 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer disabled:opacity-60"
+                    onClick={clearActiveRoute}
+                    className="w-full py-2 px-3 rounded-xl bg-slate-200 hover:bg-slate-300 active:scale-95 text-slate-700 font-bold text-xs transition-colors cursor-pointer"
+                    title="Ocultar rota ativa do mapa"
                   >
-                    <Navigation className="w-3.5 h-3.5 fill-current" />
-                    <span>{isTracingRoute ? 'Calculando Rota...' : activeRoute ? 'Atualizar Rota no Mapa' : 'Traçar Rota no Mapa'}</span>
+                    Ocultar rota do mapa
                   </button>
-                  {activeRoute && (
-                    <button
-                      type="button"
-                      onClick={clearActiveRoute}
-                      className="py-2 px-3 rounded-xl bg-slate-200 hover:bg-slate-300 active:scale-95 text-slate-700 font-bold text-xs transition-colors cursor-pointer"
-                      title="Ocultar rota ativa do mapa"
-                    >
-                      Ocultar
-                    </button>
-                  )}
-                </div>
+                )}
 
-            {/* Configurações individuais das paradas quando há rota até o cliente. */}
-              <div className={isNewOrderDraft ? 'hidden' : 'border-t border-slate-200/80 pt-2 space-y-2'}>
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-[10px] font-black uppercase tracking-wider text-slate-700">Coleta e entrega</p>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 min-w-0">
-                {(['pickup', 'delivery'] as const).map(point => {
-                  const pickup = point === 'pickup';
-                  const operation = pickup ? 'coleta' : 'entrega';
-                  const pointVisibility = pickup
-                    ? selectedPlace.pickupVisibility || (selectedPlace.operationType === operation ? selectedPlace.orderVisibility : undefined) || 'publico'
-                    : selectedPlace.deliveryVisibility || (selectedPlace.operationType === operation ? selectedPlace.orderVisibility : undefined) || 'publico';
-                  const driverId = pickup
-                    ? selectedPlace.pickupAssignedDriverId || (selectedPlace.operationType === operation ? selectedPlace.assignedDriverId : undefined)
-                    : selectedPlace.deliveryAssignedDriverId || (selectedPlace.operationType === operation ? selectedPlace.assignedDriverId : undefined);
-                  const driverName = pickup
-                    ? selectedPlace.pickupAssignedDriverName || (selectedPlace.operationType === operation ? selectedPlace.assignedDriverName : undefined)
-                    : selectedPlace.deliveryAssignedDriverName || (selectedPlace.operationType === operation ? selectedPlace.assignedDriverName : undefined);
-                  const driverPhone = pickup
-                    ? selectedPlace.pickupAssignedDriverPhone || (selectedPlace.operationType === operation ? selectedPlace.assignedDriverPhone : undefined)
-                    : selectedPlace.deliveryAssignedDriverPhone || (selectedPlace.operationType === operation ? selectedPlace.assignedDriverPhone : undefined);
-                  const assignedDriver = drivers.find(driver =>
-                    (driverId && (driver.id === driverId || driver.id.replace(/\D/g, '') === driverId.replace(/\D/g, ''))) ||
-                    (driverPhone && driver.phone?.replace(/\D/g, '') === driverPhone.replace(/\D/g, ''))
-                  );
-                  const pointNotes = pickup
-                    ? selectedPlace.pickupNotes || selectedPlace.observations || ''
-                    : selectedPlace.deliveryNotes || selectedPlace.observations || '';
-                  const pointAddress = pickup
-                    ? orderResolvedLocations?.pickupAddress
-                    : orderResolvedLocations?.deliveryAddress;
-
-                  return (
-                    <section
-                      key={point}
-                      className={`min-w-0 rounded-xl border p-2 space-y-2 ${pickup ? 'bg-blue-50/70 border-blue-200' : 'bg-orange-50/70 border-orange-200'}`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className={`text-[11px] font-black uppercase ${pickup ? 'text-[#0B5187]' : 'text-orange-800'}`}>
-                            {pickup ? 'Coleta' : 'Entrega'}
-                          </p>
-                          <p className="text-[11px] text-slate-700 font-semibold break-words">
-                            {pointAddress || (pickup ? selectedPlace.pickupAddress : selectedPlace.deliveryAddress) || 'Endereço não informado'}
-                          </p>
-                        </div>
-                        <div className="inline-flex p-0.5 rounded-lg bg-white border border-slate-200 shrink-0">
-                          {(['publico', 'privado'] as const).map(visibility => {
-                            const active = pointVisibility === visibility;
-                            const Icon = visibility === 'publico' ? Globe : Lock;
-                            return canManageDriverAssignment && canEdit && !isNewOrderDraft ? (
-                              <button
-                                key={visibility}
-                                type="button"
-                                onClick={() => updateRoutePointVisibility(point, visibility)}
-                                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-black ${active
-                                  ? visibility === 'publico' ? 'bg-emerald-600 text-white' : 'bg-[#0B5187] text-white'
-                                  : 'text-slate-500 hover:bg-slate-100'}`}
-                                title={`${pickup ? 'Coleta' : 'Entrega'} ${visibility}`}
-                              >
-                                <Icon className="w-3 h-3" />
-                                {visibility === 'publico' ? 'Público' : 'Privado'}
-                              </button>
-                            ) : active ? (
-                              <span key={visibility} className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[9px] font-black ${visibility === 'publico' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-[#0B5187]'}`}>
-                                <Icon className="w-3 h-3" />
-                                {visibility === 'publico' ? 'Público' : 'Privado'}
-                              </span>
-                            ) : null;
-                          })}
-                          </div>
-                        </div>
-
-                      {pointVisibility === 'privado' && (
-                        <div className="flex items-center justify-between gap-2 rounded-lg bg-white/80 border border-slate-200 p-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <UserCheck className="w-4 h-4 text-[#0B5187] shrink-0" />
-                            <div className="min-w-0">
-                              <p className="text-[10px] font-black text-slate-800 truncate">
-                                {driverName || assignedDriver?.name || (driverId ? `Motorista #${driverId}` : 'Aguardando motorista')}
-                              </p>
-                              <p className="text-[9px] text-slate-500">
-                                {driverId || driverPhone ? 'Motorista desta parada' : 'Ponto privado sem atribuição'}
-                              </p>
-                            </div>
-                          </div>
-                          {canManageDriverAssignment && canEdit && !isNewOrderDraft && (
-                            <div className="flex gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setRouteDriverTarget(point);
-                                  setIsDriverSelectorOpen(true);
-                                }}
-                                className="px-2 py-1 rounded-md bg-blue-50 text-[#0B5187] border border-blue-200 text-[9px] font-black"
-                              >
-                                {driverId || driverPhone ? 'Alterar' : 'Atribuir'}
-                              </button>
-                              {(driverId || driverPhone) && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    handleRemoveDriverFromRoutePoint(point);
-                                  }}
-                                  className="px-2 py-1 rounded-md bg-white text-rose-600 border border-rose-200 text-[9px] font-black"
-                                >
-                                  Remover
-                                </button>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {renderRouteSellerCard(point, pickup ? 'coleta' : 'entrega', !isNewOrderDraft)}
-
-                      <div className="rounded-lg bg-white/80 border border-slate-200 p-2 space-y-1.5">
-                        <p className="text-[9px] font-black uppercase tracking-wide text-slate-600">Comentário da {pickup ? 'coleta' : 'entrega'}</p>
-                        {editingRouteComment === point ? (
-                          <>
-                            <textarea
-                              value={pickup ? editedPickupNotes : editedDeliveryNotes}
-                              onChange={event => pickup ? setEditedPickupNotes(event.target.value) : setEditedDeliveryNotes(event.target.value)}
-                              rows={2}
-                              placeholder={pickup ? 'Instruções para a coleta...' : 'Instruções para a entrega...'}
-                              className="w-full text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-lg p-2 focus:border-[#0B5187] focus:outline-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const updates: Partial<Place> = pickup
-                                  ? { pickupNotes: editedPickupNotes }
-                                  : { deliveryNotes: editedDeliveryNotes };
-                                updatePlaceDetails(selectedPlace.id, updates);
-                                setEditingRouteComment(null);
-                                setSaveSuccessToast(`Comentário da ${pickup ? 'coleta' : 'entrega'} salvo.`);
-                                setTimeout(() => setSaveSuccessToast(null), 3000);
-                              }}
-                              className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[9px] font-black"
-                            >
-                              Salvar comentário
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingRouteComment(null)}
-                              className="ml-1 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 text-[9px] font-black"
-                            >
-                              Cancelar
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!canEdit) {
-                                handleLockedEditAttempt();
-                                return;
-                              }
-                              if (pickup) setEditedPickupNotes(pointNotes);
-                              else setEditedDeliveryNotes(pointNotes);
-                              setEditingRouteComment(point);
-                            }}
-                            className="w-full text-left text-[11px] text-slate-700 font-semibold whitespace-pre-wrap break-words rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5187] disabled:cursor-default"
-                            aria-label={`Editar comentário da ${pickup ? 'coleta' : 'entrega'}`}
-                            title={canEdit ? 'Toque para adicionar ou editar o comentário' : undefined}
-                          >
-                            {pointNotes || <span className="text-slate-400 italic font-normal">Toque para adicionar um comentário.</span>}
-                          </button>
-                        )}
-                      </div>
-                    </section>
-                  );
-                })}
-              </div>
-
-              {isExchange && (
-                <section className="rounded-xl border border-purple-200 bg-purple-50/70 p-2 space-y-2">
-                  <div>
-                    <p className="text-[11px] font-black uppercase text-purple-800">Ponto de troca</p>
-                    <p className="text-[11px] text-slate-700 font-semibold break-words">
-                      {selectedPlace.exchangeAddress || selectedPlace.exchangeName || selectedPlace.address || 'Endereço não informado'}
-                    </p>
-                  </div>
-                  {renderRouteSellerCard('exchange', 'troca', !isNewOrderDraft)}
-                  <div className="rounded-lg border border-slate-200 bg-white/80 p-2">
-                    <p className="text-[9px] font-black uppercase tracking-wide text-slate-600">Comentário da troca</p>
-                    <p className="mt-1 whitespace-pre-wrap break-words text-[11px] font-semibold text-slate-700">
-                      {selectedPlace.exchangeNotes || selectedPlace.observations || (
-                        <span className="text-slate-400 italic font-normal">Sem comentário na troca.</span>
-                      )}
-                    </p>
-                  </div>
-                </section>
-              )}
-              </div>
             </div>
             ) : (
             !isNewOrderDraft && !isDriverRole && (() => {
@@ -4203,13 +3990,15 @@ ${horarioText}
             })()
             )}
 
-            {isNewOrderDraft && canEdit && !hasCustomerRoute && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3 shadow-2xs shrink-0">
-                <label className="block text-[11px] font-black uppercase tracking-wider text-amber-950">
-                  Comentários / observações
+            {canEdit && !hasCustomerRoute && (
+              <div className="rounded-2xl border-2 border-red-300 bg-red-50/70 p-3 shadow-sm shrink-0">
+                <label className="block text-[11px] font-black uppercase tracking-wider text-red-700">
+                  Observações
                   <textarea
-                    value={draftOrderComment}
+                    ref={isNewOrderDraft ? draftObservationRef : undefined}
+                    value={isNewOrderDraft ? draftOrderComment : (selectedPlace.observations || '')}
                     onChange={event => {
+                      if (isNewOrderDraft) draftObservationEditedRef.current = true;
                       const comment = event.target.value;
                       setDraftOrderComment(comment);
                       const routeNote = operationType === 'troca'
@@ -4221,272 +4010,9 @@ ${horarioText}
                     }}
                     placeholder={`Instruções para ${operationType === 'coleta' ? 'a coleta' : operationType === 'troca' ? 'a troca' : 'a entrega'}...`}
                     rows={3}
-                    className="mt-1.5 w-full resize-y rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+                    className="mt-1.5 w-full resize-y rounded-xl border border-red-200 bg-white px-3 py-2 text-sm font-bold text-red-600 outline-none placeholder:font-medium placeholder:text-red-300 focus:border-red-500 focus:ring-2 focus:ring-red-100"
                   />
                 </label>
-              </div>
-            )}
-
-            {/* COMENTÁRIOS E OBSERVAÇÕES POR ETAPA (COLETA, ENTREGA E TROCA) */}
-            {!isNewOrderDraft && !hasCustomerRoute && (!isDriverRole || observations || selectedPlace.pickupNotes || selectedPlace.deliveryNotes || selectedPlace.exchangeNotes) && (
-              <div className="bg-gradient-to-br from-amber-50/90 via-white to-orange-50/40 rounded-2xl p-3 border border-amber-200/90 shadow-2xs space-y-2.5 shrink-0">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <FileText className="w-4 h-4 text-amber-700 stroke-[2.4]" />
-                    <span className="text-[11px] font-black uppercase tracking-wider text-amber-950">
-                      Comentários por Etapa {Boolean(operationType === 'troca' || selectedPlace.isExchangeOrder) ? '(Coleta, Troca, Entrega)' : '(Coleta e Entrega)'}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!canEdit) {
-                        handleLockedEditAttempt();
-                        return;
-                      }
-                      setIsEditingObservations(prev => {
-                        const next = !prev;
-                        if (next) {
-                          setEditedPickupNotes(selectedPlace.pickupNotes || '');
-                          setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
-                          setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
-                          setEditedObservations(observations || '');
-                        }
-                        return next;
-                      });
-                    }}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-100 text-amber-950 border border-amber-300 rounded-lg text-[10px] font-black transition-all cursor-pointer shadow-2xs active:scale-95"
-                  >
-                    <Edit3 className="w-3 h-3 stroke-[2.5]" />
-                    <span>{isEditingObservations ? 'Fechar' : 'Editar Comentários'}</span>
-                  </button>
-                </div>
-
-                {isEditingObservations ? (
-                  <div className="space-y-3 pt-1 animate-in fade-in duration-150">
-                    {/* 1. Comentário da Coleta */}
-                    <div className="space-y-1.5 p-2.5 rounded-xl bg-blue-50/80 border border-blue-200">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[11px] font-black uppercase text-[#0B5187] flex items-center gap-1">
-                          <ArrowDownToLine className="w-3.5 h-3.5 stroke-[2.8]" />
-                          <span>1. Comentário da Coleta</span>
-                        </label>
-                        <span className="text-[10px] text-blue-700 font-bold">Origem</span>
-                      </div>
-                      <textarea
-                        value={editedPickupNotes}
-                        onChange={(e) => setEditedPickupNotes(e.target.value)}
-                        placeholder="Ex: Pegar na recepção, procurar por Maria, exigir nota fiscal..."
-                        rows={2}
-                        className="w-full text-xs font-semibold text-slate-800 bg-white border border-blue-300 rounded-xl p-2 focus:border-[#0B5187] focus:outline-none focus:ring-1 focus:ring-[#0B5187]"
-                      />
-                      <div className="flex flex-wrap gap-1">
-                        {[
-                          '🏢 Portaria social',
-                          '🔔 Tocar interfone',
-                          '📞 Ligar antes de chegar',
-                          '📦 Retirar no balcão',
-                          '📄 Pegar nota fiscal'
-                        ].map((chip) => (
-                          <button
-                            key={chip}
-                            type="button"
-                            onClick={() => {
-                              setEditedPickupNotes(prev => prev ? `${prev} • ${chip}` : chip);
-                            }}
-                            className="px-2 py-0.5 bg-white hover:bg-blue-100 border border-blue-200 rounded-md text-[9.5px] font-bold text-[#0B5187] transition-colors cursor-pointer"
-                          >
-                            {chip}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* 2. Comentário da Troca (exibido sempre que for pedido de Troca) */}
-                    {(operationType === 'troca' || selectedPlace.isExchangeOrder) && (
-                      <div className="space-y-1.5 p-2.5 rounded-xl bg-purple-50/80 border border-purple-200">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[11px] font-black uppercase text-purple-900 flex items-center gap-1">
-                            <Repeat className="w-3.5 h-3.5 stroke-[2.8]" />
-                            <span>2. Comentário da Troca</span>
-                          </label>
-                          <span className="text-[10px] text-purple-700 font-bold">Local da Troca</span>
-                        </div>
-                        <textarea
-                          value={editedExchangeNotes}
-                          onChange={(e) => setEditedExchangeNotes(e.target.value)}
-                          placeholder="Ex: Conferir tamanho do calçado, receber peça antiga na caixa original..."
-                          rows={2}
-                          className="w-full text-xs font-semibold text-slate-800 bg-white border border-purple-300 rounded-xl p-2 focus:border-purple-600 focus:outline-none focus:ring-1 focus:ring-purple-600"
-                        />
-                        <div className="flex flex-wrap gap-1">
-                          {[
-                            '🔄 Conferir peça/tamanho',
-                            '📦 Receber produto antigo',
-                            '🏷️ Conferir etiqueta',
-                            '📞 Chamar cliente no portão'
-                          ].map((chip) => (
-                            <button
-                              key={chip}
-                              type="button"
-                              onClick={() => {
-                                setEditedExchangeNotes(prev => prev ? `${prev} • ${chip}` : chip);
-                              }}
-                              className="px-2 py-0.5 bg-white hover:bg-purple-100 border border-purple-200 rounded-md text-[9.5px] font-bold text-purple-900 transition-colors cursor-pointer"
-                            >
-                              {chip}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 3. Comentário da Entrega (Destino final / Retorno na troca) */}
-                    <div className="space-y-1.5 p-2.5 rounded-xl bg-orange-50/80 border border-orange-200">
-                      <div className="flex items-center justify-between">
-                        <label className="text-[11px] font-black uppercase text-[#FF5E00] flex items-center gap-1">
-                          <Package className="w-3.5 h-3.5 stroke-[2.8]" />
-                          <span>{Boolean(operationType === 'troca' || selectedPlace.isExchangeOrder) ? '3. Comentário da Entrega / Retorno' : '2. Comentário da Entrega'}</span>
-                        </label>
-                        <span className="text-[10px] text-orange-700 font-bold">Destino</span>
-                      </div>
-                      <textarea
-                        value={editedDeliveryNotes}
-                        onChange={(e) => setEditedDeliveryNotes(e.target.value)}
-                        placeholder="Ex: Deixar na portaria com o porteiro, ligar antes, cuidado com cão..."
-                        rows={2}
-                        className="w-full text-xs font-semibold text-slate-800 bg-white border border-orange-300 rounded-xl p-2 focus:border-[#FF5E00] focus:outline-none focus:ring-1 focus:ring-[#FF5E00]"
-                      />
-                      <div className="flex flex-wrap gap-1">
-                        {[
-                          '🚪 Deixar na portaria',
-                          '👥 Deixar com vizinho',
-                          '🔔 Tocar interfone/campainha',
-                          '🐕 Cuidado cão bravo',
-                          '✍️ Colher assinatura'
-                        ].map((chip) => (
-                          <button
-                            key={chip}
-                            type="button"
-                            onClick={() => {
-                              setEditedDeliveryNotes(prev => prev ? `${prev} • ${chip}` : chip);
-                            }}
-                            className="px-2 py-0.5 bg-white hover:bg-orange-100 border border-orange-200 rounded-md text-[9.5px] font-bold text-orange-950 transition-colors cursor-pointer"
-                          >
-                            {chip}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setIsEditingObservations(false)}
-                        className="px-3 py-1 rounded-lg text-xs font-bold text-slate-600 hover:bg-slate-200 transition-colors cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const isExchangeOrderActive = operationType === 'troca' || Boolean(selectedPlace.isExchangeOrder);
-                          const combined = [
-                            editedPickupNotes ? `[Coleta] ${editedPickupNotes}` : null,
-                            isExchangeOrderActive && editedExchangeNotes ? `[Troca] ${editedExchangeNotes}` : null,
-                            editedDeliveryNotes ? `[Entrega] ${editedDeliveryNotes}` : null
-                          ].filter(Boolean).join(' • ');
-
-                          const updatedDetails: Partial<Place> = {
-                            pickupNotes: editedPickupNotes,
-                            exchangeNotes: isExchangeOrderActive ? editedExchangeNotes : undefined,
-                            deliveryNotes: editedDeliveryNotes,
-                            observations: combined || editedObservations
-                          };
-
-                          updatePlaceDetails(selectedPlace.id, updatedDetails);
-                          setSelectedPlace({ ...selectedPlace, ...updatedDetails });
-                          setIsEditingObservations(false);
-                          setSaveSuccessToast('✅ Comentários atualizados com sucesso!');
-                          setTimeout(() => setSaveSuccessToast(null), 3000);
-                        }}
-                        className="px-3.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer active:scale-95"
-                      >
-                        <Check className="w-3.5 h-3.5 stroke-[3]" />
-                        <span>Salvar Comentários</span>
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  /* MODO DE VISUALIZAÇÃO DOS COMENTÁRIOS DAS ETAPAS */
-                  <div 
-                    onClick={() => {
-                      if (!isEditingObservations && canEdit) {
-                        setEditedPickupNotes(selectedPlace.pickupNotes || '');
-                        setEditedExchangeNotes(selectedPlace.exchangeNotes || '');
-                        setEditedDeliveryNotes(selectedPlace.deliveryNotes || '');
-                        setEditedObservations(observations || '');
-                        setIsEditingObservations(true);
-                      }
-                    }}
-                    className={`space-y-2 text-xs text-slate-800 ${canEdit ? 'cursor-pointer hover:opacity-95' : ''}`}
-                    title={canEdit ? "Toque para editar os comentários das etapas" : undefined}
-                  >
-                    {/* Linha Coleta */}
-                    <div className="flex items-start gap-2 p-2 rounded-xl bg-blue-50/60 border border-blue-200/80">
-                      <span className="px-1.5 py-0.5 rounded-md bg-[#0B5187] text-white font-black text-[9px] uppercase shrink-0 flex items-center gap-1">
-                        <ArrowDownToLine className="w-2.5 h-2.5" />
-                        Coleta
-                      </span>
-                      <p className="flex-1 font-semibold text-slate-800 break-words leading-snug">
-                        {selectedPlace.pickupNotes ? (
-                          selectedPlace.pickupNotes
-                        ) : (
-                          <span className="text-slate-400 italic font-normal">Sem comentário na coleta.</span>
-                        )}
-                      </p>
-                    </div>
-
-                    {/* Linha Troca (se for troca) */}
-                    {(operationType === 'troca' || selectedPlace.isExchangeOrder) && (
-                      <div className="flex items-start gap-2 p-2 rounded-xl bg-purple-50/60 border border-purple-200/80">
-                        <span className="px-1.5 py-0.5 rounded-md bg-purple-700 text-white font-black text-[9px] uppercase shrink-0 flex items-center gap-1">
-                          <Repeat className="w-2.5 h-2.5" />
-                          Troca
-                        </span>
-                        <p className="flex-1 font-semibold text-slate-800 break-words leading-snug">
-                          {selectedPlace.exchangeNotes ? (
-                            selectedPlace.exchangeNotes
-                          ) : (
-                            <span className="text-slate-400 italic font-normal">Sem comentário na troca.</span>
-                          )}
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Linha Entrega */}
-                    <div className="flex items-start gap-2 p-2 rounded-xl bg-orange-50/60 border border-orange-200/80">
-                      <span className="px-1.5 py-0.5 rounded-md bg-[#FF5E00] text-white font-black text-[9px] uppercase shrink-0 flex items-center gap-1">
-                        <Package className="w-2.5 h-2.5" />
-                        {Boolean(operationType === 'troca' || selectedPlace.isExchangeOrder) ? 'Entrega/Retorno' : 'Entrega'}
-                      </span>
-                      <p className="flex-1 font-semibold text-slate-800 break-words leading-snug">
-                        {selectedPlace.deliveryNotes ? (
-                          selectedPlace.deliveryNotes
-                        ) : (
-                          <span className="text-slate-400 italic font-normal">Sem comentário na entrega.</span>
-                        )}
-                      </p>
-                    </div>
-
-                    {/* Se tiver observação legada que não se encaixa nas 3 */}
-                    {observations && !selectedPlace.pickupNotes && !selectedPlace.deliveryNotes && !selectedPlace.exchangeNotes && (
-                      <p className="text-[11px] text-slate-600 italic bg-white p-1.5 rounded-lg border border-slate-200">
-                        {observations}
-                      </p>
-                    )}
-                  </div>
-                )}
               </div>
             )}
 
@@ -5209,6 +4735,7 @@ ${horarioText}
                   <button
                     type="button"
                     onClick={() => galleryInputRef.current?.click()}
+                    disabled={isFinalizingPhoto}
                     className="w-full py-2.5 px-4 rounded-2xl bg-white/15 hover:bg-white/25 text-white font-bold text-xs flex items-center justify-center gap-2 border border-white/20 cursor-pointer active:scale-95 transition-all"
                   >
                     <ImageIcon className="w-4 h-4 text-amber-300" />
@@ -5440,12 +4967,8 @@ ${horarioText}
                       >
                         <img 
                           src={mdPhoto} 
-                          alt={`Foto ${index + 1}`} 
+                          alt={`Foto ${index + 1} indisponível`}
                           className="w-full h-full object-cover" 
-                          onError={(e) => {
-                            e.currentTarget.onerror = null;
-                            e.currentTarget.src = 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=300&auto=format&fit=crop&q=80';
-                          }}
                         />
                         <button
                           type="button"
@@ -5492,6 +5015,7 @@ ${horarioText}
               <button
                 type="button"
                 onClick={handleTakeShutterPhoto}
+                disabled={isFinalizingPhoto}
                 title="Tirar Foto"
                 className="relative w-19 h-19 rounded-full border-4 border-white flex items-center justify-center transition-transform active:scale-90 shadow-2xl group focus:outline-none cursor-pointer shrink-0"
               >
@@ -5502,6 +5026,7 @@ ${horarioText}
               <button
                 type="button"
                 onClick={() => handleFinalizeRegistration()}
+                disabled={isFinalizingPhoto}
                 className={`h-[52px] px-4 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-xl backdrop-blur-md transition-all active:scale-95 cursor-pointer shrink-0 ${
                   operationStatus === 'failed'
                     ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/35 border border-rose-400'
@@ -5521,7 +5046,7 @@ ${horarioText}
                 ) : (
                   <>
                     <Check className="w-4 h-4 stroke-[3]" />
-                    <span className="whitespace-nowrap">Finalizar</span>
+                    <span className="whitespace-nowrap">{isFinalizingPhoto ? 'Salvando...' : 'Finalizar'}</span>
                   </>
                 )}
               </button>
@@ -5559,11 +5084,7 @@ ${horarioText}
                   {firstPhoto ? (
                     <img 
                       src={firstPhoto} 
-                      alt="Foto da Encomenda" 
-                      onError={(e) => {
-                        e.currentTarget.onerror = null;
-                        e.currentTarget.src = 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=300&auto=format&fit=crop&q=80';
-                      }}
+                      alt="Foto da encomenda indisponível"
                       className="w-full h-full object-cover" 
                     />
                   ) : (
@@ -5727,15 +5248,7 @@ ${horarioText}
                             >
                               <img 
                                 src={mdPhoto} 
-                                alt={`Foto ${index + 1}`} 
-                                onError={(e) => {
-                                  if (e.currentTarget.src !== mdPhoto) {
-                                    e.currentTarget.src = mdPhoto;
-                                    return;
-                                  }
-                                  e.currentTarget.onerror = null;
-                                  e.currentTarget.src = 'https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=300&auto=format&fit=crop&q=80';
-                                }}
+                                alt={`Foto ${index + 1} indisponível`}
                                 className="w-full h-full object-cover transition-transform group-hover:scale-105"
                               />
                               <button
@@ -5954,6 +5467,7 @@ ${horarioText}
               <button
                 type="button"
                 onClick={() => handleSaveOperation()}
+                disabled={isFinalizingPhoto}
                 className={`px-5 py-2.5 rounded-xl text-white font-black text-xs sm:text-sm flex items-center gap-1.5 shadow-md hover:shadow-lg transition-all active:scale-95 ${
                   operationStatus === 'success'
                     ? 'bg-emerald-600 hover:bg-emerald-700'
@@ -6189,8 +5703,8 @@ ${horarioText}
         onSelectDriver={routeDriverTarget ? handleSelectDriverForRoutePoint : handleSelectDriverForPlace}
         onRemoveDriver={routeDriverTarget ? handleRemoveDriverFromRoutePoint : handleRemoveDriverFromPlace}
         activeTelemetryDrivers={drivers}
-        visibility={isNewOrderDraft && getRouteDriver(routeDriverTarget || activeRoutePoint).visibility === 'privado' ? 'privado' : isNewOrderDraft ? 'publico' : undefined}
-        onVisibilityChange={isNewOrderDraft ? handleDraftVisibilityChange : undefined}
+        visibility={(isNewOrderDraft || (canManageDriverAssignment && routeDriverTarget)) ? (getRouteDriver(routeDriverTarget || activeRoutePoint).visibility === 'privado' ? 'privado' : 'publico') : undefined}
+        onVisibilityChange={(isNewOrderDraft || (canManageDriverAssignment && routeDriverTarget)) ? handleDraftVisibilityChange : undefined}
       />
 
       {/* MODAL DA ETAPA FINAL COM TRAÇADO DA ROTA, PREÇOS DISCRIMINADOS E WHATSAPP */}

@@ -112,3 +112,28 @@ test('makes a publicly claimed order available again after its assignment is rem
   assignmentStore.delete('306_coleta');
   assert.equal(canCallerSeeOrder(order, deliveryDriver), true);
 });
+
+test('reserves the order after collection to its collector even if delivery was public or assigned to another driver', () => {
+  const order = {
+    id: 401, etapa: 'coletado', tipo_encomenda: 'entrega',
+    coleta_user_id: pickupDriver.id, coleta_saida_at: '2026-11-04T15:00:00Z',
+    deliveryVisibility: 'publico', deliveryAssignedDriverId: String(deliveryDriver.id)
+  };
+  assignmentStore.set('401_entrega', { orderId: '401_entrega', driverId: String(deliveryDriver.id) });
+  assert.equal(canCallerSeeOrder(order, pickupDriver), true);
+  assert.equal(canCallerSeeOrder(order, deliveryDriver), false);
+  assert.equal(canCallerSeeOrder(order, null), false);
+  assert.equal(canCallerSeeOrder(order, { id: 7, role: 'atendente', phone: '' }), true);
+  assert.equal(canCallerSeeOrder(order, { id: 8, role: 'admin_geral', phone: '' }), true);
+  for (const etapa of ['trocando', 'trocado', 'retornando', 'entregando']) {
+    assert.equal(canCallerSeeOrder({ ...order, etapa, tipo_encomenda: 'troca' }, pickupDriver), true);
+    assert.equal(canCallerSeeOrder({ ...order, etapa, tipo_encomenda: 'troca' }, deliveryDriver), false);
+  }
+});
+
+test('does not make a recorded collection public when its collector is missing', () => {
+  const order = { id: 402, etapa: 'coletado', coleta_saida_at: '2026-11-04T15:00:00Z', deliveryVisibility: 'publico' };
+  assert.equal(canCallerSeeOrder(order, pickupDriver), false);
+  assert.equal(canCallerSeeOrder(order, deliveryDriver), false);
+  assert.equal(canCallerSeeOrder(order, { id: 7, role: 'atendente', phone: '' }), true);
+});

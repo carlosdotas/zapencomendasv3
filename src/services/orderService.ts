@@ -128,7 +128,7 @@ class OrderService {
     userId?: string | number,
     userName?: string,
     proximity?: BaixaProximity
-  ): Promise<ApiResponse<{ pedido_id: string | number; etapa: string }>> {
+  ): Promise<ApiResponse<{ pedido_id: string | number; etapa: string; collection_owner_id?: string | number | null }>> {
     return request('/pedidos/marcar_coleta_entrega', 'POST', {
       pedido_id: cleanOrderId(pedidoId) || pedidoId,
       etapa,
@@ -165,6 +165,18 @@ class OrderService {
     campo: 'mercadoria_foto' | 'coleta_foto' | 'entrega_foto' = 'coleta_foto'
   ): Promise<ApiResponse<{ path: string }>> {
     return request('/pedidos/append_foto', 'POST', {
+      pedido_id: cleanOrderId(pedidoId) || pedidoId,
+      foto: fotoPath,
+      campo
+    });
+  }
+
+  public async removeFoto(
+    pedidoId: string | number,
+    fotoPath: string,
+    campo: 'coleta_foto' | 'entrega_foto'
+  ): Promise<ApiResponse> {
+    return request('/pedidos/remove_foto', 'POST', {
       pedido_id: cleanOrderId(pedidoId) || pedidoId,
       foto: fotoPath,
       campo
