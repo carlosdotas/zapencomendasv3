@@ -422,7 +422,18 @@ export async function searchAddress(query: string, customerName?: string): Promi
         }
       }
 
-      // Salva no cache local do cliente para economizar requisições futuras
+      // Salva no cache local do cliente e na memória do placeService para consultas futuras
+      for (const item of allResults) {
+        placeService.remember({
+          id: item.id,
+          name: item.name,
+          endereco: item.address,
+          lat: item.coordinates.lat,
+          lng: item.coordinates.lng,
+          cidade: item.destinationCity || item.originCity || 'Goiânia'
+        });
+      }
+
       searchMemoryCache.set(normKey, { timestamp: Date.now(), data: allResults });
       persistSearchCache();
 

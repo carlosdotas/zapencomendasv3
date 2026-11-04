@@ -3142,6 +3142,9 @@ export const NewOrderModal: React.FC = () => {
                   setSelectedCustomer(updatedCust);
                 }
               }}
+              routePointConfigs={routePointConfigs}
+              onUpdateRoutePointConfig={updateRoutePointConfig}
+              onSelectCustomer={handleSelectClientFromList}
             />
           )}
 

@@ -22,6 +22,7 @@ import { canClaimOrders } from '../../utils/canClaimOrders';
 import { fetchMultiStopRoute } from '../../services/routingService';
 import { getPlaceCalendarDate, isDateInInterval } from '../../utils/dateFilterUtils';
 import { companyService } from '../../services/companyService';
+import { getDriverPermanentColor } from '../../utils/driverColorUtils';
 
 import { CachedTileLayer } from '../../services/tileCache';
 
@@ -211,13 +212,25 @@ export const getPlaceDateBadgeInfo = (place: Place): { label: string; type: 'hoj
   };
 };
 
-// Helper para obter a primeira foto da encomenda (do localStorage, photos ou imageUrl)
+// Helper para obter a primeira foto da encomenda com cache em memória
+// (evita dezenas de acessos síncronos a disco via localStorage.getItem a cada render)
 // REGRA: Na entrega NÃO pode mostrar foto do local, deve mostrar foto apenas na COLETA
+const placePhotoMemoryCache = new Map<string, string | null>();
+
+export const clearPlacePhotoCache = (placeId?: string) => {
+  if (placeId) placePhotoMemoryCache.delete(placeId);
+  else placePhotoMemoryCache.clear();
+};
+
 export const getPlacePhoto = (place: Place): string | null => {
   if (!place) return null;
   const isColeta = place.operationType === 'coleta' || place.orderStage === 'coleta';
   if (!isColeta) {
     return null;
+  }
+
+  if (placePhotoMemoryCache.has(place.id)) {
+    return placePhotoMemoryCache.get(place.id)!;
   }
 
   let raw: string | null = null;
@@ -241,8 +254,9 @@ export const getPlacePhoto = (place: Place): string | null => {
       raw = place.imageUrl;
     }
   }
-  if (!raw) return null;
-  return formatPhotoUrl(raw, 'thumb') || raw;
+  const resolved = raw ? (formatPhotoUrl(raw, 'thumb') || raw) : null;
+  placePhotoMemoryCache.set(place.id, resolved);
+  return resolved;
 };
 
 // Helper para identificação clara de veículo (moto, carro, utilitário) com cores diferenciadas no fundo
@@ -1137,11 +1151,12 @@ export const get3DGmapsArrowSvg = (
 
 // Marcador do Motorista na tela do Admin / Atendente / Terminal (Mostra o Veículo 3D com a tag do motorista no centro da bola que pulsa)
 const createDriverMarkerIcon = (driver: Driver, isSelected: boolean) => {
+  const driverColor = getDriverPermanentColor(driver.id || driver.phone || driver.name);
   const vehicleEmoji = driver.vehicleType === 'moto' ? '🏍️' : driver.vehicleType === 'utilitario' ? '🚚' : '🚗';
   const headingAngle = typeof driver.heading === 'number' && !isNaN(driver.heading) ? Math.round(driver.heading) : 0;
   const parts = (driver.name || 'Motorista').trim().split(/\s+/);
   const cleanDriverName = parts.length > 1 ? `${parts[0]} ${parts[1]}` : parts[0];
-  const driverLabelBg = hexToRgba(driver.color, 0.92);
+  const driverLabelBg = hexToRgba(driverColor, 0.95);
 
   // A última hora que foi visto (formato HH:mm)
   let lastSeenHour = '';
@@ -1158,22 +1173,22 @@ const createDriverMarkerIcon = (driver: Driver, isSelected: boolean) => {
   }
 
   const vType = (driver.vehicleType || 'moto') as 'moto' | 'carro' | 'utilitario';
-  const vehicleSvg = get3DVehicleSvg(vType, headingAngle, driver.color, `drv-${driver.id}`);
+  const vehicleSvg = get3DVehicleSvg(vType, headingAngle, driverColor, `drv-${driver.id}`);
   const isOnlineOrMoving = driver.status === 'em_rota' || driver.status === 'disponivel';
 
   return L.divIcon({
     className: 'custom-driver-marker',
     html: `
       <div class="driver-3d-card ${isSelected ? 'selected' : ''}">
-        <div class="driver-3d-tag" style="background: ${driverLabelBg};">
-          <span>${vehicleEmoji}</span>
-          <span>${cleanDriverName}</span>
+        <div class="driver-3d-tag" style="background: ${driverLabelBg}; border: 1.5px solid ${driverColor}; box-shadow: 0 3px 8px ${hexToRgba(driverColor, 0.4)};">
+          <span style="display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.22);border-radius:6px;padding:1px 3px;">${vehicleEmoji}</span>
+          <span style="font-weight:900;">${cleanDriverName}</span>
           <span class="driver-3d-time">${lastSeenHour}</span>
         </div>
         <div class="driver-vehicle-relative-wrap">
-          ${isOnlineOrMoving ? `<div class="vehicle-pulse-radar" style="border-color: ${driver.color}; background: ${hexToRgba(driver.color, 0.22)}; box-shadow: 0 0 16px ${hexToRgba(driver.color, 0.45)};"></div>` : ''}
-          <div class="vehicle-pulse-halo" style="background: ${hexToRgba(driver.color, 0.24)}; border-color: ${hexToRgba(driver.color, 0.6)};"></div>
-          <div class="vehicle-pulse-ball" style="background: ${driver.color}; box-shadow: 0 2px 10px ${hexToRgba(driver.color, 0.75)};"></div>
+          ${isOnlineOrMoving ? `<div class="vehicle-pulse-radar" style="border-color: ${driverColor}; background: ${hexToRgba(driverColor, 0.22)}; box-shadow: 0 0 16px ${hexToRgba(driverColor, 0.45)};"></div>` : ''}
+          <div class="vehicle-pulse-halo" style="background: ${hexToRgba(driverColor, 0.24)}; border-color: ${hexToRgba(driverColor, 0.6)};"></div>
+          <div class="vehicle-pulse-ball" style="background: ${driverColor}; box-shadow: 0 2px 10px ${hexToRgba(driverColor, 0.75)};"></div>
           ${vehicleSvg}
         </div>
       </div>
@@ -1186,12 +1201,14 @@ const createDriverMarkerIcon = (driver: Driver, isSelected: boolean) => {
 
 // Marcador do Usuário / GPS Ao Vivo:
 // - Para Admin, Atendente ou Terminal: Seta de Navegação 3D no centro da bola que pulsa
-// - Para Motorista: Veículo 3D andando no mapa (Moto, Carro ou Utilitário) no centro da bola que pulsa
+// - Para Motorista: Veículo 3D com a tag e cor exclusiva do motorista no centro da bola que pulsa
 const createUserLocationIcon = (
   role: UserRole = 'motorista',
   vehicleType: 'moto' | 'carro' | 'utilitario' = 'moto',
   heading: number | null = null,
-  isTracking: boolean = false
+  isTracking: boolean = false,
+  driverColor: string = '#0B5187',
+  driverName?: string
 ) => {
   const currentAngle = heading !== null && !isNaN(heading) ? Math.round(heading) : 0;
 
@@ -1213,20 +1230,33 @@ const createUserLocationIcon = (
     });
   }
 
-  // Se for motorista -> Veículo 3D andando no mapa (moto, carro ou utilitário) no centro da bola que pulsa
-  const vehicleSvg = get3DVehicleSvg(vehicleType, currentAngle, '#FF5E00', 'user-vehicle');
+  // Se for motorista -> Veículo 3D com a tag do motorista no centro da bola que pulsa
+  const vehicleEmoji = vehicleType === 'moto' ? '🏍️' : vehicleType === 'utilitario' ? '🚚' : '🚗';
+  const vehicleSvg = get3DVehicleSvg(vehicleType, currentAngle, driverColor, 'user-vehicle');
+  const driverLabelBg = hexToRgba(driverColor, 0.95);
+  const parts = (driverName || 'Você').trim().split(/\s+/);
+  const cleanDriverName = parts.length > 1 ? `${parts[0]} ${parts[1]}` : parts[0];
+
   return L.divIcon({
-    className: 'user-location-wrapper',
+    className: 'custom-driver-marker user-driver-marker',
     html: `
-      <div class="vehicle-3d-marker-wrap">
-        <div class="vehicle-pulse-radar"></div>
-        <div class="vehicle-pulse-halo"></div>
-        <div class="vehicle-pulse-ball"></div>
-        ${vehicleSvg}
+      <div class="driver-3d-card user-driver-card">
+        <div class="driver-3d-tag" style="background: ${driverLabelBg}; border: 1.5px solid ${driverColor}; box-shadow: 0 3px 8px ${hexToRgba(driverColor, 0.4)};">
+          <span style="display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.22);border-radius:6px;padding:1px 3px;">${vehicleEmoji}</span>
+          <span style="font-weight:900;">${cleanDriverName}</span>
+          <span class="driver-3d-time" style="background:rgba(0,0,0,0.25);font-size:9px;">Você</span>
+        </div>
+        <div class="driver-vehicle-relative-wrap">
+          <div class="vehicle-pulse-radar" style="border-color: ${driverColor}; background: ${hexToRgba(driverColor, 0.22)}; box-shadow: 0 0 16px ${hexToRgba(driverColor, 0.45)};"></div>
+          <div class="vehicle-pulse-halo" style="background: ${hexToRgba(driverColor, 0.24)}; border-color: ${hexToRgba(driverColor, 0.6)};"></div>
+          <div class="vehicle-pulse-ball" style="background: ${driverColor}; box-shadow: 0 2px 10px ${hexToRgba(driverColor, 0.75)};"></div>
+          ${vehicleSvg}
+        </div>
       </div>
     `,
-    iconSize: [64, 64],
-    iconAnchor: [32, 32]
+    iconSize: [80, 92],
+    iconAnchor: [40, 58],
+    popupAnchor: [0, -58]
   });
 };
 
@@ -1317,6 +1347,7 @@ export const FullscreenMap: React.FC = () => {
 
   const {
     currentCoords,
+    mapInstance,
     setMapInstance,
     selectedPlace,
     setSelectedPlace,
@@ -1486,6 +1517,9 @@ export const FullscreenMap: React.FC = () => {
       if (driverFocusHintTimerRef.current) {
         clearTimeout(driverFocusHintTimerRef.current);
         driverFocusHintTimerRef.current = null;
+      }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('zap:manual-pan'));
       }
     });
 
@@ -1837,8 +1871,39 @@ export const FullscreenMap: React.FC = () => {
     }
   }, [currentRole, isDriverOnline]);
 
+  // Listener para eventos de foco do motorista e trava manual de arrasto
+  useEffect(() => {
+    const handleFocusDriver = (e: Event) => {
+      isUserManuallyPanningRef.current = false;
+      setShowDriverFocusHint(false);
+      if (driverFocusHintTimerRef.current) {
+        clearTimeout(driverFocusHintTimerRef.current);
+        driverFocusHintTimerRef.current = null;
+      }
+      const customEv = e as CustomEvent<{ coords?: { lat: number; lng: number }; zoom?: number }>;
+      const targetCoords = customEv.detail?.coords || markerCurrentPosRef.current || userLocationRef.current || currentCoords;
+      const zoom = customEv.detail?.zoom || 17;
+      if (mapInstance && targetCoords && typeof targetCoords.lat === 'number' && !isNaN(targetCoords.lat)) {
+        mapInstance.flyTo([targetCoords.lat, targetCoords.lng], zoom, {
+          duration: 1.0,
+          easeLinearity: 0.25
+        });
+      }
+    };
+
+    const handleManualPan = () => {
+      isUserManuallyPanningRef.current = true;
+    };
+
+    window.addEventListener('zap:focus-driver', handleFocusDriver);
+    window.addEventListener('zap:manual-pan', handleManualPan);
+    return () => {
+      window.removeEventListener('zap:focus-driver', handleFocusDriver);
+      window.removeEventListener('zap:manual-pan', handleManualPan);
+    };
+  }, [mapInstance, currentCoords]);
+
   // Sync active layer
-  const { mapInstance } = useMapStore();
   useEffect(() => {
     if (!mapInstance) return;
 
@@ -2003,11 +2068,15 @@ export const FullscreenMap: React.FC = () => {
           const isPublicForDriver = canClaimOrders(currentRole) && placesAtLocation.some(p => !isCollectionCenterPlace(p) && realtimeAssignmentService.isPublicOrder(p));
       const distanceLabel = isPublicForDriver ? formatClaimDistance(userLocationRef.current, place.coordinates) : '';
       const driverStatus = isDriverRole ? null : getDriverStatusInfo(placesAtLocation, driversRef.current);
-      const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customers, isPublicForDriver, distanceLabel, driverStatus, isDriverRole);
+      const iconSignature = `${place.id}_${place.orderStage}_${place.name}_${place.imageUrl || ''}_${isSelected}_${isPublicForDriver}_${distanceLabel}_${driverStatus?.text || ''}_${placesAtLocation.length}`;
 
       if (placeMarkersRef.current.has(place.id)) {
         const marker = placeMarkersRef.current.get(place.id)!;
-        marker.setIcon(icon);
+        if ((marker as any)._iconSignature !== iconSignature) {
+          (marker as any)._iconSignature = iconSignature;
+          const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customersRef.current, isPublicForDriver, distanceLabel, driverStatus, isDriverRole);
+          marker.setIcon(icon);
+        }
         (marker as any)._driverStatusText = driverStatus?.text || '';
         (marker as any)._distanceLabel = distanceLabel;
         marker.setLatLng([place.coordinates.lat, place.coordinates.lng]);
@@ -2016,10 +2085,12 @@ export const FullscreenMap: React.FC = () => {
         (marker as any)._customPlacesAtLocation = placesAtLocation;
         (marker as any)._isPublicForDriver = isPublicForDriver;
       } else {
+        const icon = createPlaceMarkerIcon(place, isSelected, placesAtLocation, customersRef.current, isPublicForDriver, distanceLabel, driverStatus, isDriverRole);
         const marker = L.marker([place.coordinates.lat, place.coordinates.lng], {
           icon,
           zIndexOffset: isPublicForDriver ? 600 : isSelected ? 500 : 100
         }).addTo(mapInstance);
+        (marker as any)._iconSignature = iconSignature;
 
         (marker as any)._customPlaceData = place;
         (marker as any)._customPlacesAtLocation = placesAtLocation;
@@ -2113,7 +2184,7 @@ export const FullscreenMap: React.FC = () => {
         placeMarkersRef.current.set(place.id, marker);
       }
     });
-  }, [mapInstance, savedPlaces, allPlaces, selectedPlace, operationsFilter, flyToLocation, setSelectedPlace, openPhotoViewer, currentRole, completedWaypointMarks, customers, openCustomerLocationModal, dateRangeFilter, isMonitorMode]);
+  }, [mapInstance, savedPlaces, allPlaces, selectedPlace, operationsFilter, flyToLocation, setSelectedPlace, openPhotoViewer, currentRole, completedWaypointMarks, openCustomerLocationModal, dateRangeFilter, isMonitorMode]);
 
   // Atualiza o status do motorista (aceito/indo + distância) dentro da label quando ele se move
   useEffect(() => {
@@ -2129,13 +2200,13 @@ export const FullscreenMap: React.FC = () => {
         m._customPlaceData,
         selectedPlace?.id === m._customPlaceData.id,
         m._customPlacesAtLocation || [m._customPlaceData],
-        customers,
+        customersRef.current,
         false,
         '',
         status
       ));
     });
-  }, [drivers, currentRole, customers, selectedPlace?.id]);
+  }, [drivers, currentRole, selectedPlace?.id]);
 
   // Atualiza a distância mostrada no botão "Aceitar" quando o GPS do motoboy muda
   useEffect(() => {
@@ -2149,12 +2220,12 @@ export const FullscreenMap: React.FC = () => {
         m._customPlaceData,
         false,
         m._customPlacesAtLocation || [m._customPlaceData],
-        customers,
+        customersRef.current,
         true,
         label
       ));
     });
-  }, [userLocation, customers]);
+  }, [userLocation]);
 
   // Sincroniza Marcadores de Baixa no Solo (Apenas um 'X' - e ao clicar abre label com detalhes, fotos, motorista e horário)
   useEffect(() => {
@@ -2730,6 +2801,8 @@ export const FullscreenMap: React.FC = () => {
     const isMotoristaOnline = currentRole === 'motorista' && isDriverOnline;
     const userVehicleType = getUserVehicleType(user);
     const isTracking = isTrackingUser || isMotoristaOnline;
+    const driverColor = getDriverPermanentColor(user.id || user.phone || user.name);
+    const driverName = user.name || 'Você';
     const targetLat = userLocation.lat;
     const targetLng = userLocation.lng;
     const now = performance.now();
@@ -2741,7 +2814,7 @@ export const FullscreenMap: React.FC = () => {
       if (userLocation.heading != null && !isNaN(userLocation.heading)) {
         lastHeadingRef.current = userLocation.heading;
       }
-      const initialIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking);
+      const initialIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking, driverColor, driverName);
 
       userMarkerRef.current = L.marker([targetLat, targetLng], {
         icon: initialIcon,
@@ -2768,7 +2841,7 @@ export const FullscreenMap: React.FC = () => {
       if (userLocation.speed && userLocation.speed > 0.8 && userLocation.heading != null && !isNaN(userLocation.heading)) {
         lastHeadingRef.current = userLocation.heading;
       }
-      const updatedIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking);
+      const updatedIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking, driverColor, driverName);
       userMarkerRef.current.setIcon(updatedIcon);
       return;
     }
@@ -2777,7 +2850,7 @@ export const FullscreenMap: React.FC = () => {
     const calculatedHeading = computeBearing(currentLat, currentLng, targetLat, targetLng);
     lastHeadingRef.current = calculatedHeading;
 
-    const updatedIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking);
+    const updatedIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking, driverColor, driverName);
     userMarkerRef.current.setIcon(updatedIcon);
 
     // If teleport/large jump (> 3km), snap immediately without playing long animation
@@ -2856,7 +2929,9 @@ export const FullscreenMap: React.FC = () => {
     const isMotoristaOnline = currentRole === 'motorista' && isDriverOnline;
     const userVehicleType = getUserVehicleType(user);
     const isTracking = isTrackingUser || isMotoristaOnline;
-    const updatedIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking);
+    const driverColor = getDriverPermanentColor(user.id || user.phone || user.name);
+    const driverName = user.name || 'Você';
+    const updatedIcon = createUserLocationIcon(currentRole, userVehicleType, lastHeadingRef.current, isTracking, driverColor, driverName);
     userMarkerRef.current.setIcon(updatedIcon);
   }, [currentRole, user, isDriverOnline, isTrackingUser]);
 
@@ -2867,34 +2942,6 @@ export const FullscreenMap: React.FC = () => {
         className="w-full h-full z-0 bg-[#EBF2F7]"
         style={{ cursor: 'grab' }}
       />
-
-      {currentRole === 'motorista' && isDriverOnline && (
-        <button
-          type="button"
-          onClick={() => {
-            isUserManuallyPanningRef.current = false;
-            setShowDriverFocusHint(false);
-            if (driverFocusHintTimerRef.current) {
-              clearTimeout(driverFocusHintTimerRef.current);
-              driverFocusHintTimerRef.current = null;
-            }
-            const location = userLocationRef.current || currentCoords;
-            mapInstance?.flyTo([location.lat, location.lng], 17, { duration: 1 });
-          }}
-          aria-label="Focar no motorista"
-          title="Focar na minha localização"
-          className={`group absolute bottom-20 right-3.5 sm:right-6 z-30 flex h-12 w-12 items-center justify-center rounded-xl border bg-white text-[#0B5187] shadow-xl transition-all hover:bg-[#F0F6FB] active:scale-95 ${
-            showDriverFocusHint
-              ? 'animate-pulse border-[#FF5E00] ring-4 ring-[#FF5E00]/30'
-              : 'border-[#0B5187]/25'
-          }`}
-        >
-          <LocateFixed className="h-5 w-5 stroke-[2.4] transition-transform group-hover:scale-110" />
-          {showDriverFocusHint && (
-            <span className="absolute -top-1 -right-1 h-3.5 w-3.5 rounded-full border-2 border-white bg-[#FF5E00]" />
-          )}
-        </button>
-      )}
 
       {/* JANELINHA / DIÁLOGO DE SELEÇÃO DE ENCOMENDA NO LOCAL (ONMAKER) */}
       {markerSelectionModal && (

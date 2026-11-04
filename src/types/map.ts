@@ -69,6 +69,7 @@ export interface Place {
   destinationCity?: string;
   driverNotes?: string;
   observations?: string;
+  fromDatabase?: boolean;
   orderCode?: string;
   orderId?: string;
   pedido_id?: string | number;
@@ -283,6 +284,8 @@ export interface Driver {
   status: 'em_rota' | 'disponivel' | 'em_pausa' | 'offline';
   phone: string;
   avatarUrl?: string;
+  city?: string;
+  currentCity?: string;
   speedKmH?: number;
   batteryLevel?: number;
   currentOrderCode?: string;

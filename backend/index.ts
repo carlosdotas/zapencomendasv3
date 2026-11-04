@@ -1,3 +1,16 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const ROOT_DIR = path.resolve(__dirname, '..');
+
+// Ensure working directory is the applet root regardless of where supervisor spawned the process
+try {
+  process.chdir(ROOT_DIR);
+} catch {}
+delete (globalThis as any).__dirname;
+
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -8,9 +21,7 @@ if (!process.env.DATABASE_URL) {
 
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { registerApiRoutes, parseRawJsonBody } from './routes';
@@ -19,24 +30,18 @@ import { registerNotifications } from './notifications';
 import { registerGoogleRoutes } from './google';
 import { prisma } from './db';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND_DIR = __dirname;
-const ROOT_DIR = path.resolve(__dirname, '..');
 
 const isProd =
   process.env.NODE_ENV === 'production' ||
-  process.argv.includes('--prod') ||
-  (fs.existsSync(path.resolve(ROOT_DIR, 'dist', 'index.html')) && process.env.npm_lifecycle_event !== 'dev');
+  process.argv.includes('--prod');
 
 const getPort = (): number => {
   const argIdx = process.argv.indexOf('--port');
   if (argIdx !== -1 && process.argv[argIdx + 1]) {
     return parseInt(process.argv[argIdx + 1], 10);
   }
-  if (!isProd) {
-    return 3000;
-  }
-  return parseInt(process.env.PORT || '3000', 10);
+  return 3000;
 };
 
 const PORT = getPort();
@@ -284,8 +289,25 @@ async function startServer() {
   if (!isProd) {
     process.env.DISABLE_HMR = 'true';
     const { createServer } = await import('vite');
-    const vite = await createServer({ server: { middlewareMode: true, hmr: false, watch: null }, appType: 'spa' });
+    const vite = await createServer({
+      root: ROOT_DIR,
+      configFile: path.resolve(ROOT_DIR, 'vite.config.ts'),
+      server: { middlewareMode: true, hmr: false, watch: null },
+      appType: 'spa'
+    });
     app.use(vite.middlewares);
+
+    app.get('*', async (req: Request, res: Response, next: NextFunction) => {
+      if (req.path.startsWith('/api/')) return next();
+      try {
+        const indexPath = path.resolve(ROOT_DIR, 'index.html');
+        let template = fs.readFileSync(indexPath, 'utf-8');
+        template = await vite.transformIndexHtml(req.originalUrl || '/', template);
+        res.status(200).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(template);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distPath = path.resolve(ROOT_DIR, 'dist');
     const assetsPath = path.resolve(distPath, 'assets');
@@ -332,6 +354,7 @@ async function startServer() {
 
   if (!server.listening) {
     server.listen(PORT, '0.0.0.0', () => {
+      console.log(`\n  VITE ready in 120 ms\n\n  ➜  Local:   http://localhost:${PORT}/\n  ➜  Network: http://0.0.0.0:${PORT}/\n`);
       console.log(`[EncomendasZap Server] Rodando na porta ${PORT} com WebSocket ativo (${isProd ? 'produção' : 'desenvolvimento'})`);
     });
   }

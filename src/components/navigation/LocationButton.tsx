@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { 
   Locate, 
   LocateFixed, 
@@ -14,15 +14,26 @@ import { useMapStore } from '../../context/MapContext';
 import { Place } from '../../types/map';
 import { getDateFilterDisplayLabel, getPlaceCalendarDate, isDateInInterval } from '../../utils/dateFilterUtils';
 import { CalendarFilterModal } from './CalendarFilterModal';
+import { getDriverCurrentCity, isPlaceInCity } from '../../utils/driverCityUtils';
+import { isDriverStale } from '../../services/driverTrackingClient';
+import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
 
 export const LocationButton: React.FC = () => {
   const { 
     isTrackingUser, 
     toggleUserTracking, 
+    stopUserTracking,
+    focusDriverLocation,
     isLocating, 
     savedPlaces,
     allPlaces,
+    drivers,
     currentRole,
+    user,
+    userLocation,
+    currentCoords,
+    isDriverOnline,
+    flyToLocation,
     openCustomerList,
     openOrdersModal,
     openFinancialModal,
@@ -39,6 +50,20 @@ export const LocationButton: React.FC = () => {
     setIsRoutePickerOpen
   } = useMapStore();
 
+  // Indica se o motorista arrastou o mapa para longe ou clicou em ver tudo
+  const [isPannedAway, setIsPannedAway] = useState(false);
+
+  useEffect(() => {
+    const handleManualPan = () => setIsPannedAway(true);
+    const handleFocus = () => setIsPannedAway(false);
+    window.addEventListener('zap:manual-pan', handleManualPan);
+    window.addEventListener('zap:focus-driver', handleFocus);
+    return () => {
+      window.removeEventListener('zap:manual-pan', handleManualPan);
+      window.removeEventListener('zap:focus-driver', handleFocus);
+    };
+  }, []);
+
   const canDispatchRoute = currentRole === 'admin_geral' || currentRole === 'atendente';
   const handleRouteButton = () => {
     if (!routeSelectMode) {
@@ -53,10 +78,34 @@ export const LocationButton: React.FC = () => {
   const isDateFilterActive = Boolean(dateRangeFilter.startDate || dateRangeFilter.endDate);
   const dateFilterLabel = getDateFilterDisplayLabel(dateRangeFilter);
 
-  // Na tela do motorista (vistoria/operação):
-  if (currentRole === 'motorista') {
-    return null;
-  }
+  const isDriverRole = currentRole === 'motorista';
+  const driverPos = (userLocation && typeof userLocation.lat === 'number' && !isNaN(userLocation.lat) && userLocation.lat !== 0)
+    ? userLocation
+    : currentCoords;
+
+  const driverCityName = useMemo(() => {
+    if (!isDriverRole) return '';
+    return getDriverCurrentCity(driverPos, user);
+  }, [isDriverRole, driverPos, user]);
+
+  // Contagem de marcadores da cidade do motorista
+  const driverCityMarkersCount = useMemo(() => {
+    if (!isDriverRole || !driverCityName) return 0;
+    const placesMap = new Map<string, Place>();
+    (allPlaces || []).forEach(p => placesMap.set(p.id, p));
+    (savedPlaces || []).forEach(p => placesMap.set(p.id, p));
+    return Array.from(placesMap.values()).filter(p => {
+      if (p.orderStage === 'concluido' || (p.operationType as any) === 'concluido') return false;
+      if (!p.coordinates || isNaN(p.coordinates.lat) || isNaN(p.coordinates.lng) || p.coordinates.lat === 0 || p.coordinates.lng === 0) return false;
+      if (!isPlaceInCity(p, driverCityName)) return false;
+      return realtimeAssignmentService.isPlaceAssignedToUser(p, user);
+    }).length;
+  }, [isDriverRole, driverCityName, allPlaces, savedPlaces, user]);
+
+  // Contagem de motos ativas rodando (para tela do admin)
+  const activeRunningMotosCount = useMemo(() => {
+    return (drivers || []).filter(d => d.status !== 'offline' && !isDriverStale(d)).length;
+  }, [drivers]);
 
   // Contagem de marcadores/encomendas com coordenadas válidas no mapa (respeitando o filtro de datas)
   const validMarkersCount = useMemo(() => {
@@ -77,9 +126,90 @@ export const LocationButton: React.FC = () => {
     }).length;
   }, [allPlaces, savedPlaces, dateRangeFilter]);
 
+  // Se for motorista e estiver offline, a tela de bloqueio cobre o mapa
+  if (isDriverRole) {
+    if (!isDriverOnline) return null;
+    return (
+      <div className={`absolute bottom-24 sm:bottom-28 right-3 sm:right-6 z-40 pointer-events-auto flex flex-col items-end gap-2.5 transition-all duration-200 ${
+        selectedPlace ? 'hidden sm:flex' : 'flex'
+      }`}>
+        {/* BOTÃO PARA VISUALIZAR TUDO NA TELA (MAKERS DA CIDADE + MOTO) */}
+        <button
+          type="button"
+          onClick={viewAllMarkers}
+          aria-label={`Visualizar tudo em ${driverCityName}`}
+          title={`Visualizar tudo em ${driverCityName} (${driverCityMarkersCount} makers + Minha Moto)`}
+          className="group relative w-11 h-11 sm:w-12 sm:h-12 rounded-xl shadow-lg border transition-all duration-200 flex items-center justify-center active:scale-95 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5187] bg-white border-[#0B5187]/25 text-[#0B5187] hover:bg-[#F0F6FB] hover:border-[#0B5187] shadow-slate-900/10 shrink-0"
+        >
+          <Maximize2 className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.3] transition-transform duration-200 group-hover:scale-110" />
+
+          {/* Badge com a quantidade de makers da cidade */}
+          {driverCityMarkersCount > 0 && (
+            <span className="absolute -top-1 -right-1 flex h-4.5 min-w-[18px] px-1 rounded-full bg-[#0B5187] text-white text-[9.5px] font-black items-center justify-center border-2 border-white shadow-xs">
+              {driverCityMarkersCount}
+            </span>
+          )}
+
+          {/* Tooltip flutuante */}
+          <span className="absolute right-full mr-2.5 px-2.5 py-1 bg-slate-900/90 text-white text-[11px] font-black rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
+            Ver Tudo em {driverCityName} ({driverCityMarkersCount} makers + Moto)
+          </span>
+        </button>
+
+        {/* BOTÃO DE FOCO NO MOTORISTA (MOTO / GPS) */}
+        <button
+          type="button"
+          onClick={() => {
+            focusDriverLocation();
+            setIsPannedAway(false);
+          }}
+          aria-label="Focar na minha localização (GPS)"
+          title={isPannedAway ? 'Focar na minha moto (GPS)' : 'Focado na minha moto (clique para recentralizar)'}
+          className={`relative w-11 h-11 sm:w-12 sm:h-12 rounded-xl shadow-lg border transition-all duration-200 flex items-center justify-center active:scale-95 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5187] shrink-0 ${
+            isPannedAway
+              ? 'bg-amber-500 border-amber-400 text-white shadow-md shadow-amber-500/30 ring-2 ring-amber-300'
+              : isTrackingUser
+              ? 'bg-[#0B5187] border-[#0B5187] text-white shadow-md shadow-[#0B5187]/35 ring-2 ring-[#0B5187]/25'
+              : 'bg-white border-[#0B5187]/25 text-[#0B5187] hover:bg-[#F0F6FB] hover:border-[#0B5187] shadow-slate-900/10'
+          }`}
+        >
+          {/* Indicador pulsante quando afastado do motorista para lembrar de focar */}
+          {isPannedAway && (
+            <span className="absolute -top-1 -right-1 flex h-3.5 w-3.5 pointer-events-none">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-90" />
+              <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-amber-500 border-2 border-white shadow-xs" />
+            </span>
+          )}
+
+          {/* Indicador de rastreamento contínuo ativo */}
+          {!isPannedAway && isTrackingUser && !isLocating && (
+            <span className="absolute -top-0.5 -right-0.5 flex h-3.5 w-3.5 pointer-events-none">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#007AFF] opacity-80" />
+              <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-[#007AFF] border-2 border-white shadow-xs" />
+            </span>
+          )}
+
+          {isLocating ? (
+            <Loader2 className={`w-5 h-5 sm:w-6 sm:h-6 animate-spin ${isTrackingUser || isPannedAway ? 'text-white' : 'text-[#0B5187]'}`} />
+          ) : isPannedAway ? (
+            <LocateFixed className="w-5 h-5 sm:w-6 sm:h-6 text-white stroke-[2.5] transition-transform duration-200 scale-110" />
+          ) : isTrackingUser ? (
+            <LocateFixed className="w-5 h-5 sm:w-6 sm:h-6 text-sky-300 stroke-[2.4] transition-transform duration-200" />
+          ) : (
+            <Locate className="w-5 h-5 sm:w-6 sm:h-6 text-[#0B5187] stroke-[2.3] transition-colors" />
+          )}
+
+          <span className="absolute right-full mr-2.5 px-2.5 py-1 bg-slate-900/90 text-white text-[11px] font-black rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
+            {isPannedAway ? 'Focar na minha moto' : isTrackingUser ? 'Focado na minha moto' : 'Focar no GPS'}
+          </span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <>
-      <div className={`absolute bottom-20 sm:bottom-24 right-3.5 sm:right-6 z-30 pointer-events-auto flex flex-col items-end gap-2.5 transition-all duration-200 ${
+      <div className={`absolute bottom-24 sm:bottom-28 right-3 sm:right-6 z-40 pointer-events-auto flex flex-col items-end gap-2.5 transition-all duration-200 ${
         selectedPlace ? 'hidden sm:flex' : 'flex'
       }`}>
         
@@ -191,12 +321,12 @@ export const LocationButton: React.FC = () => {
           </span>
         </button>
 
-        {/* 1. BOTÃO PARA VER TODAS AS MAKERS DO MAPA */}
+        {/* 1. BOTÃO PARA VER TODAS AS MAKERS DO MAPA E MOTOS RODANDO */}
         <button
           type="button"
           onClick={viewAllMarkers}
-          aria-label="Ver todas as makers do mapa"
-          title="Ver todas as makers no mapa (enquadrar todas)"
+          aria-label="Ver todas as makers e motos do mapa"
+          title={`Ver tudo no mapa (${validMarkersCount} makers + ${activeRunningMotosCount} motos)`}
           className="group relative w-11 h-11 sm:w-12 sm:h-12 rounded-xl shadow-lg border transition-all duration-200 flex items-center justify-center active:scale-95 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0B5187] bg-white border-[#0B5187]/25 text-[#0B5187] hover:bg-[#F0F6FB] hover:border-[#0B5187] shadow-slate-900/10 shrink-0"
         >
           <Maximize2 className="w-5 h-5 sm:w-6 sm:h-6 stroke-[2.3] transition-transform duration-200 group-hover:scale-110" />
@@ -210,7 +340,7 @@ export const LocationButton: React.FC = () => {
 
           {/* Tooltip flutuante indicativo ao passar o mouse */}
           <span className="absolute right-full mr-2.5 px-2.5 py-1 bg-slate-900/90 text-white text-[11px] font-black rounded-lg shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none hidden sm:block">
-            Ver Todas as Makers ({validMarkersCount})
+            Ver Tudo no Mapa ({validMarkersCount} makers + {activeRunningMotosCount} motos)
           </span>
         </button>
 

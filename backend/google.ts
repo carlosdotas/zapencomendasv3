@@ -4,7 +4,7 @@ import path from 'path';
 import { prisma } from './db';
 import { localToBackend } from './mappers';
 
-const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || '';
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyATwFNGYw-Y0TGH3SrjwQelQD4EorVjlg4';
 
 const GOOGLE_TYPE_MAP: Record<string, string> = {
   shopping_mall: 'Shopping Center',
@@ -108,46 +108,98 @@ export function registerGoogleRoutes(app: Express, rootDir: string) {
     return false;
   };
 
+  const PORTUGUESE_STOP_WORDS = new Set([
+    'de', 'do', 'da', 'dos', 'das', 'e', 'em', 'no', 'na', 'nos', 'nas',
+    'para', 'pra', 'com', 'um', 'uma', 'o', 'a', 'os', 'as', 'rua', 'r',
+    'r.', 'av', 'av.', 'avenida', 'alameda', 'al', 'al.', 'travessa', 'tv',
+    'tv.', 'praca', 'praça', 'setor', 'st', 'st.', 'bairro', 'qd', 'lt',
+    'quadra', 'lote', 'numero', 'n', 'nº', 'goiania', 'goiânia', 'anapolis',
+    'anápolis', 'go', 'goias', 'goiás', 'brasil'
+  ]);
+
+  function normalizeText(str: string): string {
+    return (str || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   /** Busca locais já cadastrados no banco antes de consultar o Google. */
   async function searchLocations(query: string, limit = 8) {
-    const q = query.toLowerCase().trim();
+    const q = query.trim();
     if (q.length < 2) return [];
-    const words = q.split(/\s+/).filter(Boolean);
-    const fields = ['name', 'address', 'street', 'district', 'city'];
+
+    const normQ = normalizeText(q);
+    if (!normQ) return [];
+
+    const allWords = normQ.split(' ').filter(w => w.length > 0);
+    const significantWords = allWords.filter(w => !PORTUGUESE_STOP_WORDS.has(w) && w.length >= 2);
+    const searchTerms = significantWords.length > 0 ? significantWords : allWords;
+
+    // Busca candidatos no banco de dados pelo nome ou endereço
     const candidates = await prisma.locations.findMany({
       where: {
         lat: { not: null },
         lng: { not: null },
-        OR: words.flatMap(w => fields.map(f => ({ [f]: { contains: w } })))
+        OR: [
+          { name: { contains: q } },
+          { address: { contains: q } },
+          ...searchTerms.map(t => ({ name: { contains: t } }))
+        ]
       },
-      take: 300
+      take: 150
     });
 
     const scored = candidates.map(p => {
-      const name = (p.name || '').toLowerCase();
-      const fullText = [p.name, p.address, p.street, p.district, p.city].join(' ').toLowerCase();
+      const normName = normalizeText(p.name || '');
+      const normAddr = normalizeText(p.address || '');
+      const normFull = normalizeText([p.name, p.address, p.street, p.district, p.city].filter(Boolean).join(' '));
+
       let score = 0;
-      if (name === q) score = 100;
-      else if (name.startsWith(q)) score = 80;
-      else if (name.includes(q)) score = 60;
-      else if (words.every(w => fullText.includes(w))) score = 40;
-      else {
-        const matches = words.filter(w => fullText.includes(w)).length;
-        if (matches >= words.length / 2) score = 20 * matches;
+
+      // 1. Nome exato
+      if (normName === normQ) {
+        score = 100;
       }
+      // 2. Nome começa com a busca
+      else if (normName.startsWith(normQ)) {
+        score = 90;
+      }
+      // 3. Nome contém a busca inteira
+      else if (normName.includes(normQ) && normQ.length >= 3) {
+        score = 80;
+      }
+      // 4. Todos os termos significativos estão no nome do local
+      else if (searchTerms.length > 0 && searchTerms.every(w => normName.includes(w))) {
+        score = 75;
+      }
+      // 5. Todos os termos estão no texto completo E pelo menos um termo significativo está no nome
+      else if (searchTerms.length > 0 && searchTerms.every(w => normFull.includes(w)) && searchTerms.some(w => normName.includes(w))) {
+        score = 65;
+      }
+      // 6. Busca por endereço específico (onde todos os termos batem no endereço)
+      else if (allWords.length >= 2 && allWords.every(w => normAddr.includes(w))) {
+        score = 60;
+      }
+
       return { p, score };
-    }).filter(s => s.score > 0 && !(s.p.lat === 0 && s.p.lng === 0));
+    }).filter(s => s.score >= 60 && !(s.p.lat === 0 && s.p.lng === 0));
 
     scored.sort((a, b) => b.score - a.score);
+
     return scored.slice(0, limit).map(({ p }) => {
       const fullAddr = p.address || [p.street, p.number, p.district, p.city].filter(Boolean).join(', ');
       return {
         id: `loc-${p.id}`,
         name: p.name,
-        category: p.district || 'Local Cadastrado',
+        category: p.district ? `${p.district} (Local Cadastrado)` : 'Local Cadastrado',
         address: fullAddr || p.name,
         coordinates: { lat: p.lat, lng: p.lng },
-        description: fullAddr
+        description: fullAddr,
+        fromDatabase: true
       };
     });
   }
@@ -178,7 +230,8 @@ export function registerGoogleRoutes(app: Express, rootDir: string) {
       }
       if (!requireKey(res)) return;
 
-      const placesUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${GOOGLE_MAPS_API_KEY}&language=pt-BR&region=br`;
+      // Busca na API do Google Places com viés para Goiás
+      const placesUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&location=-16.686895,-49.264794&radius=50000&key=${GOOGLE_MAPS_API_KEY}&language=pt-BR&region=br`;
       const placesData: any = await (await fetch(placesUrl)).json();
 
       let items: any[] = [];
@@ -200,7 +253,7 @@ export function registerGoogleRoutes(app: Express, rootDir: string) {
       }
 
       if (items.length < 4) {
-        const geoUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${GOOGLE_MAPS_API_KEY}&language=pt-BR&region=br`;
+        const geoUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&components=country:BR&key=${GOOGLE_MAPS_API_KEY}&language=pt-BR&region=br`;
         const geoData: any = await (await fetch(geoUrl)).json();
         if (Array.isArray(geoData.results)) {
           geoData.results.slice(0, 6).forEach((g: any) => {
@@ -224,13 +277,61 @@ export function registerGoogleRoutes(app: Express, rootDir: string) {
       if (items.length > 0) {
         placesCache.set(cacheKey, { timestamp: Date.now(), data: items });
         persistCache();
-        // Guarda os resultados no banco para que as próximas buscas não precisem do Google
+
+        // Salva todos os nomes e endereços buscados na tabela 'locations' do banco de dados
         for (const item of items) {
-          const known = await prisma.locations.findFirst({ where: { name: item.name, address: item.address } });
-          if (!known) {
-            await prisma.locations.create({
-              data: { name: item.name, address: item.address, lat: item.coordinates.lat, lng: item.coordinates.lng }
-            }).catch(() => null);
+          try {
+            const lat = item.coordinates?.lat;
+            const lng = item.coordinates?.lng;
+            if (typeof lat !== 'number' || typeof lng !== 'number') continue;
+            const placeId = item.id?.startsWith('gplace-') 
+              ? item.id.replace('gplace-', '') 
+              : item.id?.startsWith('gcode-') 
+              ? item.id.replace('gcode-', '') 
+              : undefined;
+
+            let city = 'Goiânia';
+            let state = 'GO';
+            let district = '';
+
+            const addr = item.address || '';
+            const cityMatch = addr.match(/,\s*([A-Za-zÀ-ÿ\s]+)\s*-\s*([A-Za-z]{2})(?:,\s*\d{5}-?\d{3})?/);
+            if (cityMatch) {
+              city = cityMatch[1].trim();
+              state = cityMatch[2].trim().toUpperCase();
+            }
+            const districtMatch = addr.match(/-\s*([^,]+),\s*[A-Za-zÀ-ÿ\s]+-\s*[A-Za-z]{2}/);
+            if (districtMatch) {
+              district = districtMatch[1].trim();
+            }
+
+            const existing = await prisma.locations.findFirst({
+              where: {
+                OR: [
+                  ...(placeId ? [{ place_id: placeId }] : []),
+                  { name: item.name, address: item.address }
+                ]
+              }
+            });
+
+            if (!existing) {
+              await prisma.locations.create({
+                data: {
+                  name: item.name,
+                  address: item.address,
+                  lat,
+                  lng,
+                  city,
+                  state,
+                  district: district || undefined,
+                  place_id: placeId,
+                  link_maps: `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
+                  status: 'active'
+                }
+              }).catch(() => null);
+            }
+          } catch {
+            // Continua salvando os outros itens
           }
         }
       }

@@ -5,6 +5,7 @@ import { parseRawJsonBody } from './routes';
 import { parseExtra, toInt } from './mappers';
 import { notifyOrderProgress, notifyUser } from './notifications';
 import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, isConfirmedDriverClaim, assignmentsVisibleTo } from './access';
+import { getDriverPermanentColor } from '../src/utils/driverColorUtils';
 
 interface LiveDriverData {
   id: string;
@@ -47,7 +48,10 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
   const lastHistoryWrite = new Map<string, number>();
 
   try {
-    const stored = await prisma.assignments.findMany();
+    const stored = await Promise.race([
+      prisma.assignments.findMany(),
+      new Promise<any[]>((_, reject) => setTimeout(() => reject(new Error('DB offline / timeout')), 500))
+    ]);
     for (const row of stored) {
       try {
         activeAssignments.set(row.order_key, JSON.parse(row.data));
@@ -86,13 +90,17 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
 
   function upsertDriver(d: any): LiveDriverData {
     const now = Date.now();
+    const id = String(d.id);
+    const permanentColor = getDriverPermanentColor(id || d.phone || d.name);
     const driver: LiveDriverData = {
       ...d,
+      id,
+      color: d.color && d.color !== '#FF5E00' && d.color !== '#2563eb' ? d.color : permanentColor,
       lastSeenTimestamp: now,
       lastUpdatedStr: new Date(now).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
       status: d.isOnline === false ? 'offline' : d.status || 'em_rota'
     };
-    activeDrivers.set(String(d.id), driver);
+    activeDrivers.set(id, driver);
     broadcast({ type: d.isOnline === false ? 'driver:offline' : 'driver:update', driver });
     return driver;
   }
@@ -363,8 +371,9 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
   const driverFromBody = (body: any, coords?: { lat: number; lng: number }): any => {
     const id = String(body.user_id);
     const previous = activeDrivers.get(id);
+    const permanentColor = getDriverPermanentColor(id || body.user_nome);
     return {
-      color: '#2563eb',
+      color: previous?.color || permanentColor,
       vehicleType: 'moto',
       ...previous,
       id,

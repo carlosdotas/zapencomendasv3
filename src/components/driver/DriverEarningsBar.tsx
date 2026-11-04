@@ -5,6 +5,7 @@ import { realtimeAssignmentService } from '../../services/realtimeAssignmentServ
 import { driverEarningsService, DriverEarningRow, DriverEarningsDay } from '../../services/driverEarningsService';
 import { CalendarFilterModal } from '../navigation/CalendarFilterModal';
 import { DateRangeFilter } from '../../types/map';
+import { useAppVersion } from '../../hooks/useAppVersion';
 
 const TZ = 'America/Sao_Paulo';
 const dayOf = (ms: number) => new Date(ms).toLocaleDateString('en-CA', { timeZone: TZ });
@@ -28,6 +29,7 @@ interface EarningItem {
 }
 
 export const DriverEarningsBar: React.FC = () => {
+  const appVersion = useAppVersion();
   const { allPlaces, completedWaypointMarks, user, currentRole, isAuthenticated } = useMapStore();
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<'today' | 'history'>('today');
@@ -412,6 +414,11 @@ export const DriverEarningsBar: React.FC = () => {
                 ))}
               </div>
             )}
+
+            <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+              <span>EncomendasZap Logística</span>
+              <span className="font-semibold text-slate-500">Versão {appVersion}</span>
+            </div>
           </div>
         </div>
       )}

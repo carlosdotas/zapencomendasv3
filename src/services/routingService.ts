@@ -102,7 +102,7 @@ export async function fetchRoute(
     const originParam = `${start.lat},${start.lng}`;
     const destParam = `${end.lat},${end.lng}`;
     const googleRes = await fetch(`/api/google/directions?origin=${originParam}&destination=${destParam}`, {
-      signal: AbortSignal.timeout(5000)
+      signal: AbortSignal.timeout(2500)
     });
 
     if (googleRes.ok) {
@@ -129,7 +129,7 @@ export async function fetchRoute(
   // 2. Fallback secundário (OSRM)
   try {
     const url = `https://router.project-osrm.org/route/v1/driving/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(4500) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(2500) });
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.routes || data.routes.length === 0) return null;

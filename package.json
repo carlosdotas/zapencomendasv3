@@ -18,7 +18,7 @@
     "db:fix-receivables": "tsx backend/fixReceivables.ts",
     "db:studio": "prisma studio --schema backend/prisma/schema.prisma",
     "postinstall": "prisma generate --schema backend/prisma/schema.prisma",
-    "test": "tsx --test backend/access.test.ts backend/mappers.test.ts src/utils/addressUtils.test.ts src/utils/orderIds.test.ts src/utils/orderSync.test.ts src/utils/monitorData.test.ts src/utils/sharedMapLink.test.ts src/utils/customerBilling.test.ts src/utils/cityPricing.test.ts src/utils/newOrderAssignment.test.ts src/utils/orderSequence.test.ts src/services/apiAdapters.test.ts src/services/imageUploadService.test.ts",
+    "test": "tsx --test backend/localDb.test.ts backend/access.test.ts backend/mappers.test.ts src/utils/addressUtils.test.ts src/utils/orderIds.test.ts src/utils/orderSync.test.ts src/utils/monitorData.test.ts src/utils/sharedMapLink.test.ts src/utils/customerBilling.test.ts src/utils/cityPricing.test.ts src/utils/newOrderAssignment.test.ts src/utils/orderSequence.test.ts src/utils/backgroundScheduler.test.ts src/utils/financialUtils.test.ts src/utils/driverUtils.test.ts src/services/apiAdapters.test.ts src/services/imageUploadService.test.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

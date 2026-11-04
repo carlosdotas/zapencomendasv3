@@ -25,6 +25,7 @@ import { CustomerFormFullScreen } from '../customer/CustomerFormFullScreen';
 import { isUnnamedOrGenericPlace, getCustomerPlaceName } from '../../utils/customerLocationUtils';
 import { recordPlaceUsage } from '../../utils/mostUsedPlaces';
 import { normalizeCityName, resolveCustomerCity } from '../../utils/addressUtils';
+import { placeService } from '../../services/placeService';
 
 interface FloatingSearchBarProps {
   dropdownDirection?: 'up' | 'down';
@@ -182,6 +183,18 @@ export const FloatingSearchBar: React.FC<FloatingSearchBarProps> = ({
     setQuery(placeToUse.name);
     setIsOpen(false);
     if (inputRef.current) inputRef.current.blur();
+
+    // Salva o local no banco de dados na tabela de locais para futuras buscas
+    if (placeToUse.coordinates && typeof placeToUse.coordinates.lat === 'number') {
+      void placeService.saveLocal({
+        name: placeToUse.name,
+        endereco: placeToUse.address || placeToUse.name,
+        lat: placeToUse.coordinates.lat,
+        lng: placeToUse.coordinates.lng,
+        cidade: placeToUse.destinationCity || placeToUse.originCity || 'Goiânia',
+        link: `https://www.google.com/maps/search/?api=1&query=${placeToUse.coordinates.lat},${placeToUse.coordinates.lng}`
+      }).catch(() => null);
+    }
 
     if (onSelectPlace) {
       // Quando estiver embutido em outro modal/etapa de pedido, apenas repassa

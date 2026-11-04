@@ -1,3 +1,6 @@
+// Prevent globalThis.__dirname = '.' injection from corrupting ESM packages that check typeof __dirname
+delete (globalThis as any).__dirname;
+
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';

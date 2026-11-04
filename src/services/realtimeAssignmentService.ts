@@ -8,7 +8,7 @@
 import { Place, UserProfile, OperationType } from '../types/map';
 import { request, startPolling } from './httpClient';
 
-const POLL_INTERVAL_MS = 5000;
+const POLL_INTERVAL_MS = 10000;
 
 export interface OrderAssignment {
   orderId: string;
@@ -47,10 +47,26 @@ class RealtimeAssignmentService {
 
   public async fetchServerAssignments(): Promise<Record<string, OrderAssignment>> {
     const res = await request<Record<string, OrderAssignment>>('/api/realtime/assignments', 'GET');
-    if (res.success) {
-      this.assignments = res.data || {};
-      this.notifyListeners();
-    } else {
+    if (res.success && res.data) {
+      const nextData = res.data;
+      const prevKeys = Object.keys(this.assignments);
+      const nextKeys = Object.keys(nextData);
+      let changed = prevKeys.length !== nextKeys.length;
+      if (!changed) {
+        for (const k of nextKeys) {
+          const a = this.assignments[k];
+          const b = nextData[k];
+          if (!a || a.driverId !== b.driverId || a.driverName !== b.driverName || Boolean(a.enRoute) !== Boolean(b.enRoute) || Boolean(a.acceptedByDriver) !== Boolean(b.acceptedByDriver)) {
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (changed) {
+        this.assignments = nextData;
+        this.notifyListeners();
+      }
+    } else if (!res.success) {
       console.warn('[Realtime Assignments] Falha ao consultar atribuições:', res.message);
     }
     return this.assignments;

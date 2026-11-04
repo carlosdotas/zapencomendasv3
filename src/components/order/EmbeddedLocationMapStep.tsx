@@ -17,10 +17,15 @@ import {
   BookUser,
   FileText,
   ChevronDown,
-  Check
+  Check,
+  Search,
+  Bike,
+  Users,
+  Zap,
+  CheckCircle2
 } from 'lucide-react';
 import L from 'leaflet';
-import { LocationCoordinates, Place, OperationType } from '../../types/map';
+import { LocationCoordinates, Place, OperationType, OrderVisibilityType } from '../../types/map';
 import { Customer } from '../../types/customer';
 import { reverseGeocode } from '../../services/geocodingService';
 import { CachedTileLayer, PRIMARY_TILE_CONFIG } from '../../services/tileCache';
@@ -28,6 +33,8 @@ import { extractCityFromAddress } from '../../utils/addressUtils';
 import { createPlaceMarkerIcon } from '../map/FullscreenMap';
 import { FloatingSearchBar } from '../search/FloatingSearchBar';
 import { OrderScheduleModal } from './OrderScheduleModal';
+import { useMapStore } from '../../context/MapContext';
+import { getDriverPermanentColor } from '../../utils/driverColorUtils';
 
 interface EmbeddedLocationMapStepProps {
   selectedCustomer: Customer | null;
@@ -100,6 +107,20 @@ interface EmbeddedLocationMapStepProps {
   onChangeCustomer: () => void;
   onOpenFullScreenMap?: () => void;
   onUpdateCustomerLocation?: (address: string, coords: LocationCoordinates) => void;
+
+  routePointConfigs?: Record<'pickup' | 'exchange' | 'delivery', {
+    visibility: OrderVisibilityType;
+    driverId: string;
+    sellerName: string;
+    sellerPhone: string;
+  }>;
+  onUpdateRoutePointConfig?: (point: 'pickup' | 'exchange' | 'delivery', update: Partial<{
+    visibility: OrderVisibilityType;
+    driverId: string;
+    sellerName: string;
+    sellerPhone: string;
+  }>) => void;
+  onSelectCustomer?: (customer: Customer) => void;
 }
 
 const DEFAULT_COORDS: LocationCoordinates = { lat: -16.6869, lng: -49.2648 }; // Centro de Goiânia
@@ -176,7 +197,10 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
   onOpenPhoneAgenda,
   onChangeCustomer,
   onOpenFullScreenMap,
-  onUpdateCustomerLocation
+  onUpdateCustomerLocation,
+  routePointConfigs,
+  onUpdateRoutePointConfig,
+  onSelectCustomer
 }) => {
   // Controle de qual ponto está sendo selecionado/editado no mapa:
   // Em Coleta: 'coleta' (Loja) ou 'entrega' (Cliente)
@@ -254,13 +278,76 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
     }
   }, [activeTargetPoint, operationType, pickupAddress, pickupCoords, deliveryAddress, deliveryCoords, exchangeAddress, exchangeCoords, selectedCustomer]);
 
-  // Modais de Controle Superior: Tipo, Agenda, Responsável e Observações
+  const { drivers, customers } = useMapStore();
+
+  // Modais de Controle: Tipo, Agenda, Responsável, Motorista e Cliente
   const [isTypeDropdownOpen, setIsTypeDropdownOpen] = useState(false);
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isResponsibleModalOpen, setIsResponsibleModalOpen] = useState(false);
   const [responsibleDialogTab, setResponsibleDialogTab] = useState<'coleta' | 'entrega' | 'troca'>(operationType);
-  const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
-  const [notesDialogTab, setNotesDialogTab] = useState<'coleta' | 'entrega' | 'troca'>(operationType);
+  const [isDriverModalOpen, setIsDriverModalOpen] = useState(false);
+  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
+
+  const activePointKey: 'pickup' | 'exchange' | 'delivery' = 
+    activeTargetPoint === 'coleta' ? 'pickup' 
+    : activeTargetPoint === 'troca' ? 'exchange' 
+    : 'delivery';
+
+  const isColetaStop = activeTargetPoint === 'coleta';
+  const isEntregaStop = activeTargetPoint === 'entrega';
+  const isTrocaStop = activeTargetPoint === 'troca';
+
+  const activePointConfig = routePointConfigs ? routePointConfigs[activePointKey] : undefined;
+  const assignedDriver = activePointConfig?.driverId 
+    ? drivers.find(d => d.id === activePointConfig.driverId) 
+    : null;
+
+  const activeResponsibleName = isColetaStop 
+    ? pickupContact 
+    : isEntregaStop 
+    ? deliveryContact 
+    : exchangeContact;
+
+  const activeResponsiblePhone = isColetaStop 
+    ? pickupPhone 
+    : isEntregaStop 
+    ? deliveryPhone 
+    : exchangePhone;
+
+  const hasActiveResponsible = Boolean(activeResponsibleName?.trim());
+
+  const activeNotesValue = isColetaStop 
+    ? pickupNotes 
+    : isEntregaStop 
+    ? deliveryNotes 
+    : isTrocaStop 
+    ? exchangeNotes 
+    : pickupNotes;
+
+  const handleActiveNotesChange = (val: string) => {
+    if (isColetaStop) {
+      onUpdatePickup({ notes: val });
+    } else if (isEntregaStop) {
+      onUpdateDelivery({ notes: val });
+    } else if (isTrocaStop) {
+      onUpdateExchange({ notes: val });
+    } else {
+      onUpdatePickup({ notes: val });
+      onUpdateDelivery({ notes: val });
+    }
+  };
+
+  const filteredModalCustomers = useMemo(() => {
+    const q = customerSearchTerm.trim().toLowerCase();
+    if (!q) return customers;
+    return customers.filter(c => 
+      (c.fullName && c.fullName.toLowerCase().includes(q)) ||
+      (c.phone && c.phone.includes(q)) ||
+      (c.address && c.address.toLowerCase().includes(q)) ||
+      (c.cpf && c.cpf.includes(q))
+    );
+  }, [customers, customerSearchTerm]);
 
   const todayStr = getTodayDateString();
   const hasScheduleSet = Boolean(
@@ -270,20 +357,6 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
     pickupTime ||
     deliveryTime ||
     (operationType === 'troca' && exchangeTime)
-  );
-
-  const hasResponsibleSet = Boolean(
-    (pickupContact && pickupContact.trim()) ||
-    (deliveryContact && deliveryContact.trim()) ||
-    (operationType === 'troca' && exchangeContact && exchangeContact.trim()) ||
-    pickupPhone ||
-    deliveryPhone
-  );
-
-  const hasNotesSet = Boolean(
-    (pickupNotes && pickupNotes.trim()) ||
-    (deliveryNotes && deliveryNotes.trim()) ||
-    (operationType === 'troca' && exchangeNotes && exchangeNotes.trim())
   );
 
   const [isGeocoding, setIsGeocoding] = useState(false);
@@ -808,49 +881,7 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
             )}
           </button>
 
-          {/* BOTÃO 3: RESPONSÁVEL (ABRE DIALOG DE RESPONSÁVEL/CONTATO) */}
-          <button
-            type="button"
-            onClick={() => {
-              setIsTypeDropdownOpen(false);
-              setResponsibleDialogTab(operationType);
-              setIsResponsibleModalOpen(true);
-            }}
-            className={`py-2 px-2.5 sm:px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer font-bold text-xs sm:text-sm select-none active:scale-95 border ${
-              hasResponsibleSet 
-                ? 'bg-blue-50 border-blue-300 text-[#0B5187] shadow-xs' 
-                : 'bg-white/80 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border-slate-200/80'
-            }`}
-            title="Definir responsável e telefone no local"
-          >
-            <User className={`w-4 h-4 shrink-0 ${hasResponsibleSet ? 'text-[#0B5187]' : 'text-slate-500'}`} />
-            <span className="hidden xs:inline">Responsável</span>
-            {hasResponsibleSet && (
-              <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Responsável informado" />
-            )}
-          </button>
 
-          {/* BOTÃO 4: OBSERVAÇÕES (ABRE DIALOG DE INSTRUÇÕES / NOTAS) */}
-          <button
-            type="button"
-            onClick={() => {
-              setIsTypeDropdownOpen(false);
-              setNotesDialogTab(operationType);
-              setIsNotesModalOpen(true);
-            }}
-            className={`py-2 px-2.5 sm:px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer font-bold text-xs sm:text-sm select-none active:scale-95 border ${
-              hasNotesSet 
-                ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-xs' 
-                : 'bg-white/80 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border-slate-200/80'
-            }`}
-            title="Instruções e observações para o motorista"
-          >
-            <FileText className={`w-4 h-4 shrink-0 ${hasNotesSet ? 'text-emerald-600' : 'text-slate-500'}`} />
-            <span className="hidden xs:inline">Obs</span>
-            {hasNotesSet && (
-              <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Observações adicionadas" />
-            )}
-          </button>
 
         </div>
       </div>
@@ -1091,7 +1122,7 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
                   className="text-[11px] font-extrabold text-[#0B5187] hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <Edit3 className="w-3 h-3" />
-                  <span>{isEditingAddressText ? 'Salvar' : 'Complemento'}</span>
+                  <span>{isEditingAddressText ? 'Salvar' : 'Alterar Nome'}</span>
                 </button>
                 <button
                   type="button"
@@ -1109,10 +1140,17 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
           {activeData.address ? (
             <div className="flex items-start gap-2 pt-0.5">
               <MapPin className="w-4 h-4 shrink-0 mt-0.5" style={{ color: activeData.themeColor }} />
-              <div className="min-w-0 flex-1">
-                <p className="text-xs sm:text-sm font-black text-slate-900 leading-snug line-clamp-2">
-                  {activeData.address}
-                </p>
+              <div 
+                className="min-w-0 flex-1 cursor-pointer group"
+                onClick={() => setIsEditingAddressText(true)}
+                title="Toque para alterar o nome do endereço"
+              >
+                <div className="flex items-center gap-1.5">
+                  <p className="text-xs sm:text-sm font-black text-slate-900 leading-snug line-clamp-2 group-hover:text-[#0B5187] transition-colors">
+                    {activeData.address}
+                  </p>
+                  <Edit3 className="w-3 h-3 text-slate-400 opacity-60 group-hover:opacity-100 group-hover:text-[#0B5187] shrink-0" />
+                </div>
               </div>
             </div>
           ) : (
@@ -1124,11 +1162,14 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
 
           {/* Campo de ajuste de complemento / texto inline */}
           {isEditingAddressText && activeData.address && (
-            <div className="pt-1 border-t border-slate-100 animate-in fade-in duration-100">
+            <div className="pt-1 border-t border-slate-100 animate-in fade-in duration-100 flex items-center gap-1.5">
               <input
                 type="text"
                 autoFocus
                 value={activeData.address}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') setIsEditingAddressText(false);
+                }}
                 onChange={(e) => {
                   const val = e.target.value;
                   if (activeTargetPoint === 'coleta') onUpdatePickup({ address: val });
@@ -1138,11 +1179,123 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
                     onUpdateDelivery({ address: val });
                   } else onUpdateExchange({ address: val });
                 }}
-                placeholder="Ex: Apto 102, Bloco B, portão verde..."
+                placeholder="Ex: Nome do local ou complemento..."
                 className="w-full px-2.5 py-1.5 bg-slate-50 border-2 border-[#0B5187] rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:bg-white shadow-2xs"
               />
+              <button
+                type="button"
+                onClick={() => setIsEditingAddressText(false)}
+                className="px-2.5 py-1.5 bg-[#0B5187] hover:bg-[#083D66] text-white rounded-xl text-xs font-bold shrink-0 cursor-pointer"
+              >
+                Salvar
+              </button>
             </div>
           )}
+
+          {/* OS TRÊS BOTÕES NA MESMA LINHA: CLIENTE | MOTORISTA | RESPONSÁVEL / VENDEDOR */}
+          <div className="grid grid-cols-3 gap-1.5 pt-1.5 border-t border-slate-100">
+            {/* BOTÃO 1: CLIENTE */}
+            <button
+              type="button"
+              onClick={() => setIsCustomerModalOpen(true)}
+              className={`py-1.5 px-1.5 sm:px-2 rounded-xl border flex flex-col items-center justify-center text-center transition-all cursor-pointer active:scale-95 shadow-2xs ${
+                selectedCustomer 
+                  ? 'bg-blue-50/90 border-blue-200 text-[#0B5187]' 
+                  : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80 text-slate-700 hover:text-slate-900'
+              }`}
+              title={selectedCustomer ? `Cliente: ${selectedCustomer.fullName}` : "Selecionar cliente"}
+            >
+              <div className="flex items-center gap-1 min-w-0 max-w-full">
+                <span className="text-xs">👤</span>
+                <span className="text-[11px] sm:text-xs font-black truncate max-w-[80px] sm:max-w-[110px]">
+                  {selectedCustomer ? selectedCustomer.fullName : 'Definir Cliente'}
+                </span>
+              </div>
+              <span className="text-[9px] font-bold text-slate-400 leading-none mt-0.5 truncate max-w-full">
+                {selectedCustomer ? 'Cliente' : 'Toque p/ definir'}
+              </span>
+            </button>
+
+            {/* BOTÃO 2: MOTORISTA */}
+            <button
+              type="button"
+              onClick={() => setIsDriverModalOpen(true)}
+              className={`py-1.5 px-1.5 sm:px-2 rounded-xl border flex flex-col items-center justify-center text-center transition-all cursor-pointer active:scale-95 shadow-2xs ${
+                assignedDriver 
+                  ? 'bg-emerald-50/90 border-emerald-200 text-emerald-900' 
+                  : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80 text-slate-700 hover:text-slate-900'
+              }`}
+              title={assignedDriver ? `Motorista direcionado: ${assignedDriver.name}` : "Definir motorista"}
+            >
+              <div className="flex items-center gap-1 min-w-0 max-w-full">
+                {assignedDriver ? (
+                  <span 
+                    className="w-2.5 h-2.5 rounded-full shrink-0 border border-white"
+                    style={{ backgroundColor: getDriverPermanentColor(assignedDriver.id || assignedDriver.phone || assignedDriver.name) }}
+                  />
+                ) : (
+                  <span className="text-xs">🛵</span>
+                )}
+                <span className="text-[11px] sm:text-xs font-black truncate max-w-[80px] sm:max-w-[110px]">
+                  {assignedDriver ? assignedDriver.name : 'Definir Motorista'}
+                </span>
+              </div>
+              <span className="text-[9px] font-bold text-slate-400 leading-none mt-0.5 truncate max-w-full">
+                {assignedDriver ? (assignedDriver.vehicleType || 'Motorista') : 'Aberto / Público'}
+              </span>
+            </button>
+
+            {/* BOTÃO 3: RESPONSÁVEL (NA COLETA) OU VENDEDOR (NA ENTREGA) */}
+            <button
+              type="button"
+              onClick={() => {
+                setResponsibleDialogTab(activePointKey === 'pickup' ? 'coleta' : activePointKey === 'exchange' ? 'troca' : 'entrega');
+                setIsResponsibleModalOpen(true);
+              }}
+              className={`py-1.5 px-1.5 sm:px-2 rounded-xl border flex flex-col items-center justify-center text-center transition-all cursor-pointer active:scale-95 shadow-2xs ${
+                hasActiveResponsible 
+                  ? 'bg-amber-50/90 border-amber-200 text-amber-900' 
+                  : 'bg-slate-50 hover:bg-slate-100 border-slate-200/80 text-slate-700 hover:text-slate-900'
+              }`}
+              title={isEntregaStop ? "Definir Vendedor / Responsável" : "Definir Responsável no local"}
+            >
+              <div className="flex items-center gap-1 min-w-0 max-w-full">
+                <span className="text-xs">{isEntregaStop ? '🏷️' : '📦'}</span>
+                <span className="text-[11px] sm:text-xs font-black truncate max-w-[80px] sm:max-w-[110px]">
+                  {activeResponsibleName || (isEntregaStop ? 'Definir Vendedor' : 'Definir Responsável')}
+                </span>
+              </div>
+              <span className="text-[9px] font-bold text-slate-400 leading-none mt-0.5 truncate max-w-full">
+                {isEntregaStop ? 'Vendedor' : 'Responsável'}
+              </span>
+            </button>
+          </div>
+
+          {/* TEXTAREA DIRETO DE OBSERVAÇÕES PARA O MOTORISTA */}
+          <div className="pt-1.5 flex flex-col gap-1">
+            <div className="flex items-center justify-between text-[11px] font-black text-slate-700">
+              <div className="flex items-center gap-1.5">
+                <FileText className="w-3.5 h-3.5 text-[#0B5187]" />
+                <span>Observações para o Motorista ({activeData.key === 'coleta' ? 'Coleta' : activeData.key === 'entrega' ? 'Entrega' : 'Troca'})</span>
+              </div>
+              <span className="text-[9.5px] font-bold uppercase tracking-wide px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                Destaque Motorista
+              </span>
+            </div>
+            <textarea
+              rows={2}
+              value={activeNotesValue}
+              onChange={(e) => handleActiveNotesChange(e.target.value)}
+              placeholder={
+                activeData.key === 'coleta'
+                  ? "Instruções na coleta (ex: retirar no balcão 2, procurar por Maria, portão verde)..."
+                  : activeData.key === 'entrega'
+                  ? "Instruções na entrega (ex: interfonar 203, deixar na portaria, falar com Carlos)..."
+                  : "Instruções de troca no local..."
+              }
+              className="w-full px-2.5 py-1.5 bg-amber-50/30 hover:bg-white focus:bg-white border-2 border-amber-200/90 focus:border-[#0B5187] rounded-xl text-xs font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#0B5187] shadow-2xs resize-none transition-all"
+            />
+          </div>
 
           {/* Erro de validação da etapa */}
           {stepErrors[activeData.errorKey] && (
@@ -1190,7 +1343,7 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
       />
 
       {/* ========================================================
-          DIALOG 2: RESPONSÁVEL NO LOCAL
+          DIALOG 2: RESPONSÁVEL / VENDEDOR NO LOCAL
           ======================================================== */}
       {isResponsibleModalOpen && (
         <div 
@@ -1208,8 +1361,18 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
                   <User className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-black">Responsável no Local</h3>
-                  <p className="text-[10px] text-white/70">Quem irá atender ou receber o pacote</p>
+                  <h3 className="text-sm font-black">
+                    {responsibleDialogTab === 'entrega' 
+                      ? 'Vendedor / Responsável pela Entrega' 
+                      : responsibleDialogTab === 'coleta'
+                      ? 'Responsável pela Coleta'
+                      : 'Responsável no Local'}
+                  </h3>
+                  <p className="text-[10px] text-white/70">
+                    {responsibleDialogTab === 'entrega'
+                      ? 'Vendedor ou contato para entrega do produto'
+                      : 'Quem irá atender ou liberar o pacote'}
+                  </p>
                 </div>
               </div>
               <button
@@ -1224,8 +1387,8 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
             {/* Abas Coleta / Entrega / Troca */}
             <div className="p-2.5 bg-slate-50 border-b border-slate-200 flex items-center gap-1.5">
               {[
-                { id: 'coleta', label: 'Coleta', color: '#0B5187', contact: pickupContact },
-                { id: 'entrega', label: 'Entrega', color: '#FF5E00', contact: deliveryContact },
+                { id: 'coleta', label: 'Coleta (Responsável)', color: '#0B5187', contact: pickupContact },
+                { id: 'entrega', label: 'Entrega (Vendedor)', color: '#FF5E00', contact: deliveryContact },
                 ...(operationType === 'troca' ? [{ id: 'troca', label: 'Troca', color: '#7C3AED', contact: exchangeContact }] : [])
               ].map((tab) => {
                 const isSelected = responsibleDialogTab === tab.id;
@@ -1241,7 +1404,7 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
                     }`}
                   >
                     <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tab.color }} />
-                    <span>{tab.label}</span>
+                    <span className="truncate">{tab.label}</span>
                     {tab.contact && (
                       <Check className="w-3 h-3 text-emerald-600 shrink-0 stroke-[3]" />
                     )}
@@ -1250,13 +1413,13 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
               })}
             </div>
 
-            {/* Formulário do Responsável */}
+            {/* Formulário do Responsável / Vendedor */}
             <div className="p-4 flex flex-col gap-3">
               {/* Nome */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-xs font-black text-slate-700">
-                    Nome do Responsável ({responsibleDialogTab === 'coleta' ? 'Coleta' : responsibleDialogTab === 'entrega' ? 'Entrega' : 'Troca'}):
+                    {responsibleDialogTab === 'entrega' ? 'Nome do Vendedor / Responsável:' : 'Nome do Responsável:'}
                   </label>
                   {selectedCustomer && (
                     <button
@@ -1293,7 +1456,7 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
                       else if (responsibleDialogTab === 'entrega') onUpdateDelivery({ contact: val });
                       else onUpdateExchange({ contact: val });
                     }}
-                    placeholder="Nome de quem vai receber ou entregar..."
+                    placeholder={responsibleDialogTab === 'entrega' ? "Nome do vendedor ou destinatário..." : "Nome de quem vai liberar ou receber..."}
                     className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-[#0B5187]"
                   />
                 </div>
@@ -1355,134 +1518,296 @@ export const EmbeddedLocationMapStep: React.FC<EmbeddedLocationMapStepProps> = (
       )}
 
       {/* ========================================================
-          DIALOG 3: OBSERVAÇÕES E INSTRUÇÕES
+          DIALOG 3: DEFINIR MOTORISTA (PARA ESTE PONTO)
           ======================================================== */}
-      {isNotesModalOpen && (
+      {isDriverModalOpen && (
         <div 
           className="fixed inset-0 z-[500] flex items-center justify-center p-3 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
-          onClick={() => setIsNotesModalOpen(false)}
+          onClick={() => setIsDriverModalOpen(false)}
         >
           <div 
-            className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full overflow-hidden flex flex-col animate-in zoom-in-95 duration-150 pointer-events-auto"
+            className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-md w-full max-h-[85vh] overflow-hidden flex flex-col animate-in zoom-in-95 duration-150 pointer-events-auto"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Cabeçalho */}
             <div className="px-4 py-3 bg-[#0B5187] text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center text-white">
-                  <FileText className="w-4 h-4" />
+                  <Bike className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-black">Instruções e Observações</h3>
-                  <p className="text-[10px] text-white/70">Avisos importantes para o entregador</p>
+                  <h3 className="text-sm font-black">Definir Motorista</h3>
+                  <p className="text-[10px] text-white/70">
+                    Etapa: {isColetaStop ? 'Coleta' : isEntregaStop ? 'Entrega' : 'Troca'}
+                  </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setIsNotesModalOpen(false)}
+                onClick={() => setIsDriverModalOpen(false)}
                 className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Abas Coleta / Entrega / Troca */}
-            <div className="p-2.5 bg-slate-50 border-b border-slate-200 flex items-center gap-1.5">
-              {[
-                { id: 'coleta', label: 'Coleta', color: '#0B5187', notes: pickupNotes },
-                { id: 'entrega', label: 'Entrega', color: '#FF5E00', notes: deliveryNotes },
-                ...(operationType === 'troca' ? [{ id: 'troca', label: 'Troca', color: '#7C3AED', notes: exchangeNotes }] : [])
-              ].map((tab) => {
-                const isSelected = notesDialogTab === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setNotesDialogTab(tab.id as any)}
-                    className={`flex-1 py-1.5 px-2 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
-                      isSelected 
-                        ? 'bg-white shadow-xs text-slate-900 border-slate-200' 
-                        : 'text-slate-500 hover:text-slate-800 border-transparent'
-                    }`}
-                  >
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tab.color }} />
-                    <span>{tab.label}</span>
-                    {tab.notes && (
-                      <Check className="w-3 h-3 text-emerald-600 shrink-0 stroke-[3]" />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Textarea e Sugestões */}
-            <div className="p-4 flex flex-col gap-2.5">
-              <label className="text-xs font-black text-slate-700">
-                Observações de {notesDialogTab === 'coleta' ? 'Coleta' : notesDialogTab === 'entrega' ? 'Entrega' : 'Troca'}:
-              </label>
-              <textarea
-                rows={3}
-                autoFocus
-                value={
-                  notesDialogTab === 'coleta' 
-                    ? pickupNotes 
-                    : notesDialogTab === 'entrega' 
-                    ? deliveryNotes 
-                    : exchangeNotes
-                }
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (notesDialogTab === 'coleta') onUpdatePickup({ notes: val });
-                  else if (notesDialogTab === 'entrega') onUpdateDelivery({ notes: val });
-                  else onUpdateExchange({ notes: val });
+            {/* Conteúdo: Lista de Motoristas */}
+            <div className="p-3 overflow-y-auto max-h-[60vh] flex flex-col gap-2">
+              {/* Opção Público / Aberto */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (onUpdateRoutePointConfig) {
+                    onUpdateRoutePointConfig(activePointKey, { driverId: '', visibility: 'publico' });
+                  }
+                  setIsDriverModalOpen(false);
                 }}
-                placeholder="Ex: Tocar interfone 204, falar com portaria social, ligar antes de chegar..."
-                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-[#0B5187] resize-none"
-              />
+                className={`w-full p-3 rounded-xl border text-left transition-all flex items-center justify-between cursor-pointer ${
+                  !activePointConfig?.driverId 
+                    ? 'border-emerald-500 bg-emerald-50/70 shadow-xs' 
+                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500 text-white flex items-center justify-center font-bold shadow-xs">
+                    <Zap className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-black text-slate-900">Aberto / Público</span>
+                      <span className="text-[10px] font-black uppercase px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800">
+                        Todos
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-medium">Qualquer motorista disponível da cidade poderá aceitar</p>
+                  </div>
+                </div>
+                {!activePointConfig?.driverId && (
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                )}
+              </button>
 
-              {/* Sugestões Rápidas */}
-              <div>
-                <p className="text-[10px] font-black uppercase text-slate-400 mb-1.5">Sugestões Rápidas:</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    'Portaria social',
-                    'Falar com a recepção',
-                    'Tocar interfone',
-                    'Ligar antes de chegar',
-                    'Deixar com vizinho',
-                    'Horário comercial'
-                  ].map((sug) => (
+              <div className="px-1 pt-2 pb-1 text-[10px] font-black uppercase text-slate-400">
+                Ou selecione um motorista específico:
+              </div>
+
+              {drivers && drivers.length > 0 ? (
+                drivers.map((driver) => {
+                  const isAssigned = activePointConfig?.driverId === driver.id;
+                  const permanentColor = getDriverPermanentColor(driver.id || driver.name);
+                  return (
                     <button
-                      key={sug}
+                      key={driver.id}
                       type="button"
                       onClick={() => {
-                        const current = notesDialogTab === 'coleta' 
-                          ? pickupNotes 
-                          : notesDialogTab === 'entrega' 
-                          ? deliveryNotes 
-                          : exchangeNotes;
-                        const updated = current ? `${current}. ${sug}` : sug;
-                        if (notesDialogTab === 'coleta') onUpdatePickup({ notes: updated });
-                        else if (notesDialogTab === 'entrega') onUpdateDelivery({ notes: updated });
-                        else onUpdateExchange({ notes: updated });
+                        if (onUpdateRoutePointConfig) {
+                          onUpdateRoutePointConfig(activePointKey, { driverId: driver.id, visibility: 'privado' });
+                        }
+                        setIsDriverModalOpen(false);
                       }}
-                      className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-bold transition-colors cursor-pointer border border-slate-200"
+                      className={`w-full p-3 rounded-xl border text-left transition-all flex items-center justify-between cursor-pointer ${
+                        isAssigned 
+                          ? 'border-[#0B5187] bg-blue-50/70 shadow-xs' 
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
                     >
-                      + {sug}
+                      <div className="flex items-center gap-3">
+                        <div 
+                          className="w-9 h-9 rounded-xl text-white flex items-center justify-center font-black text-xs shadow-xs shrink-0"
+                          style={{ backgroundColor: permanentColor }}
+                        >
+                          <Bike className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-black text-slate-900 truncate">{driver.name}</span>
+                            {driver.vehicleType && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-700">
+                                {driver.vehicleType}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500 font-medium">
+                            {driver.phone && <span>{driver.phone}</span>}
+                            {driver.currentCity && <span>• {driver.currentCity}</span>}
+                          </div>
+                        </div>
+                      </div>
+                      {isAssigned && (
+                        <CheckCircle2 className="w-5 h-5 text-[#0B5187] shrink-0" />
+                      )}
                     </button>
-                  ))}
+                  );
+                })
+              ) : (
+                <div className="py-6 text-center text-xs text-slate-400 font-medium">
+                  Nenhum motorista cadastrado no sistema.
                 </div>
-              </div>
+              )}
             </div>
 
-            {/* Rodapé do Dialog */}
+            {/* Rodapé */}
             <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end">
               <button
                 type="button"
-                onClick={() => setIsNotesModalOpen(false)}
-                className="px-5 py-2 bg-[#0B5187] hover:bg-[#083D66] text-white text-xs font-black rounded-xl shadow-sm transition-all cursor-pointer"
+                onClick={() => setIsDriverModalOpen(false)}
+                className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-black rounded-xl transition-all cursor-pointer"
               >
-                Concluir
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================
+          DIALOG 4: SELECIONAR CLIENTE
+          ======================================================== */}
+      {isCustomerModalOpen && (
+        <div 
+          className="fixed inset-0 z-[500] flex items-center justify-center p-3 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
+          onClick={() => setIsCustomerModalOpen(false)}
+        >
+          <div 
+            className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full max-h-[85vh] overflow-hidden flex flex-col animate-in zoom-in-95 duration-150 pointer-events-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Cabeçalho */}
+            <div className="px-4 py-3 bg-[#0B5187] text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center text-white">
+                  <Users className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black">Selecionar Cliente</h3>
+                  <p className="text-[10px] text-white/70">
+                    Vincule o cliente para preencher endereço e calcular a rota
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCustomerModalOpen(false)}
+                className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Campo de Busca */}
+            <div className="p-3 bg-slate-50 border-b border-slate-200">
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                  <Search className="w-4 h-4" />
+                </div>
+                <input
+                  type="text"
+                  autoFocus
+                  value={customerSearchTerm}
+                  onChange={(e) => setCustomerSearchTerm(e.target.value)}
+                  placeholder="Buscar por nome, telefone, endereço, documento..."
+                  className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm font-bold text-slate-900 focus:outline-none focus:border-[#0B5187]"
+                />
+                {customerSearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomerSearchTerm('')}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Conteúdo: Lista de Clientes */}
+            <div className="p-3 overflow-y-auto max-h-[55vh] flex flex-col gap-2">
+              {selectedCustomer && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onSelectCustomer) {
+                      onSelectCustomer(null as any);
+                    }
+                    setIsCustomerModalOpen(false);
+                  }}
+                  className="w-full p-2.5 rounded-xl border border-dashed border-rose-300 bg-rose-50/60 hover:bg-rose-100/60 text-left transition-all flex items-center justify-between cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    <X className="w-4 h-4 text-rose-500" />
+                    <span className="text-xs font-black text-rose-700">Desvincular cliente atual ({selectedCustomer.fullName})</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-rose-600">Limpar</span>
+                </button>
+              )}
+
+              {filteredModalCustomers && filteredModalCustomers.length > 0 ? (
+                filteredModalCustomers.map((cust) => {
+                  const isCurrent = selectedCustomer?.id === cust.id;
+                  return (
+                    <button
+                      key={cust.id}
+                      type="button"
+                      onClick={() => {
+                        if (onSelectCustomer) {
+                          onSelectCustomer(cust);
+                        }
+                        setIsCustomerModalOpen(false);
+                      }}
+                      className={`w-full p-3 rounded-xl border text-left transition-all flex items-center justify-between cursor-pointer ${
+                        isCurrent 
+                          ? 'border-[#0B5187] bg-blue-50/70 shadow-xs' 
+                          : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-xl bg-slate-100 text-[#0B5187] flex items-center justify-center font-black text-xs shrink-0 mt-0.5">
+                          <User className="w-4 h-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-black text-slate-900 truncate">{cust.fullName}</span>
+                            {cust.cpf && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-600">
+                                {cust.cpf}
+                              </span>
+                            )}
+                          </div>
+                          {cust.phone && (
+                            <p className="text-[11px] font-bold text-slate-600 flex items-center gap-1 mt-0.5">
+                              <Phone className="w-3 h-3 text-slate-400" />
+                              <span>{cust.phone}</span>
+                            </p>
+                          )}
+                          {cust.address && (
+                            <p className="text-[11px] font-medium text-slate-500 flex items-center gap-1 mt-0.5 line-clamp-1">
+                              <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="truncate">{cust.address}</span>
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      {isCurrent && (
+                        <CheckCircle2 className="w-5 h-5 text-[#0B5187] shrink-0 ml-2" />
+                      )}
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="py-8 text-center text-xs text-slate-400 font-medium">
+                  {customerSearchTerm ? 'Nenhum cliente encontrado para esta busca.' : 'Nenhum cliente cadastrado.'}
+                </div>
+              )}
+            </div>
+
+            {/* Rodapé */}
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsCustomerModalOpen(false)}
+                className="px-5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-black rounded-xl transition-all cursor-pointer"
+              >
+                Fechar
               </button>
             </div>
           </div>

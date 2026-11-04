@@ -12,6 +12,7 @@ import {
   getMonitorPlaces,
   type MonitorCityOption
 } from '../../utils/monitorData';
+import { getDriverPermanentColor } from '../../utils/driverColorUtils';
 
 const STORAGE_KEY = 'encomendaszap_monitor_cities';
 const AUTO_FOCUS_INTERVAL_MS = 15000;
@@ -121,9 +122,10 @@ export const MonitorMapLayer: React.FC = () => {
       const point: L.LatLngTuple = [driver.coordinates.lat, driver.coordinates.lng];
       points.push(point);
       const emoji = VEHICLE_EMOJI[driver.vehicleType] || '🏍️';
+      const driverColor = driver.color || getDriverPermanentColor(driver.id || driver.phone || driver.name);
       const icon = L.divIcon({
         className: 'monitor-driver-marker',
-        html: `<div style="width:28px;height:28px;border-radius:9999px;background:${driver.color || '#10B981'};border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1">${emoji}</div>`,
+        html: `<div style="width:28px;height:28px;border-radius:9999px;background:${driverColor};border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1">${emoji}</div>`,
         iconSize: [28, 28],
         iconAnchor: [14, 14]
       });

@@ -50,13 +50,23 @@ import {
   extractPhotoUrls,
   getOrderDateBadgeFromDate
 } from '../services/apiAdapters';
+import { excludeCoveredOrders, isTemporaryOrderId, getOrderKey, cleanOrderId, getBaseOrderId } from '../utils/orderIds';
+import { shouldApplyOrderSync, runOncePerKey } from '../utils/orderSync';
 import { filterPlacesBySequence } from '../utils/orderSequence';
-import { excludeCoveredOrders, isTemporaryOrderId } from '../utils/orderIds';
-import { runOncePerKey, shouldApplyOrderSync } from '../utils/orderSync';
 import { sanitizeNewOrderAssignments } from '../utils/newOrderAssignment';
 import { BackendPedido, BackendUser, BaixaProximity } from '../services/apiTypes';
 import { realtimeAssignmentService } from '../services/realtimeAssignmentService';
 import { backgroundGeolocationService, BackgroundTrackingStatus } from '../services/backgroundGeolocationService';
+import {
+  areArraysEqualFast,
+  getPlaceSignature,
+  getCustomerSignature,
+  getDriverSignature,
+  scheduleStorageSave,
+  scheduleIdleTask
+} from '../utils/backgroundScheduler';
+import { getDriverPermanentColor } from '../utils/driverColorUtils';
+import { getDriverCurrentCity, isPlaceInCity, KNOWN_CITIES } from '../utils/driverCityUtils';
 
 export interface CustomerLocationModalData {
   placeId?: string;
@@ -207,6 +217,7 @@ interface MapContextType {
   // Actions
   flyToLocation: (coords: LocationCoordinates, zoom?: number) => void;
   locateUser: () => void;
+  focusDriverLocation: () => void;
   viewAllMarkers: () => void;
   isLocating: boolean;
   userLocation: LocationCoordinates | null;
@@ -693,14 +704,18 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         : [];
 
       if (activePedidoIds.length > 0) {
-        const fullOrders = await Promise.all(
-          activePedidoIds.map(id => api.getPedido(id).then(r => r.data).catch(() => null))
-        );
-        fullOrders.forEach(p => {
-          if (p && p.id) {
-            pedidosMap.set(String(p.id), p);
-          }
-        });
+        const toFetch = activePedidoIds.slice(0, 30);
+        for (let i = 0; i < toFetch.length; i += 6) {
+          const chunk = toFetch.slice(i, i + 6);
+          const chunkOrders = await Promise.all(
+            chunk.map(id => api.getPedido(id).then(r => r.data).catch(() => null))
+          );
+          chunkOrders.forEach(p => {
+            if (p && p.id) {
+              pedidosMap.set(String(p.id), p);
+            }
+          });
+        }
       }
 
       if (!pedidosRes.success || !Array.isArray(pedidosRes.data)) {
@@ -768,6 +783,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Gera marcas com 'X' para coletas de pedidos vindos do backend cuja etapa já foi concluída
       const backendCompletedColetas: CompletedWaypointMark[] = [];
       if (pedidosRes && pedidosRes.success && Array.isArray(pedidosRes.data)) {
+        const savedColetaSet = new Set<string>();
+        savedMarks.forEach(m => {
+          if (m.operationType === 'coleta') {
+            savedColetaSet.add(m.orderId);
+            if (m.orderCode) savedColetaSet.add(m.orderCode);
+          }
+        });
+
         pedidosRes.data.forEach((p: any) => {
           const et = (p.etapa || '').toLowerCase().trim();
           const isColetado = et === 'coletado' || et === 'trocando' || et === 'trocado' || et === 'retornando' || et === 'entregando' || et === 'entregue';
@@ -778,7 +801,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (isNaN(cLat) || isNaN(cLng) || cLat === 0 || cLng === 0) return;
 
           const markId = `backend-coleta-${p.id}`;
-          const hasLocal = savedMarks.some(m => (m.orderId === `pedido-${p.id}` || m.orderId === String(p.id)) && m.operationType === 'coleta');
+          const hasLocal = savedColetaSet.has(`pedido-${p.id}`) || savedColetaSet.has(String(p.id)) || (p.order_code && savedColetaSet.has(p.order_code));
           if (hasLocal) return;
 
           const rawTime = p.coleta_saida_at || p.coleta_chegada_at || p.data || p.created_at;
@@ -867,21 +890,28 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const stamp = Number(p.id.replace('pedido-', '').split('-')[0]);
             return stamp > 1000000000 && Date.now() - stamp < freshLocalWindowMs;
           });
-          const finalPlaces = [...allCombinedActivePlaces];
+          // Garante que cada pedido no mapa tenha no máximo 1 ponto ativo (nunca duplica por coleta/entrega)
+          const dedupedOrderPlaces = new Map<string, Place>();
+          for (const fp of allCombinedActivePlaces) {
+            const key = getOrderKey(fp);
+            if (!dedupedOrderPlaces.has(key)) {
+              dedupedOrderPlaces.set(key, fp);
+            }
+          }
+          const finalPlaces = Array.from(dedupedOrderPlaces.values());
+          const finalPlaceKeys = new Set(Array.from(dedupedOrderPlaces.keys()));
           locallyCreatedPending.forEach(lp => {
-            if (!finalPlaces.some(fp => fp.id === lp.id || (lp.orderCode && fp.orderCode === lp.orderCode))) {
+            const key = getOrderKey(lp);
+            if (!finalPlaceKeys.has(key)) {
               finalPlaces.unshift(lp);
+              finalPlaceKeys.add(key);
             }
           });
 
-          const prevKey = prev.map(p => `${p.id}_${p.orderStage}_${p.name}_${p.imageUrl || ''}`).sort().join('|');
-          const nextKey = finalPlaces.map(p => `${p.id}_${p.orderStage}_${p.name}_${p.imageUrl || ''}`).sort().join('|');
-          if (prevKey === nextKey && prev.length === finalPlaces.length) {
+          if (areArraysEqualFast(prev, finalPlaces, getPlaceSignature)) {
             return prev;
           }
-          try {
-            localStorage.setItem('encomendaszap_all_places', JSON.stringify(finalPlaces));
-          } catch {}
+          scheduleStorageSave('encomendaszap_all_places', finalPlaces);
           return finalPlaces;
         });
       }
@@ -889,14 +919,18 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Coleta pedidos concluídos/entregues para exibição na Central de Pedidos (sem aparecer no mapa)
       if (pedidosRes && pedidosRes.success && Array.isArray(pedidosRes.data)) {
         const doneList: Place[] = [];
+        const seenDoneKeys = new Set<string>();
         pedidosRes.data.forEach((p: any) => {
           const et = (p.etapa || '').toLowerCase().trim();
           if (et !== 'entregue' && et !== 'finalizado' && et !== 'concluido' && et !== 'cancelado') return;
           const place = backendPedidoToPlace(p as BackendPedido);
-          // Garante que o orderStage está marcado como concluido
-          doneList.push({ ...place, orderStage: 'concluido' });
+          const key = getOrderKey(place);
+          if (!seenDoneKeys.has(key)) {
+            seenDoneKeys.add(key);
+            doneList.push({ ...place, orderStage: 'concluido' });
+          }
         });
-        setCompletedOrders(prev => JSON.stringify(prev) === JSON.stringify(doneList) ? prev : doneList);
+        setCompletedOrders(prev => areArraysEqualFast(prev, doneList, getPlaceSignature) ? prev : doneList);
       }
 
       // Se há um local atualmente selecionado, sincroniza com os dados frescos do servidor
@@ -915,7 +949,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       // 3. Busca Clientes / Usuários do backend (POST /pedidos/list_users)
-      if (Date.now() - lastCustomersSyncAt.current >= 30000) {
+      // Intervalo espaçado para 3 minutos em segundo plano para não sobrecarregar a thread principal nem o backend
+      if (Date.now() - lastCustomersSyncAt.current >= 180000) {
         const syncVersion = customerMutationVersion.current;
         const users: BackendUser[] = [];
         let cursor: string | undefined;
@@ -939,7 +974,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (usersLoadComplete && syncVersion === customerMutationVersion.current) {
           const nextCustomers = users.map(backendUserToCustomer);
-          setCustomers(prev => JSON.stringify(prev) === JSON.stringify(nextCustomers) ? prev : nextCustomers);
+          setCustomers(prev => areArraysEqualFast(prev, nextCustomers, getCustomerSignature) ? prev : nextCustomers);
           lastCustomersSyncAt.current = Date.now();
         }
       }
@@ -948,7 +983,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (currentRole !== 'motorista') {
         const liveDrivers = await driverTrackingClient.fetchLiveDrivers();
         const validLiveDrivers = liveDrivers.filter(d => !isDriverStale(d));
-        setDrivers(prev => JSON.stringify(prev) === JSON.stringify(validLiveDrivers) ? prev : validLiveDrivers);
+        setDrivers(prev => areArraysEqualFast(prev, validLiveDrivers, getDriverSignature) ? prev : validLiveDrivers);
       } else {
         setDrivers(prev => prev.length ? [] : prev);
       }
@@ -978,8 +1013,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (queued) { queued = false; void run(true); }
       }
     };
-    const periodicRefresh = () => { void run(); };
-    const immediateRefresh = () => { void run(true); };
+    const periodicRefresh = () => { scheduleIdleTask(() => { void run(); }); };
+    const immediateRefresh = () => { scheduleIdleTask(() => { void run(true); }); };
     const timer = window.setInterval(periodicRefresh, 30000);
     window.addEventListener('zap:refresh-orders', immediateRefresh);
     document.addEventListener('visibilitychange', immediateRefresh);
@@ -1072,9 +1107,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
 
         if (hasChanges) {
-          try {
-            localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
-          } catch {}
+          scheduleStorageSave('encomendaszap_all_places', next);
           return next;
         }
         return prev;
@@ -1090,9 +1123,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return assignment?.driverId ? place : clearAcceptedAssignment(place);
         });
         if (next.every((place, index) => place === prev[index])) return prev;
-        try {
-          localStorage.setItem('encomendaszap_saved_places', JSON.stringify(next));
-        } catch {}
+        scheduleStorageSave('encomendaszap_saved_places', next);
         return next;
       });
 
@@ -1340,7 +1371,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...(partial.operationType && !partial.orderStage ? { tipo_encomenda: partial.operationType } : {}),
         ...(partial.vehicleType ? { tipo_veiculo: partial.vehicleType } : {}),
         ...((partial.driverNotes !== undefined || partial.observations !== undefined)
-          ? { detalhes: partial.driverNotes ?? partial.observations ?? '' }
+          ? { detalhes: partial.observations ?? partial.driverNotes ?? '' }
           : {}),
         ...(partial.price !== undefined ? { total: partial.price } : {}),
         ...(partial.name ? { local: partial.name } : {}),
@@ -1350,26 +1381,19 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...(partial.pickupCoordinates?.lng ? { coleta_lng: partial.pickupCoordinates.lng } : {}),
         ...(partial.pickupContact ? { coleta_contato: partial.pickupContact } : {}),
         ...(partial.pickupPhone ? { coleta_phone: partial.pickupPhone } : {}),
-        ...(partial.pickupNotes !== undefined ? { coleta_obs: partial.pickupNotes } : {}),
+        ...(partial.pickupNotes !== undefined ? { coleta_obs: partial.pickupNotes, pickupNotes: partial.pickupNotes } : {}),
         ...(partial.deliveryName ? { entrega_nome: partial.deliveryName, entrega_local: partial.deliveryName } : {}),
         ...(partial.deliveryAddress ? { entrega_endereco: partial.deliveryAddress } : {}),
         ...(partial.deliveryCoordinates?.lat ? { entrega_lat: partial.deliveryCoordinates.lat } : {}),
         ...(partial.deliveryCoordinates?.lng ? { entrega_lng: partial.deliveryCoordinates.lng } : {}),
         ...(partial.deliveryContact ? { entrega_contato: partial.deliveryContact } : {}),
         ...(partial.deliveryPhone ? { entrega_phone: partial.deliveryPhone } : {}),
-        ...(partial.deliveryNotes !== undefined ? { entrega_obs: partial.deliveryNotes } : {}),
+        ...(partial.deliveryNotes !== undefined ? { entrega_obs: partial.deliveryNotes, deliveryNotes: partial.deliveryNotes } : {}),
         ...(partial.exchangeName ? { troca_nome: partial.exchangeName } : {}),
         ...(partial.exchangeAddress ? { troca_endereco: partial.exchangeAddress } : {}),
         ...(partial.exchangeCoordinates?.lat ? { troca_lat: partial.exchangeCoordinates.lat } : {}),
         ...(partial.exchangeCoordinates?.lng ? { troca_lng: partial.exchangeCoordinates.lng } : {}),
-        ...(partial.exchangeNotes !== undefined ? { troca_obs: partial.exchangeNotes } : {}),
-        ...(partial.observations !== undefined || partial.driverNotes !== undefined
-          ? routePoint === 'pickup'
-            ? { coleta_obs: partial.observations ?? partial.driverNotes ?? '' }
-            : routePoint === 'exchange'
-              ? { troca_obs: partial.observations ?? partial.driverNotes ?? '' }
-              : { entrega_obs: partial.observations ?? partial.driverNotes ?? '' }
-          : {}),
+        ...(partial.exchangeNotes !== undefined ? { troca_obs: partial.exchangeNotes, exchangeNotes: partial.exchangeNotes } : {}),
         ...({
           pickupVisibility: resolvedPlace.pickupVisibility,
           pickupAssignedDriverId: resolvedPlace.pickupAssignedDriverId ?? '',
@@ -1924,7 +1948,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         vehicleType: 'moto',
         vehicleModel: 'Moto / Veículo de Entrega',
         vehiclePlate: 'BRA-2025',
-        color: '#FF5E00',
+        color: getDriverPermanentColor(user.id || user.phone || user.name),
         coordinates: {
           lat: DEFAULT_COORDS.lat,
           lng: DEFAULT_COORDS.lng,
@@ -1957,7 +1981,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       vehicleType: 'moto',
       vehicleModel: 'Moto / Veículo de Entrega',
       vehiclePlate: 'BRA-2025',
-      color: '#FF5E00',
+      color: getDriverPermanentColor(user.id || user.phone || user.name),
       coordinates: {
         lat: DEFAULT_COORDS.lat,
         lng: DEFAULT_COORDS.lng,
@@ -1982,11 +2006,17 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     driverTrackingClient.connect();
 
     driverTrackingClient.fetchLiveDrivers().then((liveList) => {
-      setDrivers(liveList.filter(d => !isDriverStale(d)));
+      setDrivers(liveList.filter(d => !isDriverStale(d)).map(d => ({
+        ...d,
+        color: getDriverPermanentColor(d.id || d.phone || d.name)
+      })));
     });
 
     const unsubInit = driverTrackingClient.onDriversInit((initList) => {
-      setDrivers(initList.filter(d => !isDriverStale(d)));
+      setDrivers(initList.filter(d => !isDriverStale(d)).map(d => ({
+        ...d,
+        color: getDriverPermanentColor(d.id || d.phone || d.name)
+      })));
     });
 
     const unsubUpdate = driverTrackingClient.onDriverUpdate((driver) => {
@@ -1994,14 +2024,18 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setDrivers(prev => prev.filter(d => d.id !== driver.id));
         return;
       }
+      const enrichedDriver: Driver = {
+        ...driver,
+        color: getDriverPermanentColor(driver.id || driver.phone || driver.name)
+      };
       setDrivers(prev => {
-        const index = prev.findIndex(d => d.id === driver.id);
+        const index = prev.findIndex(d => d.id === enrichedDriver.id);
         if (index >= 0) {
           const next = [...prev];
-          next[index] = driver;
+          next[index] = enrichedDriver;
           return next;
         }
-        return [...prev, driver];
+        return [...prev, enrichedDriver];
       });
     });
 
@@ -2496,7 +2530,11 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       cidade: newPlace.originCity || 'Goiânia',
       tipo_encomenda: newPlace.operationType || 'coleta',
       tipo_veiculo: newPlace.vehicleType || 'moto',
-      detalhes: newPlace.driverNotes || '',
+      detalhes: newPlace.observations || newPlace.driverNotes || '',
+      observations: newPlace.observations || '',
+      pickupNotes: newPlace.pickupNotes || '',
+      deliveryNotes: newPlace.deliveryNotes || '',
+      exchangeNotes: newPlace.exchangeNotes || '',
       valor: newPlace.price !== undefined ? newPlace.price + (newPlace.totalDiscounts || 0) : undefined,
       desconto: newPlace.totalDiscounts || 0,
       total: newPlace.price,
@@ -2607,15 +2645,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       orderMutationVersion.current += 1;
       tempPedidoIdMap.set(newPlace.id, serverPlaceId);
       const persistedPlace: Place = { ...newPlace, id: serverPlaceId, orderCode: serverOrderCode };
-      // Remove o rascunho e qualquer cópia já trazida pela atualização do servidor para nunca duplicar
+      const persistedKey = getOrderKey(persistedPlace);
+      // Remove qualquer rascunho, variante de coleta/entrega ou cópia para manter rigorosamente 1 único pedido
       setAllPlaces(prev => {
-        const next = [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId)];
+        const next = [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId && getOrderKey(p) !== persistedKey)];
         try {
           localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
         } catch {}
         return next;
       });
-      setSavedPlaces(prev => [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId)]);
+      setSavedPlaces(prev => [persistedPlace, ...prev.filter(p => p.id !== newPlace.id && p.id !== serverPlaceId && getOrderKey(p) !== persistedKey)]);
       setSelectedPlace(prev => (!prev || prev.id === newPlace.id) ? persistedPlace : prev);
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('zap:refresh-orders'));
@@ -3174,18 +3213,76 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     toggleUserTracking();
   }, [toggleUserTracking]);
 
+  // Foco imediato na localização atual do motorista (moto) com zoom 17 e retomada do seguimento GPS
+  const focusDriverLocation = useCallback(() => {
+    const targetCoords = (userLocation && typeof userLocation.lat === 'number' && !isNaN(userLocation.lat) && userLocation.lat !== 0)
+      ? userLocation
+      : (currentCoords && typeof currentCoords.lat === 'number' && !isNaN(currentCoords.lat) && currentCoords.lat !== 0)
+      ? currentCoords
+      : DEFAULT_COORDS;
+
+    const targetZoom = 17;
+
+    // 1. Garante que o rastreamento está ativo
+    if (!isTrackingUser) {
+      toggleUserTracking();
+    }
+
+    // 2. Dispara evento para o FullscreenMap limpar qualquer trava de arrasto manual
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('zap:focus-driver', {
+        detail: { coords: targetCoords, zoom: targetZoom }
+      }));
+    }
+
+    // 3. Centraliza a câmera no mapa
+    if (mapInstance && targetCoords) {
+      mapInstance.flyTo([targetCoords.lat, targetCoords.lng], targetZoom, {
+        duration: 1.0,
+        easeLinearity: 0.25
+      });
+    } else if (targetCoords) {
+      flyToLocation(targetCoords, targetZoom);
+    }
+
+    // 4. Solicita fix GPS de alta precisão
+    acquireBestPosition(
+      (coords) => {
+        setUserLocation(coords);
+        setCurrentCoords(coords);
+        setHasRealGpsFix(true);
+        if (mapInstance) {
+          mapInstance.flyTo([coords.lat, coords.lng], targetZoom, {
+            duration: 1.0,
+            easeLinearity: 0.25
+          });
+        }
+      },
+      (err) => {
+        console.warn('Focus driver GPS acquisition warning:', err);
+      }
+    );
+  }, [isTrackingUser, userLocation, currentCoords, mapInstance, flyToLocation, toggleUserTracking, acquireBestPosition]);
+
   const viewAllMarkers = useCallback(() => {
     if (!mapInstance) return;
 
     // Se estiver seguindo a posição GPS, desativa para manter a visualização em todas as makers
     stopUserTracking();
 
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('zap:manual-pan'));
+    }
+
     // Agrupa todas as makers ativas (allPlaces + savedPlaces)
     const placesMap = new Map<string, Place>();
     (allPlaces || []).forEach(p => placesMap.set(p.id, p));
     (savedPlaces || []).forEach(p => placesMap.set(p.id, p));
 
-    const validPlaces = Array.from(placesMap.values()).filter(p => 
+    // Filtra marcadores válidos e não concluídos
+    const rawValidPlaces = Array.from(placesMap.values()).filter(p => 
+      p.orderStage !== 'concluido' &&
+      (p.operationType as any) !== 'concluido' &&
       p.coordinates &&
       typeof p.coordinates.lat === 'number' &&
       typeof p.coordinates.lng === 'number' &&
@@ -3195,7 +3292,85 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       p.coordinates.lng !== 0
     );
 
-    if (validPlaces.length === 0) {
+    // 1. SE FOR MOTORISTA:
+    // "tem que visualizar a moto e as makers, apenas da cidade em que o motorista estiver.
+    // Se estiver em Goiânia, visualiza só em Goiânia; se estiver em Anápolis, visualiza só em Anápolis."
+    if (currentRole === 'motorista') {
+      const driverPos = (userLocation && typeof userLocation.lat === 'number' && !isNaN(userLocation.lat) && userLocation.lat !== 0)
+        ? userLocation
+        : currentCoords;
+      const driverCity = getDriverCurrentCity(driverPos, user);
+
+      // Filtra makers apenas da cidade atual do motorista atribuídas ou visíveis
+      const cityPlaces = rawValidPlaces.filter(p => {
+        if (!isPlaceInCity(p, driverCity)) return false;
+        return realtimeAssignmentService.isPlaceAssignedToUser(p, user);
+      });
+
+      const points: Array<{ lat: number; lng: number }> = [];
+      if (driverPos && typeof driverPos.lat === 'number' && !isNaN(driverPos.lat) && driverPos.lat !== 0) {
+        points.push(driverPos);
+      }
+      cityPlaces.forEach(p => points.push(p.coordinates));
+
+      if (points.length === 0) {
+        const fallbackCenter = KNOWN_CITIES.find(c => c.name === driverCity)?.center || DEFAULT_COORDS;
+        mapInstance.flyTo([fallbackCenter.lat, fallbackCenter.lng], 15, { animate: true, duration: 1.2 });
+        return;
+      }
+
+      if (points.length === 1) {
+        mapInstance.flyTo([points[0].lat, points[0].lng], 16, { animate: true, duration: 1.2 });
+        return;
+      }
+
+      const lats = points.map(p => p.lat);
+      const lngs = points.map(p => p.lng);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLng = Math.min(...lngs);
+      const maxLng = Math.max(...lngs);
+
+      if (minLat === maxLat && minLng === maxLng) {
+        mapInstance.flyTo([minLat, minLng], 16, { animate: true, duration: 1.2 });
+      } else {
+        mapInstance.fitBounds(
+          [
+            [minLat, minLng],
+            [maxLat, maxLng]
+          ],
+          {
+            padding: [75, 75],
+            maxZoom: 16,
+            animate: true,
+            duration: 1.2
+          }
+        );
+      }
+      return;
+    }
+
+    // 2. SE FOR ADMIN / ATENDENTE / TERMINAL:
+    // "Na administração, deve visualizar tudo, inclusive as motos que estiverem rodando.
+    // Quando clicar, deve abrir e mostrar tudo, com as motos também."
+    const activeRunningMotos = (drivers || []).filter(d => 
+      d.status !== 'offline' &&
+      !isDriverStale(d) &&
+      d.coordinates &&
+      typeof d.coordinates.lat === 'number' &&
+      typeof d.coordinates.lng === 'number' &&
+      !isNaN(d.coordinates.lat) &&
+      !isNaN(d.coordinates.lng) &&
+      d.coordinates.lat !== 0 &&
+      d.coordinates.lng !== 0
+    );
+
+    const points: Array<{ lat: number; lng: number }> = [
+      ...rawValidPlaces.map(p => p.coordinates),
+      ...activeRunningMotos.map(d => d.coordinates)
+    ];
+
+    if (points.length === 0) {
       if (userLocation) {
         mapInstance.flyTo([userLocation.lat, userLocation.lng], 15, { animate: true, duration: 1 });
       } else if (currentCoords) {
@@ -3204,14 +3379,13 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return;
     }
 
-    if (validPlaces.length === 1) {
-      const single = validPlaces[0];
-      mapInstance.flyTo([single.coordinates.lat, single.coordinates.lng], 16, { animate: true, duration: 1.2 });
+    if (points.length === 1) {
+      mapInstance.flyTo([points[0].lat, points[0].lng], 16, { animate: true, duration: 1.2 });
       return;
     }
 
-    const lats = validPlaces.map(p => p.coordinates.lat);
-    const lngs = validPlaces.map(p => p.coordinates.lng);
+    const lats = points.map(p => p.lat);
+    const lngs = points.map(p => p.lng);
     const minLat = Math.min(...lats);
     const maxLat = Math.max(...lats);
     const minLng = Math.min(...lngs);
@@ -3226,14 +3400,14 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           [maxLat, maxLng]
         ],
         {
-          padding: [70, 70],
+          padding: [75, 75],
           maxZoom: 16,
           animate: true,
           duration: 1.2
         }
       );
     }
-  }, [mapInstance, allPlaces, savedPlaces, userLocation, currentCoords, stopUserTracking]);
+  }, [mapInstance, allPlaces, savedPlaces, drivers, currentRole, userLocation, currentCoords, user, stopUserTracking]);
 
   const retryGps = useCallback(() => {
     setGpsError(null);
@@ -3296,23 +3470,35 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
+    const baseKey = getOrderKey({ id: placeId });
+    const cleanId = cleanOrderId(placeId) || placeId.replace(/\D/g, '');
+    const isTarget = (p: { id: string; orderCode?: string }) => {
+      if (!p || !p.id) return false;
+      if (p.id === placeId) return true;
+      if (getOrderKey(p) === baseKey) return true;
+      const num = cleanOrderId(p.id) || (p.orderCode ? p.orderCode.replace(/\D/g, '') : '');
+      if (cleanId && num && cleanId === num) return true;
+      return false;
+    };
+
     // Pedidos que nunca chegaram ao servidor (id local) só precisam sair do cache local
-    const isServerOrder = /\d/.test(placeId) && !/^pedido-\d{10,}/.test(placeId);
+    const isServerOrder = /\d/.test(placeId) && !isTemporaryOrderId(placeId);
     if (isServerOrder) {
       try {
-        const res = await api.deletePedido(placeId);
-        if (!res?.success) {
+        const res = await api.deletePedido(cleanId || placeId);
+        if (res && res.success === false && res.message?.toLowerCase().includes('permissão')) {
           console.warn('[MapContext.deletePlace] Servidor recusou a exclusão:', res?.message);
           return false;
         }
       } catch (err) {
         console.warn('[MapContext.deletePlace] Erro ao excluir pedido na API:', err);
-        return false;
       }
     }
 
+    orderMutationVersion.current += 1;
+
     setAllPlaces(prev => {
-      const next = prev.filter(p => p.id !== placeId);
+      const next = prev.filter(p => !isTarget(p));
       try {
         localStorage.setItem('encomendaszap_all_places', JSON.stringify(next));
       } catch {}
@@ -3320,14 +3506,38 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     setSavedPlaces(prev => {
-      const next = prev.filter(p => p.id !== placeId);
+      const next = prev.filter(p => !isTarget(p));
       try {
         localStorage.setItem('encomendaszap_saved_places', JSON.stringify(next));
       } catch {}
       return next;
     });
 
-    setSelectedPlace(prev => (prev?.id === placeId ? null : prev));
+    setCompletedOrders(prev => {
+      const next = prev.filter(p => !isTarget(p));
+      try {
+        localStorage.setItem('encomendaszap_completed_orders', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    setCompletedWaypointMarks(prev => {
+      const next = prev.filter(m => !m.orderId || !isTarget({ id: m.orderId, orderCode: m.orderCode }));
+      try {
+        localStorage.setItem('encomendaszap_completed_marks', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    setSelectedPlace(prev => (prev && isTarget(prev) ? null : prev));
+
+    try {
+      realtimeAssignmentService.unassignOrder(placeId);
+      if (cleanId) {
+        realtimeAssignmentService.unassignOrder(cleanId);
+        realtimeAssignmentService.unassignOrder(`pedido-${cleanId}`);
+      }
+    } catch {}
 
     return true;
   }, [currentRole]);
@@ -3476,6 +3686,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAllOperationsFilter,
         flyToLocation,
         locateUser,
+        focusDriverLocation,
         viewAllMarkers,
         isLocating,
         userLocation,

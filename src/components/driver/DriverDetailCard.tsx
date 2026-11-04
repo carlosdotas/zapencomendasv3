@@ -17,11 +17,13 @@ import {
 import { useMapStore } from '../../context/MapContext';
 import { formatLastSeen } from '../../utils/driverUtils';
 import { formatDriverLastSeen } from '../../services/driverTrackingClient';
+import { getDriverPermanentColor } from '../../utils/driverColorUtils';
 
 export const DriverDetailCard: React.FC = () => {
   const { selectedDriver, setSelectedDriver, flyToLocation, calculateRouteToPlace, selectedPlace } = useMapStore();
 
   if (!selectedDriver) return null;
+  const driverColor = selectedDriver.color || getDriverPermanentColor(selectedDriver.id || selectedDriver.phone || selectedDriver.name);
 
   const handleWhatsApp = () => {
     let cleanPhone = selectedDriver.phone.replace(/\D/g, '');
@@ -60,7 +62,7 @@ export const DriverDetailCard: React.FC = () => {
         {/* Header com a cor do motorista e Foto do Perfil */}
         <div 
           className="p-3.5 text-white flex items-center justify-between transition-colors shadow-xs"
-          style={{ backgroundColor: selectedDriver.color }}
+          style={{ backgroundColor: driverColor }}
         >
           <div className="flex items-center gap-3 min-w-0">
             {/* Foto Real do Motorista com indicador de veículo no cantinho */}
@@ -75,7 +77,7 @@ export const DriverDetailCard: React.FC = () => {
               />
               <div 
                 className="absolute -bottom-1 -right-1 w-5 h-5 rounded-full border-2 border-white flex items-center justify-center shadow-xs"
-                style={{ backgroundColor: selectedDriver.color }}
+                style={{ backgroundColor: driverColor }}
               >
                 <VehicleIcon className="w-3 h-3 text-white stroke-[2.5]" />
               </div>
@@ -153,7 +155,7 @@ export const DriverDetailCard: React.FC = () => {
               <div className="flex items-center gap-1 mt-0.5">
                 <span 
                   className="w-2 h-2 rounded-full animate-ping"
-                  style={{ backgroundColor: selectedDriver.color }}
+                  style={{ backgroundColor: driverColor }}
                 />
                 <span className="text-xs font-black text-slate-800">
                   {selectedDriver.status === 'em_rota' ? 'Em rota' : 'Disponível'}

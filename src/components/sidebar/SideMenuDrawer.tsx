@@ -19,8 +19,10 @@ import { useMapStore } from '../../context/MapContext';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 import { usePWAUpdate } from '../../services/pwaUpdateService';
 import { UserAvatar } from '../common/UserAvatar';
+import { useAppVersion } from '../../hooks/useAppVersion';
 
 export const SideMenuDrawer: React.FC = () => {
+  const appVersion = useAppVersion();
   const { 
     isSidebarOpen, 
     setIsSidebarOpen, 
@@ -315,7 +317,7 @@ export const SideMenuDrawer: React.FC = () => {
 
         {/* Rodapé Clean */}
         <div className="p-3 border-t border-slate-100 bg-slate-50 text-[11px] text-slate-500 flex items-center justify-between px-4">
-          <span className="font-semibold">EncomendasZap</span>
+          <span className="font-semibold">EncomendasZap {appVersion}</span>
           <div className="flex items-center gap-1.5 text-slate-400 font-medium">
             <Globe2 className="w-3.5 h-3.5 text-[#0B5187]" />
             <span>Goiânia - GO</span>

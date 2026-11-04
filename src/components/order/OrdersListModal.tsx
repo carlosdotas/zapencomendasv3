@@ -33,13 +33,12 @@ import {
   Box
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
-import { Place } from '../../types/map';
+import { Place, DateRangeFilter } from '../../types/map';
 import { useBackButton } from '../../hooks/useBackButton';
 import { CalendarFilterModal } from '../navigation/CalendarFilterModal';
-import { DateRangeFilter } from '../../types/map';
 import { realtimeAssignmentService } from '../../services/realtimeAssignmentService';
 import { canClaimOrders } from '../../utils/canClaimOrders';
-import { getBaseOrderId } from '../../utils/orderIds';
+import { getBaseOrderId, getOrderKey } from '../../utils/orderIds';
 import { api } from '../../services/api';
 import { collectOpenBills, buildOpenBillsMessage } from '../../utils/customerBilling';
 
@@ -165,19 +164,60 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [trackingLinkOrderId, setTrackingLinkOrderId] = useState<string | null>(null);
 
-  // Consolida todos os pedidos do mapa sem duplicidades (ativos + concluídos)
+  // Consolida todos os pedidos do mapa sem duplicidades (1 pedido = 1 card, nunca duplica por coleta/entrega)
   const uniqueOrders = useMemo(() => {
     const map = new Map<string, Place>();
-    [...allPlaces, ...savedPlaces].forEach(p => {
-      if (p && p.id) map.set(p.id, p);
+    const mergePlaceLegs = (base: Place, next: Place): Place => ({
+      ...base,
+      ...next,
+      id: base.id && !base.id.endsWith('-coleta') && !base.id.endsWith('-entrega') && !base.id.endsWith('-troca') ? base.id : next.id,
+      orderCode: base.orderCode || next.orderCode,
+      pickupName: base.pickupName || next.pickupName,
+      pickupAddress: base.pickupAddress || next.pickupAddress,
+      pickupCoordinates: base.pickupCoordinates || next.pickupCoordinates,
+      pickupContact: base.pickupContact || next.pickupContact,
+      pickupPhone: base.pickupPhone || next.pickupPhone,
+      pickupNotes: base.pickupNotes || next.pickupNotes,
+      deliveryName: base.deliveryName || next.deliveryName,
+      deliveryAddress: base.deliveryAddress || next.deliveryAddress,
+      deliveryCoordinates: base.deliveryCoordinates || next.deliveryCoordinates,
+      deliveryContact: base.deliveryContact || next.deliveryContact,
+      deliveryPhone: base.deliveryPhone || next.deliveryPhone,
+      deliveryNotes: base.deliveryNotes || next.deliveryNotes,
+      exchangeName: base.exchangeName || next.exchangeName,
+      exchangeAddress: base.exchangeAddress || next.exchangeAddress,
+      exchangeCoordinates: base.exchangeCoordinates || next.exchangeCoordinates,
+      exchangeContact: base.exchangeContact || next.exchangeContact,
+      exchangePhone: base.exchangePhone || next.exchangePhone,
+      exchangeNotes: base.exchangeNotes || next.exchangeNotes,
+      price: base.price ?? next.price,
+      priceItems: (base.priceItems && base.priceItems.length > 0) ? base.priceItems : next.priceItems,
+      customerName: base.customerName || next.customerName,
+      customerPhone: base.customerPhone || next.customerPhone,
+      scheduledDate: base.scheduledDate || next.scheduledDate || (base as any).data || (next as any).data
     });
-    const activeOrderIds = new Set(Array.from(map.keys(), getBaseOrderId));
-    (completedOrders || []).forEach(p => {
-      if (p && p.id) {
-        const baseId = getBaseOrderId(p.id);
-        if (!activeOrderIds.has(baseId)) map.set(p.id, p);
+
+    [...allPlaces, ...savedPlaces].forEach(p => {
+      if (!p || !p.id) return;
+      const key = getOrderKey(p);
+      const existing = map.get(key);
+      if (!existing) {
+        map.set(key, p);
+      } else {
+        map.set(key, mergePlaceLegs(existing, p));
       }
     });
+
+    const activeOrderKeys = new Set(Array.from(map.keys()));
+
+    (completedOrders || []).forEach(p => {
+      if (!p || !p.id) return;
+      const key = getOrderKey(p);
+      if (!activeOrderKeys.has(key)) {
+        map.set(key, p);
+      }
+    });
+
     return Array.from(map.values());
   }, [allPlaces, savedPlaces, completedOrders]);
 

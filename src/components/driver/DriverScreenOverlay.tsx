@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { 
   Bike, 
   Power, 
@@ -8,13 +8,21 @@ import {
   ChevronRight, 
   Lock, 
   AlertTriangle,
-  X,
-  CheckCircle2,
-  LogOut
+  X, 
+  CheckCircle2, 
+  LogOut,
+  Zap,
+  Radio,
+  ShieldCheck,
+  Loader2,
+  Sparkles
 } from 'lucide-react';
 import { useMapStore } from '../../context/MapContext';
+import { useAppVersion } from '../../hooks/useAppVersion';
+import { getDriverPermanentColor } from '../../utils/driverColorUtils';
 
 export const DriverScreenOverlay: React.FC = () => {
+  const appVersion = useAppVersion();
   const { 
     currentRole, 
     isDriverOnline, 
@@ -23,6 +31,7 @@ export const DriverScreenOverlay: React.FC = () => {
     userLocation,
     flyToLocation,
     locateUser,
+    focusDriverLocation,
     stopUserTracking,
     user,
     startBackgroundGps,
@@ -30,15 +39,24 @@ export const DriverScreenOverlay: React.FC = () => {
     backgroundTrackingStatus
   } = useMapStore();
 
-  const [dragProgress, setDragProgress] = useState(0);
+  const [dragProgress, setDragProgress] = useState(0); // 0.0 to 1.0
   const [isDragging, setIsDragging] = useState(false);
+  const [isActivating, setIsActivating] = useState(false);
   const [showEndSessionModal, setShowEndSessionModal] = useState(false);
-  const trackRef = useRef<HTMLDivElement>(null);
 
-  // Somente exibe para o perfil de motorista
-  if (currentRole !== 'motorista') {
-    return null;
-  }
+  const trackRef = useRef<HTMLDivElement>(null);
+  const pointerIdRef = useRef<number | null>(null);
+  const startXRef = useRef<number>(0);
+  const startProgressRef = useRef<number>(0);
+  const isDraggingRef = useRef<boolean>(false);
+  const dragProgressRef = useRef<number>(0);
+
+  dragProgressRef.current = dragProgress;
+  isDraggingRef.current = isDragging;
+
+
+  // Cor permanente do motorista para a identidade visual
+  const driverColor = getDriverPermanentColor(user.id || user.phone || user.name);
 
   // Formata o tempo ativo (HH:MM:SS)
   const formatTime = (totalSeconds: number) => {
@@ -61,36 +79,101 @@ export const DriverScreenOverlay: React.FC = () => {
     return parts.join(' ');
   };
 
-  // Se arrastar o slider estilo Uber
-  const handleTouchStart = () => {
-    setIsDragging(true);
-  };
+  // Ativação da sessão com animação suave e feedback tátil
+  const triggerActivation = useCallback(() => {
+    if (isActivating) return;
+    setIsActivating(true);
+    setDragProgress(1);
 
-  const handleTouchMove = (e: React.TouchEvent | React.MouseEvent) => {
-    if (!isDragging || !trackRef.current) return;
-    const rect = trackRef.current.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const relativeX = clientX - rect.left;
-    const width = rect.width - 64; // subtrai a largura do botão deslizante
-    const progress = Math.min(Math.max(relativeX / width, 0), 1);
-    setDragProgress(progress);
-  };
+    // Feedback háptico em celulares / PWA
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      try { navigator.vibrate([40, 30, 80]); } catch {}
+    }
+    if (typeof window !== 'undefined' && (window as any).AndroidApp?.vibrate) {
+      try { (window as any).AndroidApp.vibrate(120); } catch {}
+    }
 
-  const handleTouchEnd = () => {
-    if (!isDragging) return;
-    setIsDragging(false);
-    if (dragProgress > 0.75) {
-      // Ativa e fica online com rastreamento em segundo plano (tela desligada)
+    setTimeout(() => {
       setIsDriverOnline(true);
       startBackgroundGps();
-      setDragProgress(0);
       locateUser();
-      if (userLocation) {
-        flyToLocation(userLocation, 17);
-      }
+      focusDriverLocation();
+      setIsActivating(false);
+      setDragProgress(0);
+    }, 380);
+  }, [isActivating, setIsDriverOnline, startBackgroundGps, locateUser, focusDriverLocation]);
+
+  // Manipuladores de Pointer Events (suporte nativo e infalível em Touch, Mouse e Caneta)
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (isActivating) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    // Se o motorista tocar diretamente no lado direito do trilho (> 65%), ativa automaticamente
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickRatio = (e.clientX - rect.left) / (rect.width || 1);
+    if (clickRatio > 0.65) {
+      triggerActivation();
+      return;
+    }
+
+    pointerIdRef.current = e.pointerId;
+    startXRef.current = e.clientX;
+    startProgressRef.current = dragProgressRef.current;
+    setIsDragging(true);
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (pointerIdRef.current !== e.pointerId || !isDraggingRef.current || isActivating) return;
+    if (!trackRef.current) return;
+
+    const trackWidth = trackRef.current.clientWidth;
+    const puckSize = 56;
+    const padding = 12;
+    const maxTravel = Math.max(1, trackWidth - puckSize - padding);
+
+    const deltaX = e.clientX - startXRef.current;
+    const newProgress = Math.min(1, Math.max(0, startProgressRef.current + (deltaX / maxTravel)));
+    setDragProgress(newProgress);
+
+    // Se arrastou além de 75%, completa e ativa imediatamente sem precisar soltar
+    if (newProgress >= 0.75) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {}
+      pointerIdRef.current = null;
+      setIsDragging(false);
+      triggerActivation();
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (pointerIdRef.current !== e.pointerId) return;
+
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    pointerIdRef.current = null;
+    setIsDragging(false);
+
+    if (dragProgressRef.current >= 0.55) {
+      triggerActivation();
     } else {
       setDragProgress(0);
     }
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (pointerIdRef.current !== e.pointerId) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    pointerIdRef.current = null;
+    setIsDragging(false);
+    setDragProgress(0);
   };
 
   // Confirmação para finalizar sessão e desconectar do GPS
@@ -101,94 +184,191 @@ export const DriverScreenOverlay: React.FC = () => {
     setShowEndSessionModal(false);
   };
 
+  // Cálculo da translação do botão deslizante
+  const trackWidth = trackRef.current ? trackRef.current.clientWidth : 320;
+  const puckSize = 54;
+  const padding = 10;
+  const maxTravel = Math.max(1, trackWidth - puckSize - padding);
+  const puckOffset = dragProgress * maxTravel;
+
+  // Somente exibe para o perfil de motorista
+  if (currentRole !== 'motorista') {
+    return null;
+  }
+
   return (
     <>
       {/* 1. SE OFFLINE: TELA DE BLOQUEIO DO MOTORISTA */}
       {!isDriverOnline && (
-        <div className="absolute inset-0 z-40 bg-slate-900/85 backdrop-blur-md flex flex-col justify-between p-4 sm:p-8 animate-in fade-in duration-300">
+        <div className="absolute inset-0 z-40 bg-gradient-to-b from-[#090D16] via-[#0F172A] to-[#070A12] flex flex-col justify-between p-4 sm:p-7 select-none overflow-hidden animate-in fade-in duration-300">
           
+          {/* Luzes de fundo ambiente */}
+          <div className="absolute -top-24 -left-24 w-80 h-80 rounded-full bg-[#FF5E00]/15 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-24 -right-24 w-80 h-80 rounded-full bg-[#007AFF]/15 blur-3xl pointer-events-none" />
+
           {/* Header da Tela de Bloqueio */}
           <div 
-            className="flex items-center justify-between text-white"
-            style={{ paddingTop: 'calc(max(env(safe-area-inset-top, 0px), 12px) + 8px)' }}
+            className="relative z-10 flex items-center justify-between text-white"
+            style={{ paddingTop: 'calc(max(env(safe-area-inset-top, 0px), 12px) + 6px)' }}
           >
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-[#FF5E00] flex items-center justify-center shadow-lg shadow-[#FF5E00]/30">
-                <Bike className="w-6 h-6 stroke-[2.3]" />
+              <div 
+                className="w-12 h-12 rounded-2xl flex items-center justify-center font-black text-lg text-white shadow-lg border border-white/20 shrink-0"
+                style={{ backgroundColor: driverColor }}
+              >
+                {user.name ? user.name.slice(0, 2).toUpperCase() : 'MT'}
               </div>
-              <div>
-                <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-white/20 text-orange-200">
-                  Modo Motorista • EncomendasZap
-                </span>
-                <h1 className="text-lg sm:text-xl font-black">
-                  {user.name || 'Marcos Silva'}
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-white/10 text-orange-200 border border-white/10">
+                    Motorista
+                  </span>
+                  <span className="text-[10px] font-bold text-slate-400">
+                    {(user as any).cidade || 'Goiânia / Anápolis'}
+                  </span>
+                </div>
+                <h1 className="text-base sm:text-lg font-black truncate max-w-[200px] sm:max-w-xs mt-0.5">
+                  {user.name || 'Motorista'}
                 </h1>
               </div>
             </div>
 
-            <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-black">
+            {/* Pill Indicador de Status Offline */}
+            <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 text-xs font-black shadow-inner shrink-0">
+              <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse" />
               Offline
             </span>
           </div>
 
-          {/* Centro explicativo */}
-          <div className="max-w-md mx-auto text-center text-white my-auto px-4">
-            <div className="w-20 h-20 rounded-3xl bg-white/10 mx-auto flex items-center justify-center mb-5 border border-white/20 shadow-2xl">
-              <Lock className="w-10 h-10 text-[#FF5E00]" />
-            </div>
+          {/* Card Central Estilizado (Visual mais bonitinho e profissional) */}
+          <div className="relative z-10 max-w-md w-full mx-auto my-auto py-2">
+            <div className="bg-slate-900/75 border border-white/10 rounded-3xl p-6 sm:p-7 shadow-2xl backdrop-blur-xl text-center">
+              
+              {/* Ícone com pulso e visual premium */}
+              <div className="relative w-20 h-20 mx-auto mb-5">
+                <div className="absolute inset-0 rounded-3xl bg-[#FF5E00]/25 animate-ping opacity-60" />
+                <div className="relative w-20 h-20 rounded-3xl bg-gradient-to-br from-[#FF7A29] to-[#FF5E00] flex items-center justify-center shadow-xl shadow-[#FF5E00]/30 border border-white/30 text-white">
+                  <Bike className="w-10 h-10 stroke-[2.3]" />
+                  <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-md border-2 border-slate-900">
+                    <Zap className="w-4 h-4 fill-current text-slate-950" />
+                  </div>
+                </div>
+              </div>
 
-            <h2 className="text-2xl font-black mb-2">
-              Você está desconectado
-            </h2>
-            <p className="text-sm text-slate-300 leading-relaxed font-medium">
-              Deslize o botão abaixo para <strong className="text-white">Ficar Online</strong>. O sistema monitora sua localização em tempo real para a central e para os clientes, <strong className="text-orange-300">mesmo com a tela desligada ou bloqueada no bolso ou suporte</strong>.
-            </p>
+              <h2 className="text-xl sm:text-2xl font-black text-white mb-2 tracking-tight">
+                Pronto para rodar?
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed font-medium mb-5 px-2">
+                Deslize o botão abaixo para <strong className="text-white">Ficar Online</strong>. Seu GPS transmitirá suas rotas em tempo real para a central e clientes, mesmo com o celular no bolso ou suporte.
+              </p>
+
+              {/* Badges de recursos / segurança */}
+              <div className="grid grid-cols-3 gap-2 pt-1 border-t border-white/10 text-[11px] font-bold text-slate-300">
+                <div className="p-2 rounded-xl bg-white/5 border border-white/5 flex flex-col items-center gap-1">
+                  <Radio className="w-4 h-4 text-emerald-400" />
+                  <span>GPS 2º Plano</span>
+                </div>
+                <div className="p-2 rounded-xl bg-white/5 border border-white/5 flex flex-col items-center gap-1">
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  <span>Coleta & Entrega</span>
+                </div>
+                <div className="p-2 rounded-xl bg-white/5 border border-white/5 flex flex-col items-center gap-1">
+                  <ShieldCheck className="w-4 h-4 text-sky-400" />
+                  <span>Conexão Segura</span>
+                </div>
+              </div>
+
+            </div>
           </div>
 
-          {/* Slider Estilo Uber ("Deslize para Iniciar / Rodar") */}
-          <div className="max-w-md mx-auto w-full pb-4">
+          {/* Slider Estilo Uber/iFood Aprimorado com Pointer Events e Fallback */}
+          <div className="relative z-10 max-w-md mx-auto w-full pb-2">
+            
+            {/* Trilho Deslizante */}
             <div
               ref={trackRef}
-              onMouseMove={handleTouchMove}
-              onMouseUp={handleTouchEnd}
-              onMouseLeave={handleTouchEnd}
-              onTouchMove={handleTouchMove}
-              onTouchEnd={handleTouchEnd}
-              className="relative h-18 bg-slate-800/90 border-2 border-[#FF5E00]/60 rounded-3xl p-1.5 flex items-center select-none overflow-hidden shadow-2xl"
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerCancel}
+              className="relative h-16 sm:h-[68px] bg-slate-950/90 border-2 border-white/15 hover:border-[#FF5E00]/50 rounded-full p-1.5 flex items-center select-none overflow-hidden shadow-2xl touch-none cursor-pointer group transition-colors"
             >
-              {/* Texto pulsante no fundo do trilho */}
-              <div className="absolute inset-0 flex items-center justify-center text-xs sm:text-sm font-black text-white/80 pointer-events-none tracking-wide">
-                <span>DESLIZE PARA FICAR ONLINE ➔</span>
-              </div>
-
-              {/* Barra de progresso preenchida */}
+              {/* Barra de preenchimento progressivo com gradiente */}
               <div 
-                className="absolute left-0 top-0 bottom-0 bg-[#FF5E00]/40 transition-all rounded-3xl pointer-events-none"
-                style={{ width: `${Math.max(dragProgress * 100, 10)}%` }}
+                className="absolute left-0 top-0 bottom-0 rounded-full bg-gradient-to-r from-[#FF5E00] via-[#FF8A00] to-emerald-500 pointer-events-none transition-all"
+                style={{ 
+                  width: `${Math.max(dragProgress * 100, 4)}%`,
+                  opacity: Math.max(dragProgress * 0.9, 0.2)
+                }}
               />
 
-              {/* Botão deslizante (Puck estilo Uber) */}
-              <div
-                onMouseDown={handleTouchStart}
-                onTouchStart={handleTouchStart}
-                style={{
-                  transform: `translateX(${dragProgress * (trackRef.current ? trackRef.current.clientWidth - 70 : 260)}px)`
-                }}
-                className="w-15 h-15 rounded-2xl bg-gradient-to-br from-[#FF7A29] to-[#FF5E00] text-white flex items-center justify-center shadow-xl cursor-grab active:cursor-grabbing z-10 transition-transform active:scale-95 touch-none"
+              {/* Texto pulsante no centro do trilho com chevrons */}
+              <div 
+                className="absolute inset-0 flex items-center justify-center gap-1 text-xs sm:text-sm font-black text-white/90 pointer-events-none tracking-wider transition-opacity duration-150 pl-10"
+                style={{ opacity: Math.max(0, 1 - dragProgress * 1.6) }}
               >
-                <Power className="w-6 h-6 stroke-[2.5]" />
+                <span>DESLIZE PARA FICAR ONLINE</span>
+                <span className="flex items-center text-amber-300 animate-pulse">
+                  <ChevronRight className="w-4 h-4 stroke-[3] -mr-1" />
+                  <ChevronRight className="w-4 h-4 stroke-[3] -mr-1" />
+                  <ChevronRight className="w-4 h-4 stroke-[3]" />
+                </span>
+              </div>
+
+              {/* Botão deslizante (Puck / Manípulo tátil) */}
+              <div
+                style={{
+                  transform: `translateX(${puckOffset}px)`,
+                  transition: isDragging ? 'none' : 'transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)'
+                }}
+                className={`w-[52px] h-[52px] sm:w-14 sm:h-14 rounded-full text-white flex items-center justify-center shadow-2xl cursor-grab active:cursor-grabbing z-20 transition-all duration-150 border-2 ${
+                  dragProgress >= 0.70 || isActivating
+                    ? 'bg-gradient-to-br from-emerald-500 to-emerald-600 border-white shadow-emerald-500/50'
+                    : 'bg-gradient-to-br from-[#FF7A29] via-[#FF5E00] to-[#E05300] border-white/60 shadow-[#FF5E00]/50 hover:scale-105 active:scale-95'
+                }`}
+              >
+                {isActivating ? (
+                  <Loader2 className="w-6 h-6 animate-spin text-white" />
+                ) : dragProgress >= 0.70 ? (
+                  <CheckCircle2 className="w-7 h-7 text-white stroke-[2.5]" />
+                ) : (
+                  <Power className="w-6 h-6 stroke-[2.5] transition-transform group-hover:rotate-12" />
+                )}
               </div>
             </div>
 
-            <p className="text-center text-[11px] text-slate-400 mt-2 font-medium">
-              Arrastar até o final para abrir o mapa e liberar o rastreamento
-            </p>
+            {/* Atalho alternativo: botão direto para toque (ótimo para luvas de moto) */}
+            <button
+              type="button"
+              onClick={triggerActivation}
+              disabled={isActivating}
+              className="w-full mt-2 text-center text-xs font-bold text-orange-300/80 hover:text-orange-200 py-1.5 transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <Zap className="w-3.5 h-3.5 fill-current text-[#FF5E00]" />
+              <span>Ou toque aqui para iniciar direto</span>
+            </button>
+
+            <div className="mt-1 text-center">
+              <span className="inline-block text-[10px] text-slate-400 font-medium tracking-tight bg-slate-900/60 px-3 py-0.5 rounded-full border border-slate-800 shadow-2xs select-none">
+                Criado por: Carlos Dottas {appVersion}
+              </span>
+            </div>
+
           </div>
 
         </div>
       )}
 
-      {/* 2. SE ONLINE: BOTÃO FLUTUANTE EMBAIXO DO LADO DIREITO PARA FINALIZAR A SESSÃO */}
+      {/* 2. SE ONLINE: VERSÃO DO APP CENTRALIZADA NO RODAPÉ */}
+      {isDriverOnline && (
+        <div className="absolute bottom-2.5 sm:bottom-3.5 left-0 right-0 z-20 px-3 pointer-events-none flex justify-center animate-in fade-in duration-200">
+          <div className="text-[10px] text-slate-500/90 font-medium tracking-tight text-center select-none pointer-events-none drop-shadow-xs bg-white/80 backdrop-blur-xs px-2.5 py-0.5 rounded-full border border-slate-200/70 shadow-2xs">
+            Criado por: Carlos Dottas {appVersion}
+          </div>
+        </div>
+      )}
+
+      {/* 3. SE ONLINE: BOTÃO FLUTUANTE EMBAIXO DO LADO DIREITO PARA FINALIZAR A SESSÃO */}
       {isDriverOnline && (
         <div className="absolute bottom-6 right-4 sm:right-6 z-30 pointer-events-auto animate-in slide-in-from-bottom-3 duration-200">
           <button
@@ -203,7 +383,7 @@ export const DriverScreenOverlay: React.FC = () => {
         </div>
       )}
 
-      {/* 3. MODAL CONFIRMAÇÃO DE FINALIZAR SESSÃO */}
+      {/* 4. MODAL CONFIRMAÇÃO DE FINALIZAR SESSÃO */}
       {showEndSessionModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-sm sm:max-w-md rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-in zoom-in-95 duration-200">
@@ -219,7 +399,7 @@ export const DriverScreenOverlay: React.FC = () => {
                     Finalizar Sessão
                   </h3>
                   <p className="text-xs text-slate-500 font-semibold mt-0.5">
-                    Modo Motorista • EncomendasZap
+                    Modo Motorista • EncomendasZap {appVersion}
                   </p>
                 </div>
               </div>

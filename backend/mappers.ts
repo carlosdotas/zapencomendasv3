@@ -24,7 +24,17 @@ function stringifyExtra(extra: Json): string | null {
   return Object.keys(clean).length ? JSON.stringify(clean) : null;
 }
 
-const iso = (value: Date | null | undefined): string | null => (value ? value.toISOString() : null);
+const iso = (value: Date | string | null | undefined): string | null => {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') return value;
+  try {
+    const d = new Date(value as any);
+    return Number.isNaN(d.getTime()) ? String(value) : d.toISOString();
+  } catch {
+    return null;
+  }
+};
 
 const hasValue = (value: unknown) => value !== undefined && value !== null && value !== '';
 
@@ -385,6 +395,18 @@ export function pedidoToBackend(row: any, locations?: Map<number, any>): Json {
   if (!out.cidade) out.cidade = out.coleta_cidade || out.entrega_cidade || undefined;
   if (!out.codigo && !out.orderCode) out.codigo = String(row.id);
 
+  // Garante que todas as propriedades de observações/notas estejam sempre preenchidas
+  out.coleta_obs = row.orig_notes ?? out.coleta_obs ?? extra.coleta_obs ?? extra.pickupNotes ?? '';
+  out.pickupNotes = out.coleta_obs;
+  out.entrega_obs = row.dest_notes ?? out.entrega_obs ?? extra.entrega_obs ?? extra.deliveryNotes ?? '';
+  out.deliveryNotes = out.entrega_obs;
+  out.detalhes = row.notes ?? out.detalhes ?? extra.detalhes ?? extra.observations ?? '';
+  out.notes = out.detalhes;
+  out.observations = out.detalhes;
+  out.driverNotes = out.detalhes;
+  out.troca_obs = extra.troca_obs ?? extra.exchangeNotes ?? out.troca_obs ?? '';
+  out.exchangeNotes = out.troca_obs;
+
   if (locations) {
     const attach = (prefix: string, id: number | null | undefined) => {
       const loc = id ? locations.get(id) : null;
@@ -420,6 +442,20 @@ export function pedidoFromBackend(body: Json, current?: any): Json {
   const data: Json = {};
   const extra = parseExtra(current?.extra);
   const app: Json = { ...(extra.__app || {}) };
+
+  // Normaliza aliases de observações e notas de coleta, entrega e gerais para persistência garantida no banco
+  if (body.coleta_obs === undefined || body.coleta_obs === '') {
+    const v = body.pickupNotes ?? body.orig_notes ?? body.coleta_observacoes ?? body.coleta_observacao ?? body.obs_coleta;
+    if (v !== undefined) body.coleta_obs = v;
+  }
+  if (body.entrega_obs === undefined || body.entrega_obs === '') {
+    const v = body.deliveryNotes ?? body.dest_notes ?? body.entrega_observacoes ?? body.entrega_observacao ?? body.obs_entrega;
+    if (v !== undefined) body.entrega_obs = v;
+  }
+  if (body.detalhes === undefined || body.detalhes === '') {
+    const v = body.observations ?? body.notes ?? body.observacoes ?? body.observacao ?? body.driverNotes;
+    if (v !== undefined) body.detalhes = v;
+  }
 
   for (const [key, column, kind] of ORDER_FIELDS) {
     let value = body[key];

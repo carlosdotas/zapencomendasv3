@@ -35,13 +35,17 @@ export function getRequestToken(req: Request, body?: any): string {
 export async function resolveCaller(req: Request, body?: any): Promise<Caller | null> {
   const token = getRequestToken(req, body);
   if (!token) return null;
-  const session = await prisma.user_sessions.findUnique({ where: { token }, include: { user: true } });
-  if (!session || !session.is_logged || !session.user) return null;
-  return {
-    id: session.user.id,
-    role: String(session.user.access_level || '').toLowerCase(),
-    phone: digits(session.user.phone)
-  };
+  try {
+    const session = await prisma.user_sessions.findUnique({ where: { token }, include: { user: true } });
+    if (!session || !session.is_logged || !session.user) return null;
+    return {
+      id: session.user.id,
+      role: String(session.user.access_level || '').toLowerCase(),
+      phone: digits(session.user.phone)
+    };
+  } catch (err: any) {
+    return null;
+  }
 }
 
 /** Só admin/atendente/terminal autenticados enxergam tudo; motorista, cliente ou anônimo ficam restritos. */

@@ -41,7 +41,7 @@ class PlaceService {
     }
   }
 
-  private remember(local?: BackendLocal | null) {
+  public remember(local?: BackendLocal | null) {
     if (local && local.id !== undefined && local.id !== null) this.places.set(String(local.id), local);
   }
 
@@ -177,14 +177,38 @@ class PlaceService {
 
   /**
    * Busca nos locais cadastrados antes de consultar o Google Maps (economiza chamadas de API).
+   * Só retorna se houver correspondência de alta relevância com o nome ou endereço buscado (score >= 60).
    */
   public async searchPlaces(queryStr: string, limit: number = 8): Promise<Place[]> {
-    const q = queryStr.toLowerCase().trim();
+    const q = (queryStr || '').trim();
     if (!q || q.length < 2) return [];
 
     await this.init();
 
-    const words = q.split(/\s+/).filter(Boolean);
+    const normalize = (str: string) => (str || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const normQ = normalize(q);
+    if (!normQ) return [];
+
+    const stopWords = new Set([
+      'de', 'do', 'da', 'dos', 'das', 'e', 'em', 'no', 'na', 'nos', 'nas',
+      'para', 'pra', 'com', 'um', 'uma', 'o', 'a', 'os', 'as', 'rua', 'r',
+      'r.', 'av', 'av.', 'avenida', 'alameda', 'al', 'al.', 'travessa', 'tv',
+      'tv.', 'praca', 'praça', 'setor', 'st', 'st.', 'bairro', 'qd', 'lt',
+      'quadra', 'lote', 'numero', 'n', 'nº', 'goiania', 'goiânia', 'anapolis',
+      'anápolis', 'go', 'goias', 'goiás', 'brasil'
+    ]);
+
+    const allWords = normQ.split(' ').filter(w => w.length > 0);
+    const significantWords = allWords.filter(w => !stopWords.has(w) && w.length >= 2);
+    const searchTerms = significantWords.length > 0 ? significantWords : allWords;
+
     const matches: Array<{ local: BackendLocal; score: number }> = [];
 
     for (const p of this.places.values()) {
@@ -192,32 +216,26 @@ class PlaceService {
       const pLng = Number(p.lng);
       if (isNaN(pLat) || isNaN(pLng) || (pLat === 0 && pLng === 0)) continue;
 
-      const name = (p.name || '').toLowerCase();
-      const addr = (p.endereco || p.rua || '').toLowerCase();
-      const setor = (p.setor || '').toLowerCase();
-      const cidade = (p.cidade || '').toLowerCase();
-      const fullText = `${name} ${addr} ${setor} ${cidade}`;
+      const normName = normalize(p.name || '');
+      const normAddr = normalize(p.endereco || p.rua || '');
+      const normFull = normalize([p.name, p.endereco, p.rua, p.setor, p.cidade].filter(Boolean).join(' '));
 
       let score = 0;
-      if (name === q) {
+      if (normName === normQ) {
         score = 100;
-      } else if (name.startsWith(q)) {
+      } else if (normName.startsWith(normQ)) {
+        score = 90;
+      } else if (normName.includes(normQ) && normQ.length >= 3) {
         score = 80;
-      } else if (name.includes(q)) {
+      } else if (searchTerms.length > 0 && searchTerms.every(w => normName.includes(w))) {
+        score = 75;
+      } else if (searchTerms.length > 0 && searchTerms.every(w => normFull.includes(w)) && searchTerms.some(w => normName.includes(w))) {
+        score = 65;
+      } else if (allWords.length >= 2 && allWords.every(w => normAddr.includes(w))) {
         score = 60;
-      } else {
-        const allWordsMatch = words.every(w => fullText.includes(w));
-        if (allWordsMatch) {
-          score = 40;
-        } else {
-          const matchCount = words.filter(w => fullText.includes(w)).length;
-          if (matchCount > 0 && matchCount >= words.length / 2) {
-            score = 20 * matchCount;
-          }
-        }
       }
 
-      if (score > 0) {
+      if (score >= 60) {
         matches.push({ local: p, score });
       }
     }
@@ -236,7 +254,8 @@ class PlaceService {
         },
         phone: local.telefone,
         website: local.site,
-        description: fullAddr
+        description: fullAddr,
+        fromDatabase: true
       } as Place;
     });
   }

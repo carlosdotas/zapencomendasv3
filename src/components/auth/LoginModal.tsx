@@ -263,7 +263,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
         </form>
 
         <footer className="border-t border-slate-100 px-6 py-3 text-center text-[11px] font-semibold text-slate-400">
-          Criado por: Carlos Dotas {appVersion.version}
+          Criado por: Carlos Dottas {appVersion.version}
         </footer>
 
       </div>

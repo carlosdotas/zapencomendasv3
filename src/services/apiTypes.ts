@@ -120,6 +120,11 @@ export interface BackendPedido {
   phone?: string;
   cidade?: string;
   detalhes?: string;
+  notes?: string;
+  observations?: string;
+  pickupNotes?: string;
+  deliveryNotes?: string;
+  exchangeNotes?: string;
   valor?: number | string;
   desconto?: number | string;
   total?: number | string;

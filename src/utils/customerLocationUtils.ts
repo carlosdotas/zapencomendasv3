@@ -41,15 +41,46 @@ export function getCustomerPlaceName(customerName: string): string {
   return `Local de ${trimmed}`;
 }
 
+let lastCustomersRef: Customer[] | null = null;
+let cachedById = new Map<string, Customer>();
+let cachedByPhone = new Map<string, Customer>();
+let cachedByName = new Map<string, Customer>();
+
+function ensureCustomerIndex(customers: Customer[]): void {
+  if (lastCustomersRef === customers && cachedById.size > 0) return;
+  lastCustomersRef = customers;
+  cachedById = new Map<string, Customer>();
+  cachedByPhone = new Map<string, Customer>();
+  cachedByName = new Map<string, Customer>();
+
+  for (let i = 0; i < customers.length; i++) {
+    const c = customers[i];
+    if (c.id) cachedById.set(c.id, c);
+    if (c.phone) {
+      const cleanPhone = c.phone.replace(/\D/g, '');
+      if (cleanPhone.length >= 8) {
+        cachedByPhone.set(cleanPhone, c);
+        cachedByPhone.set(cleanPhone.slice(-8), c);
+      }
+    }
+    if (c.fullName) {
+      cachedByName.set(c.fullName.toLowerCase().trim(), c);
+    }
+  }
+}
+
 /**
- * Localiza o registro completo do cliente vinculado a um pedido/lugar
+ * Localiza o registro completo do cliente vinculado a um pedido/lugar em O(1)
  */
 export function getCustomerForPlace(place: Place | null | undefined, customers: Customer[] = []): Customer | null {
   if (!place) return null;
+  if (!customers || customers.length === 0) return null;
+
+  ensureCustomerIndex(customers);
 
   // 1. Busca por ID direto do cliente
   if (place.customerId) {
-    const found = customers.find(c => c.id === place.customerId);
+    const found = cachedById.get(place.customerId);
     if (found) return found;
   }
 
@@ -57,10 +88,7 @@ export function getCustomerForPlace(place: Place | null | undefined, customers: 
   if (place.customerPhone) {
     const cleanPhone = place.customerPhone.replace(/\D/g, '');
     if (cleanPhone.length >= 8) {
-      const found = customers.find(c => {
-        const cPhone = (c.phone || '').replace(/\D/g, '');
-        return cPhone === cleanPhone || cPhone.endsWith(cleanPhone) || cleanPhone.endsWith(cPhone);
-      });
+      const found = cachedByPhone.get(cleanPhone) || cachedByPhone.get(cleanPhone.slice(-8));
       if (found) return found;
     }
   }
@@ -69,7 +97,7 @@ export function getCustomerForPlace(place: Place | null | undefined, customers: 
   if (place.customerName) {
     const cleanName = place.customerName.toLowerCase().trim();
     if (cleanName.length > 1) {
-      const found = customers.find(c => (c.fullName || '').toLowerCase().trim() === cleanName);
+      const found = cachedByName.get(cleanName);
       if (found) return found;
     }
   }

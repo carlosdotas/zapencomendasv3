@@ -3469,7 +3469,7 @@ ${horarioText}
                 </div>
 
                 {/* Resumo das etapas da rota da encomenda */}
-                {operationType === 'troca' && (
+                {Boolean(orderResolvedLocations) && orderResolvedLocations && (
                 <div className="text-[11px] space-y-1.5 bg-white p-2.5 rounded-xl border border-slate-200/80 shadow-2xs">
                   {operationType === 'coleta' && (
                     <>
@@ -4196,7 +4196,7 @@ ${horarioText}
                           };
 
                           updatePlaceDetails(selectedPlace.id, updatedDetails);
-                          setSelectedPlace(prev => (prev ? { ...prev, ...updatedDetails } : null));
+                          setSelectedPlace({ ...selectedPlace, ...updatedDetails });
                           setIsEditingObservations(false);
                           setSaveSuccessToast('✅ Comentários atualizados com sucesso!');
                           setTimeout(() => setSaveSuccessToast(null), 3000);
