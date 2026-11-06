@@ -276,7 +276,7 @@ registerApiRoutes(app, { saveBase64Image, uploadToPhpServer, imageServerConfigur
 
 async function startServer() {
   try {
-    await registerRealtime(app, wss);
+    await registerRealtime(app, wss, { notifyOrdersChanged });
   } catch (err: any) {
     console.warn('[EncomendasZap Server] Aviso ao registrar realtime:', err?.message || err);
   }

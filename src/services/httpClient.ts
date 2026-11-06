@@ -144,6 +144,7 @@ export function startPolling(fetchOnce: () => Promise<void> | void, intervalMs: 
 
   void tick();
   const timer = setInterval(() => void tick(), intervalMs);
+  if (typeof (timer as any)?.unref === 'function') (timer as any).unref();
   return () => {
     stopped = true;
     clearInterval(timer);

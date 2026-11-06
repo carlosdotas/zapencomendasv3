@@ -1805,6 +1805,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return prev;
     });
 
+    window.dispatchEvent(new Event('zap:refresh-orders'));
     return true;
   }, [user, assignPlaceToDriver, allPlaces]);
 

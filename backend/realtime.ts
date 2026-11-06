@@ -43,7 +43,11 @@ interface OrderAssignmentData {
 const MAX_OFFLINE_MS = 30 * 60 * 1000;
 const TRACKING_HISTORY_INTERVAL_MS = 30 * 1000;
 
-export async function registerRealtime(app: Express, wss: WebSocketServer) {
+export async function registerRealtime(
+  app: Express,
+  wss: WebSocketServer,
+  deps?: { notifyOrdersChanged?: () => void }
+) {
   const activeDrivers = new Map<string, LiveDriverData>();
   const activeAssignments = assignmentStore as unknown as Map<string, OrderAssignmentData>;
   const lastHistoryWrite = new Map<string, number>();
@@ -241,6 +245,66 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
         orderId: toInt(numOfKey(String(orderId)))
       });
     }
+
+    if (numericOrderId) {
+      try {
+        const orderRow = await prisma.orders.findUnique({ where: { id: numericOrderId } });
+        if (orderRow) {
+          const extra = parseExtra(orderRow.extra);
+          const op = opOfKey(String(orderId));
+          const numDriverId = toInt(driverId);
+          extra.assignedDriverId = String(driverId);
+          if (driverName) extra.assignedDriverName = String(driverName);
+          if (driverPhone) extra.assignedDriverPhone = String(driverPhone);
+          if (claim) extra.acceptedByDriver = true;
+          extra.orderVisibility = 'privado';
+
+          const updateData: any = {};
+          if (op === 'coleta') {
+            if (numDriverId) {
+              updateData.collector_id = numDriverId;
+              updateData.orig_drivers = JSON.stringify([numDriverId]);
+            }
+            extra.pickupAssignedDriverId = String(driverId);
+            if (driverName) extra.pickupAssignedDriverName = String(driverName);
+            if (driverPhone) extra.pickupAssignedDriverPhone = String(driverPhone);
+            extra.pickupVisibility = 'privado';
+          } else if (op === 'entrega') {
+            if (numDriverId) {
+              updateData.dest_drivers = JSON.stringify([numDriverId]);
+            }
+            extra.deliveryAssignedDriverId = String(driverId);
+            if (driverName) extra.deliveryAssignedDriverName = String(driverName);
+            if (driverPhone) extra.deliveryAssignedDriverPhone = String(driverPhone);
+            extra.deliveryVisibility = 'privado';
+          } else if (op === 'troca') {
+            extra.exchangeAssignedDriverId = String(driverId);
+            if (driverName) extra.exchangeAssignedDriverName = String(driverName);
+            if (driverPhone) extra.exchangeAssignedDriverPhone = String(driverPhone);
+            extra.exchangeVisibility = 'privado';
+          } else {
+            if (numDriverId) {
+              updateData.collector_id = numDriverId;
+              updateData.orig_drivers = JSON.stringify([numDriverId]);
+              updateData.dest_drivers = JSON.stringify([numDriverId]);
+            }
+          }
+          if (numDriverId && !orderRow.collector_id) {
+            updateData.collector_id = numDriverId;
+          }
+          updateData.extra = JSON.stringify(extra);
+          await prisma.orders.update({ where: { id: numericOrderId }, data: updateData });
+        }
+      } catch (err: any) {
+        console.warn('[Realtime] Erro ao persistir motorista no pedido:', err?.message || err);
+      }
+    }
+
+    try {
+      deps?.notifyOrdersChanged?.();
+      broadcast({ type: 'orders:changed', at: Date.now() });
+    } catch {}
+
     res.json({ success: true, data: assignment });
   });
 
@@ -285,6 +349,48 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
       return;
     }
     clearAssignment(String(orderId));
+
+    const numericOrderId = toInt(numOfKey(String(orderId)));
+    if (numericOrderId) {
+      try {
+        const orderRow = await prisma.orders.findUnique({ where: { id: numericOrderId } });
+        if (orderRow) {
+          const extra = parseExtra(orderRow.extra);
+          const op = opOfKey(String(orderId));
+          const point = op === 'coleta' ? 'pickup' : op === 'troca' ? 'exchange' : op === 'entrega' ? 'delivery' : null;
+          if (point) {
+            extra[`${point}Visibility`] = 'publico';
+            delete extra[`${point}AssignedDriverId`];
+            delete extra[`${point}AssignedDriverName`];
+            delete extra[`${point}AssignedDriverPhone`];
+          }
+          extra.orderVisibility = 'publico';
+          delete extra.assignedDriverId;
+          delete extra.assignedDriverName;
+          delete extra.assignedDriverPhone;
+          delete extra.acceptedByDriver;
+
+          const updateData: any = {};
+          if (op === 'coleta' || !op) {
+            updateData.collector_id = null;
+            updateData.orig_drivers = '[]';
+          }
+          if (op === 'entrega' || !op) {
+            updateData.dest_drivers = '[]';
+          }
+          updateData.extra = JSON.stringify(extra);
+          await prisma.orders.update({ where: { id: numericOrderId }, data: updateData });
+        }
+      } catch (err: any) {
+        console.warn('[Realtime] Erro ao desvincular motorista do pedido:', err?.message || err);
+      }
+    }
+
+    try {
+      deps?.notifyOrdersChanged?.();
+      broadcast({ type: 'orders:changed', at: Date.now() });
+    } catch {}
+
     res.json({ success: true });
   });
 
@@ -340,6 +446,7 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
     delete extra.motorista_id;
     delete extra.motorista_nome;
     delete extra.motorista_telefone;
+    delete extra.acceptedByDriver;
 
     const orderPatch: Record<string, unknown> = {
       driver_cancel_reason: reason,
@@ -366,6 +473,12 @@ export async function registerRealtime(app: Express, wss: WebSocketServer) {
     if (keysToClear.length) {
       await prisma.assignments.deleteMany({ where: { order_key: { in: keysToClear } } });
     }
+
+    try {
+      deps?.notifyOrdersChanged?.();
+      broadcast({ type: 'orders:changed', at: Date.now() });
+    } catch {}
+
     res.json({ success: true, data: { orderId, operation } });
   });
 

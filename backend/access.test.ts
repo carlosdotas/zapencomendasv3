@@ -137,3 +137,69 @@ test('does not make a recorded collection public when its collector is missing',
   assert.equal(canCallerSeeOrder(order, deliveryDriver), false);
   assert.equal(canCallerSeeOrder(order, { id: 7, role: 'atendente', phone: '' }), true);
 });
+
+test('when attendant sets a driver, the order appears ONLY for that driver and disappears for others', () => {
+  // Pedido público configurado pelo atendente direcionando para pickupDriver
+  const orderWithDriver = {
+    id: 501,
+    etapa: 'pendente',
+    tipo_encomenda: 'entrega',
+    coleta_user_id: pickupDriver.id,
+    pickupVisibility: 'publico', // Mesmo que esteja com visibilidade pública
+    orderVisibility: 'publico'
+  };
+
+  assert.equal(canCallerSeeOrder(orderWithDriver, pickupDriver), true, 'Driver atribuído pelo atendente DEVE ver o pedido');
+  assert.equal(canCallerSeeOrder(orderWithDriver, deliveryDriver), false, 'Outro motorista NÃO PODE ver o pedido de outro');
+  assert.equal(canCallerSeeOrder(orderWithDriver, { id: 99, role: 'admin', phone: '' }), true, 'Admin deve ver todos os pedidos');
+  assert.equal(canCallerSeeOrder(orderWithDriver, { id: 100, role: 'atendente', phone: '' }), true, 'Atendente deve ver todos os pedidos');
+});
+
+test('when attendant sets motorista_id or extra assignedDriverId, other drivers cannot see it', () => {
+  const orderWithGeneralDriver = {
+    id: 502,
+    etapa: 'pendente',
+    tipo_encomenda: 'entrega',
+    motorista_id: pickupDriver.id,
+    orderVisibility: 'publico'
+  };
+
+  assert.equal(canCallerSeeOrder(orderWithGeneralDriver, pickupDriver), true);
+  assert.equal(canCallerSeeOrder(orderWithGeneralDriver, deliveryDriver), false);
+
+  const orderWithExtraDriver = {
+    id: 503,
+    etapa: 'pendente',
+    tipo_encomenda: 'entrega',
+    assignedDriverId: String(pickupDriver.id),
+    orderVisibility: 'publico'
+  };
+
+  assert.equal(canCallerSeeOrder(orderWithExtraDriver, pickupDriver), true);
+  assert.equal(canCallerSeeOrder(orderWithExtraDriver, deliveryDriver), false);
+});
+
+test('when a driver claims an open order, it vanishes immediately for other drivers', () => {
+  const openOrder = {
+    id: 504,
+    etapa: 'pendente',
+    tipo_encomenda: 'entrega',
+    pickupVisibility: 'publico',
+    orderVisibility: 'publico'
+  };
+
+  // Aberto para todos antes de ser aceito
+  assert.equal(canCallerSeeOrder(openOrder, pickupDriver), true);
+  assert.equal(canCallerSeeOrder(openOrder, deliveryDriver), true);
+
+  // pickupDriver aceita a corrida
+  assignmentStore.set('pedido-504_coleta', {
+    orderId: 'pedido-504_coleta',
+    driverId: String(pickupDriver.id),
+    acceptedByDriver: true
+  });
+
+  // Imediatamente: pickupDriver vê, deliveryDriver NÃO vê!
+  assert.equal(canCallerSeeOrder(openOrder, pickupDriver), true);
+  assert.equal(canCallerSeeOrder(openOrder, deliveryDriver), false);
+});

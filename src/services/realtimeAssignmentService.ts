@@ -278,6 +278,11 @@ class RealtimeAssignmentService {
     if (place.orderVisibility === 'privado') {
       return false;
     }
+    const op = place.operationType || 'entrega';
+    if (op === 'coleta' && place.pickupVisibility === 'privado') return false;
+    if (op === 'entrega' && place.deliveryVisibility === 'privado') return false;
+    if (op === 'troca' && place.exchangeVisibility === 'privado') return false;
+    if (place.acceptedByDriver) return false;
 
     const numOrderId = place.id.match(/\d+/)?.[0] || (place.orderCode ? place.orderCode.match(/\d+/)?.[0] : null);
     const rt = this.getAssignmentForOrder(place.id, place.operationType) || 
@@ -287,8 +292,12 @@ class RealtimeAssignmentService {
       place.assignedDriverId || 
       place.assignedDriverPhone || 
       place.assignedDriverName ||
+      (op === 'coleta' && (place.pickupAssignedDriverId || place.pickupAssignedDriverPhone || place.pickupAssignedDriverName)) ||
+      (op === 'entrega' && (place.deliveryAssignedDriverId || place.deliveryAssignedDriverPhone || place.deliveryAssignedDriverName)) ||
+      (op === 'troca' && (place.exchangeAssignedDriverId || place.exchangeAssignedDriverPhone || place.exchangeAssignedDriverName)) ||
       rt?.driverId ||
-      rt?.driverName
+      rt?.driverName ||
+      rt?.acceptedByDriver
     );
 
     if (hasDriver) {
@@ -307,6 +316,11 @@ class RealtimeAssignmentService {
       return Boolean(place.collectionOwnerId && String(user.id || '').trim() === place.collectionOwnerId);
     }
 
+    const op = place.operationType || 'entrega';
+    const pointDriverId = op === 'coleta' ? place.pickupAssignedDriverId : op === 'troca' ? place.exchangeAssignedDriverId : place.deliveryAssignedDriverId;
+    const pointDriverPhone = op === 'coleta' ? place.pickupAssignedDriverPhone : op === 'troca' ? place.exchangeAssignedDriverPhone : place.deliveryAssignedDriverPhone;
+    const pointDriverName = op === 'coleta' ? place.pickupAssignedDriverName : op === 'troca' ? place.exchangeAssignedDriverName : place.deliveryAssignedDriverName;
+
     // Normaliza dados do usuário logado
     const userPhoneClean = (user.phone || '').replace(/\D/g, '');
     const userIdStr = String(user.id || '').toLowerCase().trim();
@@ -314,10 +328,10 @@ class RealtimeAssignmentService {
     const userNameClean = (user.name || '').toLowerCase().trim();
 
     // 1. Verifica dados de atribuição gravados no Place
-    const assignedIdStr = String(place.assignedDriverId || '').toLowerCase().trim();
+    const assignedIdStr = String(pointDriverId || place.assignedDriverId || '').toLowerCase().trim();
     const assignedIdClean = assignedIdStr.replace(/\D/g, '');
-    const assignedPhoneClean = (place.assignedDriverPhone || '').replace(/\D/g, '');
-    const assignedNameClean = (place.assignedDriverName || '').toLowerCase().trim();
+    const assignedPhoneClean = (pointDriverPhone || place.assignedDriverPhone || '').replace(/\D/g, '');
+    const assignedNameClean = (pointDriverName || place.assignedDriverName || '').toLowerCase().trim();
 
     // 2. Verifica dados gravados no Realtime Assignments Store
     const numOrderId = place.id.match(/\d+/)?.[0] || (place.orderCode ? place.orderCode.match(/\d+/)?.[0] : null);

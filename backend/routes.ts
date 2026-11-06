@@ -1423,6 +1423,26 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
         const lng = tipo === 'coleta' ? coletaLng : entregaLng;
         if (lat == null || lng == null || isNaN(Number(lat)) || isNaN(Number(lng))) return;
         const localName = loc?.name || (tipo === 'coleta' ? (view.coleta_nome || view.coleta_local || 'Local de Coleta') : (view.entrega_nome || view.entrega_local || 'Local de Entrega'));
+        const assignedDriverId = tipo === 'coleta'
+          ? (view.coleta_user_id || view.pickupAssignedDriverId || view.assignedDriverId || view.motorista_id)
+          : tipo === 'troca'
+            ? (view.exchangeAssignedDriverId || view.assignedDriverId || view.motorista_id)
+            : (view.entrega_user_id || view.deliveryAssignedDriverId || view.assignedDriverId || view.motorista_id);
+        const assignedDriverName = tipo === 'coleta'
+          ? (view.coleta_user_nome || view.pickupAssignedDriverName || view.assignedDriverName || view.motorista_nome)
+          : tipo === 'troca'
+            ? (view.exchangeAssignedDriverName || view.assignedDriverName || view.motorista_nome)
+            : (view.entrega_user_nome || view.deliveryAssignedDriverName || view.assignedDriverName || view.motorista_nome);
+        const assignedDriverPhone = tipo === 'coleta'
+          ? (view.pickupAssignedDriverPhone || view.assignedDriverPhone || view.motorista_telefone)
+          : tipo === 'troca'
+            ? (view.exchangeAssignedDriverPhone || view.assignedDriverPhone || view.motorista_telefone)
+            : (view.deliveryAssignedDriverPhone || view.assignedDriverPhone || view.motorista_telefone);
+        const pointVis = tipo === 'coleta'
+          ? (view.pickupVisibility || view.orderVisibility)
+          : tipo === 'troca'
+            ? (view.exchangeVisibility || view.orderVisibility)
+            : (view.deliveryVisibility || view.orderVisibility);
         markers.push({
           ...base,
           tipo,
@@ -1430,7 +1450,12 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
           local_id: loc?.id || 0,
           local_name: localName,
           lat: Number(lat),
-          lng: Number(lng)
+          lng: Number(lng),
+          assigned_driver_id: assignedDriverId ? String(assignedDriverId) : undefined,
+          assigned_driver_name: assignedDriverName ? String(assignedDriverName) : undefined,
+          assigned_driver_phone: assignedDriverPhone ? String(assignedDriverPhone) : undefined,
+          motorista_id: assignedDriverId ? String(assignedDriverId) : undefined,
+          order_visibility: pointVis || (assignedDriverId ? 'privado' : 'publico')
         });
       };
 

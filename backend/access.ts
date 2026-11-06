@@ -121,13 +121,35 @@ export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
   const stage = String(pedido?.etapa || '').toLowerCase().trim();
   const isExchange = String(pedido?.tipo_encomenda || '').toLowerCase() === 'troca' ||
     Boolean(pedido?.troca_lat || pedido?.troca_nome);
+  const isDeliveryOnly = pedido?.tipo_encomenda === 'entrega' &&
+    !pedido?.coleta_locais_id &&
+    !pedido?.pickup_location_id &&
+    !pedido?.coleta_lat &&
+    !pedido?.coleta_nome &&
+    !pedido?.coleta_local &&
+    !pedido?.orig_name &&
+    !pedido?.coleta_user_id &&
+    !pedido?.pickupVisibility &&
+    !pedido?.pickupAssignedDriverId &&
+    !pedido?.orig_drivers &&
+    Boolean(
+      pedido?.delivery_location_id ||
+      pedido?.dest_name ||
+      pedido?.entrega_nome ||
+      pedido?.entrega_local ||
+      pedido?.entrega_user_id ||
+      pedido?.deliveryVisibility ||
+      pedido?.deliveryAssignedDriverId ||
+      pedido?.dest_drivers
+    );
+  const isColetado = ['coletado', 'trocando', 'trocado', 'retornando', 'segunda_entrega', 'retorno', 'entregando', 'entregue'].includes(stage);
   const activePoint = isExchange
     ? ['trocado', 'retornando', 'segunda_entrega', 'retorno', 'entregando'].includes(stage)
       ? 'delivery'
       : ['coletado', 'trocando'].includes(stage)
         ? 'exchange'
         : 'pickup'
-    : ['coletado', 'entregando'].includes(stage)
+    : (isColetado || isDeliveryOnly)
       ? 'delivery'
       : 'pickup';
   const operation = activePoint === 'pickup' ? 'coleta' : activePoint === 'exchange' ? 'troca' : 'entrega';
@@ -153,12 +175,14 @@ export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
   const legacyDriverIds = [
     pedido?.assignedDriverId,
     extra.assignedDriverId,
-    pedido?.motorista_id
+    pedido?.motorista_id,
+    extra.motorista_id
   ].map(digits).filter(Boolean);
   const legacyDriverPhones = [
     pedido?.assignedDriverPhone,
     extra.assignedDriverPhone,
-    pedido?.motorista_telefone
+    pedido?.motorista_telefone,
+    extra.motorista_telefone
   ].map(digits).filter(phone => phone.length >= 8);
 
   let anyAssigned = false;
@@ -177,28 +201,31 @@ export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
     }
   }
 
-  if (pointVisibility === 'privado') {
-    const allowedDriverIds = hasPointVisibility ? staticDriverIds : [...staticDriverIds, ...legacyDriverIds];
-    const allowedDriverPhones = hasPointVisibility ? staticDriverPhones : [...staticDriverPhones, ...legacyDriverPhones];
-    if (allowedDriverIds.length || allowedDriverPhones.length) {
-      anyAssigned = true;
-      if (caller && (
-        allowedDriverIds.includes(String(caller.id)) ||
-        allowedDriverPhones.some(phone => caller.phone.length >= 8 && phone.slice(-8) === caller.phone.slice(-8))
-      )) mine = true;
-    }
-  } else if (!pointVisibility) {
-    const allDriverIds = [...staticDriverIds, ...legacyDriverIds];
-    const allDriverPhones = [...staticDriverPhones, ...legacyDriverPhones];
-    if (allDriverIds.length || allDriverPhones.length) {
-      anyAssigned = true;
-      if (caller && (
-        allDriverIds.includes(String(caller.id)) ||
-        allDriverPhones.some(phone => caller.phone.length >= 8 && phone.slice(-8) === caller.phone.slice(-8))
-      )) mine = true;
-    }
+  const allowedDriverIds = hasPointVisibility && staticDriverIds.length
+    ? staticDriverIds
+    : [...staticDriverIds, ...legacyDriverIds];
+  const allowedDriverPhones = hasPointVisibility && staticDriverPhones.length
+    ? staticDriverPhones
+    : [...staticDriverPhones, ...legacyDriverPhones];
+
+  if (allowedDriverIds.length || allowedDriverPhones.length) {
+    anyAssigned = true;
+    if (caller && (
+      allowedDriverIds.includes(String(caller.id)) ||
+      allowedDriverPhones.some(phone => caller.phone.length >= 8 && phone.slice(-8) === caller.phone.slice(-8))
+    )) mine = true;
   }
 
-  if (pointVisibility === 'privado' && !anyAssigned) return false;
-  return !anyAssigned || mine;
+  // Quando um motorista aceita ou o atendente/admin seta um motorista:
+  // O marcador/pedido SÓ deve ser visualizado por aquele motorista.
+  // Para todos os outros motoristas, o marcador desaparece imediatamente.
+  if (anyAssigned) {
+    return mine;
+  }
+
+  // Pedido privado sem motorista não fica visível para motoristas
+  if (pointVisibility === 'privado') return false;
+
+  // Pedido público/aberto sem motorista: disponível para qualquer motorista da cidade aceitar
+  return true;
 }
