@@ -150,7 +150,11 @@ class SettingsErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBou
 
 type SubpageKey = 'pricing' | 'payments' | 'image_server' | 'user_fields' | 'server' | 'navigation' | 'default_location' | 'security' | 'companies' | 'cities';
 
-const AdminSettingsContent: React.FC = () => {
+interface AdminSettingsPageProps {
+  initialSubpage?: 'companies' | null;
+}
+
+const AdminSettingsContent: React.FC<AdminSettingsPageProps> = ({ initialSubpage = null }) => {
   const { 
     isAdminSettingsOpen, 
     setIsAdminSettingsOpen,
@@ -166,7 +170,7 @@ const AdminSettingsContent: React.FC = () => {
   } = useMapStore();
 
   // Subpágina ativa no estilo Android (null = tela inicial de categorias)
-  const [currentSubpage, setCurrentSubpage] = useState<SubpageKey | null>(null);
+  const [currentSubpage, setCurrentSubpage] = useState<SubpageKey | null>(initialSubpage);
 
   // Botão voltar do Android (Hardware/Swipe)
   useBackButton('admin-settings-subpage', !!currentSubpage, () => {
@@ -289,7 +293,7 @@ const AdminSettingsContent: React.FC = () => {
       items: [
         {
           id: 'companies' as SubpageKey,
-          title: 'Empresas & Transportadoras',
+          title: 'Lista de Transportadoras',
           subtitle: 'Cadastre transportadoras, vincule um local e gerencie suas equipes',
           icon: Building2,
           iconBg: 'bg-slate-900 text-amber-400',
@@ -607,13 +611,13 @@ const AdminSettingsContent: React.FC = () => {
   );
 };
 
-export const AdminSettingsPage: React.FC = () => {
+export const AdminSettingsPage: React.FC<AdminSettingsPageProps> = ({ initialSubpage = null }) => {
   const { isAdminSettingsOpen, setIsAdminSettingsOpen, currentRole } = useMapStore();
   if (!isAdminSettingsOpen || currentRole === 'motorista') return null;
 
   return (
     <SettingsErrorBoundary onClose={() => setIsAdminSettingsOpen(false)}>
-      <AdminSettingsContent />
+      <AdminSettingsContent initialSubpage={initialSubpage} />
     </SettingsErrorBoundary>
   );
 };

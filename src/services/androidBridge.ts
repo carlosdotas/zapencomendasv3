@@ -9,6 +9,10 @@ export interface AndroidAppBridge {
   pickContact?: () => void;
   saveContact?: (name: string, phone: string) => void;
   showNotification?: (title: string, message: string) => void;
+  requireUrgentFullScreenPermission?: () => void;
+  clearUrgentFullScreenRequirement?: () => void;
+  showUrgentOffer?: (offerId: string, name: string, expiresAt: number) => void;
+  cancelUrgentOffer?: (offerId: string) => void;
   vibrate?: (ms: number) => void;
   getLatitude?: () => number;
   getLongitude?: () => number;

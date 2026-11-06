@@ -48,6 +48,7 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const activeOfferId = useRef<string | null>(null);
 
   const decline = useCallback(async () => {
     if (!offer || busy) return;
@@ -56,6 +57,8 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
     try {
       const responded = await driverTrackingClient.respondToUrgentOffer(offer.offerId, false);
       if (!responded) setError('Este convite não está mais ativo.');
+      window.AndroidApp?.cancelUrgentOffer?.(offer.offerId);
+      activeOfferId.current = null;
       setOffer(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Não foi possível recusar o convite.');
@@ -73,28 +76,46 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
       setOffer(null);
       return;
     }
+    window.AndroidApp?.requireUrgentFullScreenPermission?.();
     const unsubscribeOffer = driverTrackingClient.onUrgentOffer(nextOffer => {
+      if (nextOffer.expiresAt <= Date.now()) return;
+      if (activeOfferId.current && activeOfferId.current !== nextOffer.offerId) {
+        window.AndroidApp?.cancelUrgentOffer?.(activeOfferId.current);
+      }
+      activeOfferId.current = nextOffer.offerId;
       setError('');
       setOffer(nextOffer);
-      (window as any).AndroidApp?.showNotification?.(
-        'Coleta urgente disponível',
-        `${nextOffer.place.name} - toque para abrir o convite`
-      );
+      if (window.AndroidApp?.showUrgentOffer) {
+        window.AndroidApp.showUrgentOffer(nextOffer.offerId, nextOffer.place.name, nextOffer.expiresAt);
+      } else {
+        window.AndroidApp?.showNotification?.('Coleta urgente disponível', `${nextOffer.place.name} - toque para abrir o convite`);
+      }
       if (typeof navigator !== 'undefined') navigator.vibrate?.([700, 300, 700]);
     });
     const unsubscribeCancel = driverTrackingClient.onUrgentCancel(offerId => {
+      window.AndroidApp?.cancelUrgentOffer?.(offerId);
+      if (activeOfferId.current === offerId) activeOfferId.current = null;
       setOffer(current => current?.offerId === offerId ? null : current);
     });
     return () => {
       unsubscribeOffer();
       unsubscribeCancel();
+      if (activeOfferId.current) window.AndroidApp?.cancelUrgentOffer?.(activeOfferId.current);
+      activeOfferId.current = null;
+      window.AndroidApp?.clearUrgentFullScreenRequirement?.();
     };
   }, [isAuthenticated, currentRole]);
 
   useEffect(() => {
     if (!offer) return;
     const updateRemaining = () => {
-      setRemainingSeconds(Math.max(0, Math.ceil((offer.expiresAt - Date.now()) / 1000)));
+      const seconds = Math.max(0, Math.ceil((offer.expiresAt - Date.now()) / 1000));
+      setRemainingSeconds(seconds);
+      if (seconds === 0) {
+        window.AndroidApp?.cancelUrgentOffer?.(offer.offerId);
+        if (activeOfferId.current === offer.offerId) activeOfferId.current = null;
+        setOffer(current => current?.offerId === offer.offerId ? null : current);
+      }
     };
     updateRemaining();
     const timer = window.setInterval(updateRemaining, 250);
@@ -107,7 +128,11 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
     setError('');
     try {
       const accepted = await claimPublicOrder(offer.place.id, 'coleta');
-      if (accepted) setOffer(null);
+      if (accepted) {
+        window.AndroidApp?.cancelUrgentOffer?.(offer.offerId);
+        activeOfferId.current = null;
+        setOffer(null);
+      }
       else setError('Outro motorista já aceitou esta coleta ou ela não está mais disponível.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Não foi possível aceitar a coleta.');

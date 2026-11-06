@@ -2,6 +2,8 @@ package com.zapencomendas.app;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.app.KeyguardManager;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -12,6 +14,8 @@ import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.provider.ContactsContract;
 import android.provider.Settings;
@@ -55,6 +59,13 @@ public class MainActivity extends BridgeActivity {
     private PermissionRequest pendingMediaRequest;
     private boolean startupPermissionRequestPending;
     private boolean returningFromBackgroundSettings;
+    private boolean startupPermissionsFinished;
+    private boolean fullScreenPermissionRequired;
+    private boolean fullScreenSettingsOpen;
+    private AlertDialog fullScreenPermissionDialog;
+    private String lockScreenOfferId;
+    private final Handler lockScreenHandler = new Handler(Looper.getMainLooper());
+    private final Runnable lockScreenExpiry = this::clearUrgentLockScreen;
 
     public String getLastSharedMapJson() {
         return pendingSharedMapJson;
@@ -69,6 +80,7 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleIncomingIntent(intent);
+        handleUrgentIntent(intent);
     }
 
     @Override
@@ -82,6 +94,7 @@ public class MainActivity extends BridgeActivity {
         requestInitialPermissions();
         ensureLocationServiceRunning();
         handleIncomingIntent(getIntent());
+        handleUrgentIntent(getIntent());
     }
 
     @Override
@@ -93,6 +106,10 @@ public class MainActivity extends BridgeActivity {
             returningFromBackgroundSettings = false;
             finishStartupPermissions();
         }
+        if (fullScreenSettingsOpen) {
+            fullScreenSettingsOpen = false;
+        }
+        showFullScreenPermissionIfNeeded();
         ensureLocationServiceRunning();
         // Garantir que os temporizadores JS continuem ativos
         if (getBridge() != null && getBridge().getWebView() != null) {
@@ -120,6 +137,8 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onDestroy() {
+        lockScreenHandler.removeCallbacks(lockScreenExpiry);
+        if (fullScreenPermissionDialog != null) fullScreenPermissionDialog.dismiss();
         if (apkUpdateChecker != null) apkUpdateChecker.destroy();
         super.onDestroy();
     }
@@ -568,13 +587,106 @@ public class MainActivity extends BridgeActivity {
             new AlertDialog.Builder(this)
                 .setTitle("Permissões não concedidas")
                 .setMessage("Algumas funções podem não funcionar sem localização, notificações, câmera, microfone, contatos ou fotos. Você pode permitir o acesso nas configurações do Android.")
-                .setPositiveButton("Configurações", (dialog, which) -> openAppSettings())
-                .setNegativeButton("Continuar", (dialog, which) -> checkGpsEnabled())
-                .setOnCancelListener(dialog -> checkGpsEnabled())
+                .setPositiveButton("Configurações", (dialog, which) -> {
+                    startupPermissionsFinished = true;
+                    openAppSettings();
+                })
+                .setNegativeButton("Continuar", (dialog, which) -> finishStartupDialogs())
+                .setOnCancelListener(dialog -> finishStartupDialogs())
                 .show();
         } else {
-            checkGpsEnabled();
+            finishStartupDialogs();
         }
+    }
+
+    private void finishStartupDialogs() {
+        startupPermissionsFinished = true;
+        checkGpsEnabled();
+        showFullScreenPermissionIfNeeded();
+    }
+
+    public void requireUrgentFullScreenPermission() {
+        fullScreenPermissionRequired = true;
+        showFullScreenPermissionIfNeeded();
+    }
+
+    public void clearUrgentFullScreenRequirement() {
+        fullScreenPermissionRequired = false;
+        if (fullScreenPermissionDialog != null) {
+            fullScreenPermissionDialog.dismiss();
+            fullScreenPermissionDialog = null;
+        }
+    }
+
+    private void showFullScreenPermissionIfNeeded() {
+        if (!fullScreenPermissionRequired || !startupPermissionsFinished || fullScreenSettingsOpen
+            || Build.VERSION.SDK_INT < 34 || isFinishing() || isDestroyed()) return;
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null && manager.canUseFullScreenIntent()) {
+            if (fullScreenPermissionDialog != null) {
+                fullScreenPermissionDialog.dismiss();
+                fullScreenPermissionDialog = null;
+            }
+            return;
+        }
+        if (fullScreenPermissionDialog != null && fullScreenPermissionDialog.isShowing()) return;
+        fullScreenPermissionDialog = new AlertDialog.Builder(this)
+            .setTitle("Permissão obrigatória para alertas urgentes")
+            .setMessage("Permita notificações em tela cheia nas configurações do Android para receber os convites urgentes sobre a tela bloqueada.")
+            .setPositiveButton("Abrir configurações", null)
+            .setCancelable(false)
+            .create();
+        fullScreenPermissionDialog.setCanceledOnTouchOutside(false);
+        fullScreenPermissionDialog.setOnShowListener(ignored ->
+            fullScreenPermissionDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                try {
+                    fullScreenSettingsOpen = true;
+                    startActivity(new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                        Uri.parse("package:" + getPackageName())));
+                    fullScreenPermissionDialog.dismiss();
+                    fullScreenPermissionDialog = null;
+                } catch (Exception error) {
+                    fullScreenSettingsOpen = false;
+                    Log.e(TAG, "Não foi possível abrir as configurações de tela cheia.", error);
+                    Toast.makeText(this, "Não foi possível abrir as configurações de tela cheia.", Toast.LENGTH_LONG).show();
+                }
+            }));
+        fullScreenPermissionDialog.show();
+    }
+
+    private void handleUrgentIntent(Intent intent) {
+        if (intent == null || !UrgentNotification.ACTION_OPEN.equals(intent.getAction())) return;
+        long expiresAt = intent.getLongExtra(UrgentNotification.EXTRA_EXPIRES_AT, 0);
+        String offerId = intent.getStringExtra(UrgentNotification.EXTRA_OFFER_ID);
+        long remaining = expiresAt - System.currentTimeMillis();
+        if (!UrgentOfferWindow.isActive(offerId, expiresAt, System.currentTimeMillis())) return;
+        lockScreenOfferId = offerId;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
+        lockScreenHandler.removeCallbacks(lockScreenExpiry);
+        lockScreenHandler.postDelayed(lockScreenExpiry, remaining);
+    }
+
+    public void cancelUrgentLockScreen(String offerId) {
+        if (offerId.equals(lockScreenOfferId)) clearUrgentLockScreen();
+    }
+
+    private void clearUrgentLockScreen() {
+        if (lockScreenOfferId == null) return;
+        lockScreenOfferId = null;
+        lockScreenHandler.removeCallbacks(lockScreenExpiry);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(false);
+            setTurnScreenOn(false);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
+        KeyguardManager keyguard = (KeyguardManager) getSystemService(Context.KEYGUARD_SERVICE);
+        if (keyguard != null && keyguard.isKeyguardLocked()) moveTaskToBack(true);
     }
 
     private void handleMediaPermissionRequest(PermissionRequest request) {

@@ -26,6 +26,26 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
+    public void requireUrgentFullScreenPermission() {
+        activity.runOnUiThread(activity::requireUrgentFullScreenPermission);
+    }
+
+    @JavascriptInterface
+    public void clearUrgentFullScreenRequirement() {
+        activity.runOnUiThread(activity::clearUrgentFullScreenRequirement);
+    }
+
+    @JavascriptInterface
+    public void showUrgentOffer(String offerId, String name, long expiresAt) {
+        activity.runOnUiThread(() -> UrgentNotification.show(activity, offerId, name, expiresAt));
+    }
+
+    @JavascriptInterface
+    public void cancelUrgentOffer(String offerId) {
+        activity.runOnUiThread(() -> UrgentNotification.cancel(activity, offerId));
+    }
+
+    @JavascriptInterface
     public double getLatitude() {
         return LocationService.lastLatitude;
     }

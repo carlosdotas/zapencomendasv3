@@ -3,6 +3,8 @@ export interface NearbyDriver {
   distanceKm: number;
 }
 
+export const URGENT_PICKUP_STAGES = ['novo', 'pendente', 'aprovado', 'a_caminho_da_coleta'] as const;
+
 export function distanceInKm(
   from: { lat: number; lng: number },
   to: { lat: number; lng: number }

@@ -7,7 +7,7 @@ import { canAssignCollectedOrder, collectionOwnership } from '../src/utils/colle
 import { notifyOrderProgress, notifyUser } from './notifications';
 import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, isConfirmedDriverClaim, assignmentsVisibleTo, canCallerSeeOrder, activeOrderPoint } from './access';
 import { getDriverPermanentColor } from '../src/utils/driverColorUtils';
-import { distanceInKm, nearestAvailableDriver } from './urgentDispatch';
+import { distanceInKm, nearestAvailableDriver, URGENT_PICKUP_STAGES } from './urgentDispatch';
 import { assignmentOrderNumber, sameAssignmentOperation, serializeByKey } from './assignmentKeys';
 
 interface LiveDriverData {
@@ -204,9 +204,8 @@ export async function registerRealtime(
     const configuredRadius = Number((settings.operation as any)?.urgentNotificationRadiusKm);
     const radiusKm = Number.isFinite(configuredRadius) ? Math.min(50, Math.max(1, configuredRadius)) : 5;
     const rows = await prisma.orders.findMany({
-      where: { stage: { in: ['novo', 'pendente'] } },
-      orderBy: { created_at: 'asc' },
-      take: 500
+      where: { stage: { in: [...URGENT_PICKUP_STAGES] } },
+      orderBy: { created_at: 'asc' }
     });
     const pendingOrderIds = new Set(rows.map(row => String(row.id)));
     for (const state of urgentOffers.values()) {
@@ -223,9 +222,14 @@ export async function registerRealtime(
       const order = pedidoToBackend(row, locations);
       const orderId = String(row.id);
       const orderKey = `${orderId}-coleta`;
-      const hasPickup = Number.isFinite(Number(order.coleta_lat)) &&
-        Number.isFinite(Number(order.coleta_lng)) &&
-        (Number(order.coleta_lat) !== 0 || Number(order.coleta_lng) !== 0);
+      const pickupLocation = row.pickup_location_id ? locations.get(row.pickup_location_id) : null;
+      const pickupLat = pickupLocation?.lat ?? order.coleta_lat ?? order.coleta_locais_lat;
+      const pickupLng = pickupLocation?.lng ?? order.coleta_lng ?? order.coleta_locais_lng;
+      const hasPickup = pickupLat != null && pickupLng != null &&
+        Number.isFinite(Number(pickupLat)) && Number.isFinite(Number(pickupLng)) &&
+        Number(pickupLat) >= -90 && Number(pickupLat) <= 90 &&
+        Number(pickupLng) >= -180 && Number(pickupLng) <= 180 &&
+        (Number(pickupLat) !== 0 || Number(pickupLng) !== 0);
       let legacyDrivers: unknown[] = [];
       if (Array.isArray(order.coleta_motoristas)) legacyDrivers = order.coleta_motoristas;
       else if (typeof order.coleta_motoristas === 'string' && order.coleta_motoristas.trim()) {
@@ -270,7 +274,7 @@ export async function registerRealtime(
           id: `pedido-${orderId}-coleta`,
           name: String(order.coleta_nome || order.coleta_local || `Coleta do pedido #${orderId}`),
           address: String(order.coleta_endereco || order.coleta_nome || order.coleta_local || ''),
-          coordinates: { lat: Number(order.coleta_lat), lng: Number(order.coleta_lng) },
+          coordinates: { lat: Number(pickupLat), lng: Number(pickupLng) },
           category: 'Coleta urgente',
           orderId,
           orderCode: String(order.codigo || orderId),

@@ -6,6 +6,7 @@ import {
   Globe2, 
   ShieldCheck, 
   Users,
+  Building2,
   Truck,
   Headset,
   Package,
@@ -21,12 +22,16 @@ import { usePWAUpdate } from '../../services/pwaUpdateService';
 import { UserAvatar } from '../common/UserAvatar';
 import { useAppVersion } from '../../hooks/useAppVersion';
 
-export const SideMenuDrawer: React.FC = () => {
+interface SideMenuDrawerProps {
+  onOpenCompanies: () => void;
+  onOpenSettings: () => void;
+}
+
+export const SideMenuDrawer: React.FC<SideMenuDrawerProps> = ({ onOpenCompanies, onOpenSettings }) => {
   const appVersion = useAppVersion();
   const { 
     isSidebarOpen, 
     setIsSidebarOpen, 
-    setIsAdminSettingsOpen,
     setIsAdminUsersOpen,
     setAdminUsersRoleFilter,
     openCustomerList,
@@ -192,7 +197,20 @@ export const SideMenuDrawer: React.FC = () => {
                 <button 
                   onClick={() => {
                     setIsSidebarOpen(false);
-                    setIsAdminSettingsOpen(true);
+                    onOpenCompanies();
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold text-slate-700 hover:bg-[#F0F6FB] hover:text-[#0B5187] rounded-lg transition-colors cursor-pointer"
+                >
+                  <div className="flex items-center gap-3">
+                    <Building2 className="w-4 h-4 text-[#0B5187]" />
+                    <span>Lista de Transportadoras</span>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsSidebarOpen(false);
+                    onOpenSettings();
                   }}
                   className="w-full flex items-center justify-between px-3 py-2 text-xs font-bold text-slate-700 hover:bg-[#F0F6FB] hover:text-[#0B5187] rounded-lg transition-colors cursor-pointer"
                 >

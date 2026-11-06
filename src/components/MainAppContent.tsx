@@ -74,6 +74,12 @@ export const MainAppContent: React.FC = () => {
 
   const [isCustomerRegOpen, setIsCustomerRegOpen] = useState(false);
   const [customerRegInitialData, setCustomerRegInitialData] = useState<Partial<Customer> | AgendaContact | null>(null);
+  const [settingsStartPage, setSettingsStartPage] = useState<'companies' | null>(null);
+
+  const openSettings = useCallback((page: 'companies' | null) => {
+    setSettingsStartPage(page);
+    setIsAdminSettingsOpen(true);
+  }, [setIsAdminSettingsOpen]);
 
   const handleOpenRegistrationFromList = useCallback((initialData?: Partial<Customer> | AgendaContact) => {
     closeCustomerList();
@@ -239,13 +245,13 @@ export const MainAppContent: React.FC = () => {
         <UrgentOrderOfferOverlay />
 
         {/* Menu Lateral Retrátil */}
-        <SideMenuDrawer />
+        <SideMenuDrawer onOpenCompanies={() => openSettings('companies')} onOpenSettings={() => openSettings(null)} />
 
         {/* Página Inteira de Perfil do Usuário */}
         <UserProfilePage />
 
         {/* Página Inteira de Configurações do Sistema */}
-        <AdminSettingsPage />
+        <AdminSettingsPage initialSubpage={settingsStartPage} />
 
         {/* Página Inteira de Gestão de Usuários */}
         <AdminUsersPage />
