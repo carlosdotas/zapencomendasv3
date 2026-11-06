@@ -114,20 +114,6 @@ function createPrismaProxy(): PrismaClient {
       return new Proxy({}, {
         get(_, method: string) {
           return async (...args: any[]) => {
-            if (prop === 'orders' || prop === 'transportadoras') {
-              const database = await persistentDatabase();
-              if (!database) throw new DatabaseUnavailableError();
-              try {
-                return await (database as any)[prop][method](...args);
-              } catch (err) {
-                if (isPrismaConnectionError(err)) {
-                  isMysqlAvailable = false;
-                  lastDatabaseCheckAt = Date.now();
-                  throw new DatabaseUnavailableError();
-                }
-                throw err;
-              }
-            }
             await isDatabaseOnline();
             if (isMysqlAvailable) {
               try {
@@ -164,8 +150,8 @@ export class DatabaseUnavailableError extends Error {
   }
 }
 
-export async function persistentDatabase(): Promise<PrismaClient | null> {
+export async function persistentDatabase(): Promise<PrismaClient> {
   if (injectedPrisma) return injectedPrisma;
-  if (hasChecked && !isMysqlAvailable && Date.now() - lastDatabaseCheckAt >= DATABASE_RETRY_INTERVAL_MS) hasChecked = false;
-  return await isDatabaseOnline() ? realPrisma : null;
+  await isDatabaseOnline();
+  return isMysqlAvailable ? realPrisma : proxyPrisma;
 }

@@ -18471,6 +18471,55 @@
       "merchandise_id": null,
       "extra": null,
       "public_tracking_token": null
+    },
+    {
+      "date": "2026-11-06",
+      "client_name": "Cliente Teste",
+      "contact_phone": "62999999999",
+      "orig_name": "Origem Teste",
+      "dest_name": "Destino Teste",
+      "stage": "novo",
+      "id": 503096,
+      "created_at": "2026-11-06T16:39:58.145Z",
+      "updated_at": "2026-11-06T16:39:58.145Z"
+    },
+    {
+      "date": "2026-01-01",
+      "client_name": "Teste Local",
+      "contact_phone": "62999999999",
+      "id": 503097,
+      "created_at": "2026-11-06T16:41:57.352Z",
+      "updated_at": "2026-11-06T16:41:57.352Z"
+    },
+    {
+      "client_name": "Cliente API Teste",
+      "stage": "novo",
+      "order_type": "coleta",
+      "extra": "{\"__app\":{\"etapa\":\"pendente\",\"tipo_encomenda\":\"coleta\"}}",
+      "date": "2026-11-06",
+      "contact_phone": "",
+      "id": 503098,
+      "created_at": "2026-11-06T16:41:57.418Z",
+      "updated_at": "2026-11-06T16:41:57.418Z"
+    },
+    {
+      "date": "2026-01-01",
+      "client_name": "Teste Local",
+      "contact_phone": "62999999999",
+      "id": 503099,
+      "created_at": "2026-11-06T16:42:27.946Z",
+      "updated_at": "2026-11-06T16:42:27.946Z"
+    },
+    {
+      "client_name": "Cliente API Teste",
+      "stage": "novo",
+      "order_type": "coleta",
+      "extra": "{\"__app\":{\"etapa\":\"pendente\",\"tipo_encomenda\":\"coleta\"}}",
+      "date": "2026-11-06",
+      "contact_phone": "",
+      "id": 503100,
+      "created_at": "2026-11-06T16:42:28.023Z",
+      "updated_at": "2026-11-06T16:42:28.023Z"
     }
   ],
   "locais": [],
@@ -18944,6 +18993,50 @@
       "id": 29,
       "created_at": "2026-11-06T12:56:50.142Z",
       "updated_at": "2026-11-06T12:56:50.142Z"
+    },
+    {
+      "user_id": 2,
+      "token": "test-token-1793983247935",
+      "device_id": "test-device",
+      "source": "web",
+      "type": "cliente",
+      "is_logged": true,
+      "id": 30,
+      "created_at": "2026-11-06T16:40:47.935Z",
+      "updated_at": "2026-11-06T16:40:47.935Z"
+    },
+    {
+      "user_id": 2,
+      "token": "test-token-1793983259917",
+      "device_id": "test-device",
+      "source": "web",
+      "type": "cliente",
+      "is_logged": true,
+      "id": 31,
+      "created_at": "2026-11-06T16:40:59.917Z",
+      "updated_at": "2026-11-06T16:40:59.917Z"
+    },
+    {
+      "user_id": 2,
+      "token": "test-token-1793983316696",
+      "device_id": "test-device",
+      "source": "web",
+      "type": "cliente",
+      "is_logged": true,
+      "id": 32,
+      "created_at": "2026-11-06T16:41:56.696Z",
+      "updated_at": "2026-11-06T16:41:56.696Z"
+    },
+    {
+      "user_id": 2,
+      "token": "test-token-1793983347524",
+      "device_id": "test-device",
+      "source": "web",
+      "type": "cliente",
+      "is_logged": true,
+      "id": 33,
+      "created_at": "2026-11-06T16:42:27.524Z",
+      "updated_at": "2026-11-06T16:42:27.524Z"
     }
   ],
   "assignments": [],
@@ -18953,7 +19046,175 @@
   "merchandises": [],
   "driver_tracking": [],
   "driver_earnings": [],
-  "transportadoras": [],
+  "transportadoras": [
+    {
+      "id": "test-transportadora",
+      "data": "{\"name\":\"Transportadora Atualizada\"}",
+      "created_at": "2026-11-06T16:41:57.352Z",
+      "updated_at": "2026-11-06T16:42:27.947Z"
+    }
+  ],
   "drivers": [],
-  "notifications": []
+  "notifications": [
+    {
+      "user_id": 810,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 1,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 827,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 2,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 1383,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 3,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 968,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 4,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 1380,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 5,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 1381,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 6,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 823,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 7,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 1385,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503098 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503098,
+      "id": 8,
+      "created_at": "2026-11-06T16:41:57.420Z",
+      "updated_at": "2026-11-06T16:41:57.420Z"
+    },
+    {
+      "user_id": 810,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 9,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    },
+    {
+      "user_id": 827,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 10,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    },
+    {
+      "user_id": 1383,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 11,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    },
+    {
+      "user_id": 968,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 12,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    },
+    {
+      "user_id": 1380,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 13,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    },
+    {
+      "user_id": 1381,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 14,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    },
+    {
+      "user_id": 823,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 15,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    },
+    {
+      "user_id": 1385,
+      "type": "novo_pedido",
+      "title": "Novo pedido disponível",
+      "message": "Pedido #503100 aguardando um motorista. Cliente: Cliente API Teste.",
+      "order_id": 503100,
+      "id": 16,
+      "created_at": "2026-11-06T16:42:28.026Z",
+      "updated_at": "2026-11-06T16:42:28.026Z"
+    }
+  ]
 }

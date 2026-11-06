@@ -405,8 +405,10 @@ export class LocalDbStore {
       case 'create': {
         const { data, select, include } = params;
         const curMax = this.maxIds.get(table) || 0;
-        const newId = typeof data.id === 'number' ? data.id : (curMax + 1);
-        if (newId > curMax) this.maxIds.set(table, newId);
+        const newId = (typeof data.id === 'string' && data.id)
+          ? data.id
+          : (typeof data.id === 'number' ? data.id : (curMax + 1));
+        if (typeof newId === 'number' && newId > curMax) this.maxIds.set(table, newId);
 
         const record = {
           ...data,
@@ -424,7 +426,10 @@ export class LocalDbStore {
         const items = Array.isArray(data) ? data : [data];
         let curMax = this.maxIds.get(table) || 0;
         for (const item of items) {
-          const newId = typeof item.id === 'number' ? item.id : (++curMax);
+          const newId = (typeof item.id === 'string' && item.id)
+            ? item.id
+            : (typeof item.id === 'number' ? item.id : (++curMax));
+          if (typeof newId === 'number' && newId > curMax) curMax = newId;
           list.push({
             ...item,
             id: newId,
