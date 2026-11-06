@@ -39,8 +39,9 @@ import {
   MASTER_ADMIN_CODE 
 } from '../../../types/company';
 import { companyService } from '../../../services/companyService';
+import { placeService } from '../../../services/placeService';
 import { api } from '../../../services/api';
-import { BackendUser } from '../../../services/apiTypes';
+import { BackendLocal, BackendUser } from '../../../services/apiTypes';
 import { formatPhotoUrl } from '../../../services/apiAdapters';
 
 export interface SystemUserOption {
@@ -75,6 +76,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   // Lista de empresas sincronizada periodicamente com o servidor
   const [companies, setCompanies] = useState<CompanyTransportadora[]>(() => companyService.getAll());
   const [search, setSearch] = useState('');
+  const [companyLoadError, setCompanyLoadError] = useState('');
 
   // Usuários do sistema (carregados da API + Contas + Drivers)
   const [systemUsers, setSystemUsers] = useState<SystemUserOption[]>([]);
@@ -83,7 +85,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   // Modal de edição / criação
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'dados' | 'equipe'>('dados');
-  const [editingCompany, setEditingCompany] = useState<Partial<CompanyTransportadora> | null>(null);
+  const [editingCompany, setEditingCompany] = useState<CompanyTransportadora | null>(null);
 
   // Modal seletor de usuários do sistema
   const [userPickerRole, setUserPickerRole] = useState<'admin' | 'atendente' | 'motoboy' | null>(null);
@@ -94,13 +96,24 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
+  const [locationSearch, setLocationSearch] = useState('');
+  const [locations, setLocations] = useState<BackendLocal[]>([]);
+  const [isLoadingLocations, setIsLoadingLocations] = useState(false);
+  const [locationError, setLocationError] = useState('');
 
   // Carrega lista de empresas do servidor
   useEffect(() => {
+    let active = true;
     const unsub = companyService.subscribe((list) => {
       setCompanies(list);
     });
-    return () => unsub();
+    void companyService.refresh().then(success => {
+      if (active) setCompanyLoadError(success ? '' : 'Não foi possível carregar as transportadoras do servidor.');
+    });
+    return () => {
+      active = false;
+      unsub();
+    };
   }, []);
 
   // Busca e unifica todos os usuários do sistema
@@ -166,6 +179,37 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
     fetchSystemUsers();
   }, [fetchSystemUsers]);
 
+  useEffect(() => {
+    if (!isModalOpen || activeTab !== 'dados') return;
+    let cancelled = false;
+    setIsLoadingLocations(true);
+    setLocationError('');
+    const timer = setTimeout(async () => {
+      try {
+        const result = await placeService.getLocais({ search: locationSearch.trim(), limit: 30 });
+        if (cancelled) return;
+        if (!result.success || !Array.isArray(result.data)) {
+          setLocations([]);
+          setLocationError(result.message || 'Não foi possível carregar os locais cadastrados.');
+          return;
+        }
+        setLocations(result.data);
+      } catch (error) {
+        if (!cancelled) {
+          console.error('[CompanyManagement] Erro ao carregar locais:', error);
+          setLocations([]);
+          setLocationError('Não foi possível carregar os locais cadastrados.');
+        }
+      } finally {
+        if (!cancelled) setIsLoadingLocations(false);
+      }
+    }, locationSearch.trim() ? 250 : 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isModalOpen, activeTab, locationSearch]);
+
   // Helper para buscar detalhes do usuário pelo telefone
   const getUserByPhone = useCallback((phone: string): SystemUserOption => {
     const clean = phone.replace(/\D/g, '');
@@ -200,16 +244,19 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   };
 
   const handleOpenCreateModal = () => {
+    setLocationSearch('');
     setEditingCompany({
       id: `emp-${Date.now()}`,
       name: '',
       tradeName: '',
       cnpj: '',
       phone: '',
+      cleanPhone: '',
       city: 'Goiânia',
       state: 'GO',
       address: '',
       status: 'ativa',
+      createdAt: Date.now(),
       adminPhones: [],
       attendantPhones: [],
       motoboyPhones: [],
@@ -220,6 +267,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
   };
 
   const handleOpenEditModal = (comp: CompanyTransportadora) => {
+    setLocationSearch('');
     setEditingCompany({ ...comp });
     setActiveTab('dados');
     setIsModalOpen(true);
@@ -227,7 +275,11 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
 
   const handleDeleteCompany = async (id: string, name: string) => {
     if (window.confirm(`Tem certeza que deseja excluir a empresa/transportadora "${name}"?`)) {
-      await companyService.deleteCompany(id);
+      const deleted = await companyService.deleteCompany(id);
+      if (!deleted) {
+        window.alert('Não foi possível excluir a transportadora. Verifique a conexão e tente novamente.');
+        return;
+      }
       setSaveToast('Transportadora removida com sucesso.');
       setTimeout(() => setSaveToast(null), 3000);
     }
@@ -240,7 +292,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
     }
 
     setIsSaving(true);
-    const success = await companyService.saveCompany(editingCompany as CompanyTransportadora);
+    const success = await companyService.saveCompany(editingCompany);
     setIsSaving(false);
 
     if (success) {
@@ -476,6 +528,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
       )}
 
       <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-4">
+        {companyLoadError && <p role="alert" className="rounded-xl bg-red-50 p-3 text-xs font-semibold text-red-700">{companyLoadError}</p>}
         
         {/* Barra de Busca Minimalista */}
         <div className="flex items-center gap-2 bg-white rounded-2xl border border-slate-200/80 px-3.5 py-2 shadow-2xs">
@@ -540,6 +593,17 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
                         {comp.phone ? ` • Tel: ${comp.phone}` : ''}
                         {comp.cnpj ? ` • CNPJ: ${comp.cnpj}` : ''}
                       </p>
+                      {comp.location && (
+                        <p className="mt-1 flex items-center gap-1 text-[11px] font-semibold text-[#0B5187]">
+                          <MapPin className="h-3.5 w-3.5 shrink-0" />
+                          <span>Local: {comp.location.name}{comp.location.address ? ` — ${comp.location.address}` : ''}</span>
+                        </p>
+                      )}
+                      {comp.locationId && !comp.location && (
+                        <p className="mt-1 text-[11px] font-semibold text-amber-700">
+                          Local vinculado não encontrado. Edite a transportadora para selecionar outro.
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -594,7 +658,7 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
             );
           })}
 
-          {filteredCompanies.length === 0 && (
+          {!companyLoadError && filteredCompanies.length === 0 && (
             <div className="py-12 text-center text-slate-400 space-y-2 bg-white rounded-2xl border border-slate-200/80 p-6">
               <Truck className="w-8 h-8 mx-auto text-slate-300 stroke-[1.5]" />
               <p className="text-xs font-bold text-slate-600">Nenhuma transportadora encontrada</p>
@@ -773,6 +837,82 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
                       placeholder="Av. Exemplo, Qd. 10, Lt. 05, Setor Central"
                       className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-semibold focus:bg-white focus:border-[#0B5187] outline-none"
                     />
+                  </div>
+
+                  <div className="space-y-2 rounded-xl border border-slate-200 p-3">
+                    <label htmlFor="company-location-search" className="block text-[11px] font-bold text-slate-700">
+                      Local cadastrado da transportadora
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Vincule um local já cadastrado. O vínculo é opcional e não altera o endereço acima.
+                    </p>
+                    {editingCompany.locationId && (
+                      <div className="flex items-start gap-2 rounded-lg bg-blue-50 p-2">
+                        <MapPin className="h-4 w-4 shrink-0 text-[#0B5187]" />
+                        <div className="min-w-0 flex-1">
+                          <p className="font-bold text-slate-800">
+                            {editingCompany.location?.name || `Local #${editingCompany.locationId} não encontrado`}
+                          </p>
+                          {editingCompany.location?.address && (
+                            <p className="text-[11px] text-slate-500">{editingCompany.location.address}</p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          aria-label="Remover local vinculado"
+                          onClick={() => setEditingCompany({ ...editingCompany, locationId: null, location: null })}
+                          className="rounded p-1 text-slate-500 hover:bg-white hover:text-red-600"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    )}
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        id="company-location-search"
+                        type="search"
+                        value={locationSearch}
+                        onChange={event => setLocationSearch(event.target.value)}
+                        placeholder="Buscar local por nome ou endereço"
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 font-semibold outline-none focus:border-[#0B5187] focus:bg-white"
+                      />
+                    </div>
+                    {isLoadingLocations && <p className="text-[11px] text-slate-500">Carregando locais...</p>}
+                    {locationError && <p role="alert" className="text-[11px] font-semibold text-red-600">{locationError}</p>}
+                    {!isLoadingLocations && !locationError && locations.length === 0 && (
+                      <p className="text-[11px] text-slate-500">Nenhum local cadastrado encontrado.</p>
+                    )}
+                    {!isLoadingLocations && !locationError && locations.length > 0 && (
+                      <div className="max-h-40 space-y-1 overflow-y-auto">
+                        {locations.map(location => (
+                          <button
+                            key={location.id}
+                            type="button"
+                            onClick={() => setEditingCompany({
+                              ...editingCompany,
+                              locationId: Number(location.id),
+                              location: {
+                                id: Number(location.id),
+                                name: location.name,
+                                address: location.endereco || null,
+                                city: location.cidade || null,
+                                state: location.estado || null
+                              }
+                            })}
+                            aria-pressed={Number(location.id) === editingCompany.locationId}
+                            className={`w-full rounded-lg border p-2 text-left hover:border-[#0B5187] ${
+                              Number(location.id) === editingCompany.locationId ? 'border-[#0B5187] bg-blue-50' : 'border-slate-200'
+                            }`}
+                          >
+                            <span className="block font-bold text-slate-800">{location.name}</span>
+                            <span className="block text-[11px] text-slate-500">
+                              {[location.endereco, location.cidade, location.estado].filter(Boolean).join(' • ') || `Local #${location.id}`}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Modelo de Cobrança de Frete */}

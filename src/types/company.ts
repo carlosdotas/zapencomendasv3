@@ -21,6 +21,14 @@ export interface CompanyTransportadora {
   address?: string;
   city?: string;
   state?: string;
+  locationId?: number | null;
+  location?: {
+    id: number;
+    name: string;
+    address: string | null;
+    city: string | null;
+    state: string | null;
+  } | null;
   status: 'ativa' | 'inativa';
   createdAt: number;
   updatedAt?: number;

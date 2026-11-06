@@ -49,6 +49,7 @@ export interface GlobalAppSettings {
   };
   operation: {
     proximityRadiusKm: number;
+    urgentNotificationRadiusKm: number;
     requirePhotoOnFinish: boolean;
     autoAssignDrivers: boolean;
   };
@@ -114,6 +115,7 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalAppSettings = {
   },
   operation: {
     proximityRadiusKm: 5,
+    urgentNotificationRadiusKm: 5,
     requirePhotoOnFinish: true,
     autoAssignDrivers: false
   },
@@ -150,7 +152,8 @@ class SettingsService {
           pricing: { ...DEFAULT_PRICING_SETTINGS, ...(cachedSettings.pricing || {}) },
           cityPriceTable: cachedSettings.cityPriceTable || DEFAULT_CITY_PRICE_TABLE,
           payments: Array.isArray(cachedSettings.payments) && cachedSettings.payments.length > 0 ? cachedSettings.payments : DEFAULT_PAYMENT_RULES,
-          userRequiredFields: { ...DEFAULT_USER_REQUIRED_FIELDS, ...(cachedSettings.userRequiredFields || {}) }
+          userRequiredFields: { ...DEFAULT_USER_REQUIRED_FIELDS, ...(cachedSettings.userRequiredFields || {}) },
+          operation: { ...DEFAULT_GLOBAL_SETTINGS.operation, ...(cachedSettings.operation || {}) }
         };
       } else {
         this.currentSettings.pricing = getPricingSettings();
@@ -220,6 +223,10 @@ class SettingsService {
       navigation: {
         ...this.currentSettings.navigation,
         ...(remoteData.navigation || {})
+      },
+      operation: {
+        ...this.currentSettings.operation,
+        ...(remoteData.operation || {})
       },
       updatedAt: remoteData.updatedAt || Date.now()
     };

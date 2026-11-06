@@ -24,6 +24,7 @@ import { fetchMultiStopRoute } from '../../services/routingService';
 import { getPlaceCalendarDate, isDateInInterval } from '../../utils/dateFilterUtils';
 import { companyService } from '../../services/companyService';
 import { getDriverPermanentColor } from '../../utils/driverColorUtils';
+import { settingsService } from '../../services/settingsService';
 
 import { CachedTileLayer } from '../../services/tileCache';
 
@@ -1274,6 +1275,9 @@ export const FullscreenMap: React.FC = () => {
   const completedMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const driverMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const routeLayersRef = useRef<{ outer: L.Polyline; inner: L.Polyline; flow?: L.Polyline } | null>(null);
+  const [urgentRadiusKm, setUrgentRadiusKm] = useState(
+    settingsService.getSettings().operation.urgentNotificationRadiusKm
+  );
 
   // Janelinha / Modal de Seleção de Encomendas no Local (onmaker)
   const [markerSelectionModal, setMarkerSelectionModal] = useState<{
@@ -1333,6 +1337,47 @@ export const FullscreenMap: React.FC = () => {
 
   // O terminal usa o modo monitor: marcadores próprios, sem labels (MonitorMapLayer)
   const isMonitorMode = currentRole === 'terminal';
+
+  useEffect(() => settingsService.subscribe(settings =>
+    setUrgentRadiusKm(settings.operation.urgentNotificationRadiusKm)
+  ), []);
+
+  useEffect(() => {
+    if (
+      !mapInstance ||
+      currentRole === 'terminal' ||
+      !Number.isFinite(urgentRadiusKm)
+    ) return;
+
+    const radiusLayer = L.layerGroup().addTo(mapInstance);
+    const openPickupMarkers = allPlaces.filter(place =>
+      !isCollectionCenterPlace(place) &&
+      place.operationType === 'coleta' &&
+      realtimeAssignmentService.isPublicOrder(place) &&
+      Number.isFinite(place.coordinates?.lat) &&
+      Number.isFinite(place.coordinates?.lng)
+    );
+    const drawnLocations = new Set<string>();
+    for (const place of openPickupMarkers) {
+      const locationKey = `${place.coordinates.lat},${place.coordinates.lng}`;
+      if (drawnLocations.has(locationKey)) continue;
+      drawnLocations.add(locationKey);
+      L.circle([place.coordinates.lat, place.coordinates.lng], {
+        radius: urgentRadiusKm * 1000,
+        color: '#FF5E00',
+        weight: 2,
+        opacity: 0.8,
+        fillColor: '#FF5E00',
+        fillOpacity: 0.08,
+        dashArray: '6 6',
+        interactive: false
+      }).addTo(radiusLayer);
+    }
+
+    return () => {
+      radiusLayer.remove();
+    };
+  }, [mapInstance, allPlaces, currentRole, urgentRadiusKm]);
 
   const routeSelectModeRef = useRef(routeSelectMode);
   routeSelectModeRef.current = routeSelectMode;

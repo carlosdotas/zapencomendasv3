@@ -7,6 +7,7 @@ import { canAssignCollectedOrder, collectionOwnership } from '../src/utils/colle
 import { notifyOrderProgress, notifyUser } from './notifications';
 import { assignmentStore, resolveCaller, isPrivileged, isAssignmentMine, isConfirmedDriverClaim, assignmentsVisibleTo } from './access';
 import { getDriverPermanentColor } from '../src/utils/driverColorUtils';
+import { distanceInKm, nearestAvailableDriver } from './urgentDispatch';
 
 interface LiveDriverData {
   id: string;
@@ -39,9 +40,21 @@ interface OrderAssignmentData {
   acceptedByDriver?: boolean;
 }
 
+interface UrgentOfferState {
+  orderKey: string;
+  orderId: string;
+  place: Record<string, unknown>;
+  attemptedDriverIds: Set<string>;
+  currentDriverId?: string;
+  currentDriverKey?: string;
+  expiresAt?: number;
+  timeout?: ReturnType<typeof setTimeout>;
+}
+
 // Motoristas sem atualização há mais de 30 minutos somem do mapa
 const MAX_OFFLINE_MS = 30 * 60 * 1000;
 const TRACKING_HISTORY_INTERVAL_MS = 30 * 1000;
+const URGENT_OFFER_DURATION_MS = 30 * 1000;
 
 export async function registerRealtime(
   app: Express,
@@ -51,6 +64,10 @@ export async function registerRealtime(
   const activeDrivers = new Map<string, LiveDriverData>();
   const activeAssignments = assignmentStore as unknown as Map<string, OrderAssignmentData>;
   const lastHistoryWrite = new Map<string, number>();
+  const authenticatedSockets = new Map<WebSocket, { id: number; role: string; phone: string }>();
+  const socketsByUserId = new Map<number, Set<WebSocket>>();
+  const urgentOffers = new Map<string, UrgentOfferState>();
+  let dispatchInProgress = false;
 
   try {
     const stored = await Promise.race([
@@ -88,6 +105,200 @@ export async function registerRealtime(
     });
   }
 
+  function sendToUser(userId: number, data: unknown) {
+    const payload = JSON.stringify(data);
+    socketsByUserId.get(userId)?.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) client.send(payload);
+    });
+  }
+
+  function resendUrgentOffers(userId: number) {
+    for (const state of urgentOffers.values()) {
+      if (state.currentDriverId !== String(userId) || !state.expiresAt || state.expiresAt <= Date.now()) continue;
+      sendToUser(userId, {
+        type: 'urgent:offer',
+        offerId: state.orderKey,
+        expiresAt: state.expiresAt,
+        place: state.place
+      });
+    }
+  }
+
+  function cancelUrgentOffer(orderId: string) {
+    const assignedOrderId = numOfKey(orderId);
+    const assignedOperation = opOfKey(orderId);
+    for (const [key, state] of urgentOffers) {
+      if (
+        state.orderId !== orderId &&
+        state.orderKey !== orderId &&
+        (state.orderId !== assignedOrderId || (assignedOperation && assignedOperation !== 'coleta'))
+      ) continue;
+      if (state.timeout) clearTimeout(state.timeout);
+      if (state.currentDriverId) {
+        const driverId = Number(state.currentDriverId);
+        if (Number.isFinite(driverId)) sendToUser(driverId, { type: 'urgent:cancel', offerId: state.orderKey });
+      }
+      urgentOffers.delete(key);
+    }
+  }
+
+  function sendNextUrgentOffer(state: UrgentOfferState, radiusKm: number) {
+    if (state.timeout) clearTimeout(state.timeout);
+    const pickup = state.place.coordinates as { lat: number; lng: number };
+    const userByDriverId = new Map<string, number>();
+    const nearby = validDrivers()
+      .filter(driver =>
+        driver.status !== 'em_pausa' &&
+        driver.status !== 'offline' &&
+        Number.isFinite(driver.coordinates?.lat) &&
+        Number.isFinite(driver.coordinates?.lng)
+      )
+      .map(driver => {
+        const recipient = Array.from(authenticatedSockets.entries()).find(([socket, caller]) =>
+          socket.readyState === WebSocket.OPEN &&
+          caller.role === 'motorista' &&
+          isAssignmentMine({ driverId: driver.id, driverPhone: driver.phone }, caller)
+        )?.[1].id;
+        if (recipient !== undefined) userByDriverId.set(String(driver.id), recipient);
+        return {
+          id: String(driver.id),
+          distanceKm: distanceInKm(pickup, driver.coordinates)
+        };
+      })
+      .filter(driver => userByDriverId.has(driver.id));
+    const next = nearestAvailableDriver(nearby, state.attemptedDriverIds, radiusKm);
+    if (!next) {
+      state.currentDriverId = undefined;
+      state.currentDriverKey = undefined;
+      state.expiresAt = undefined;
+      return;
+    }
+
+    state.currentDriverId = String(userByDriverId.get(next.id));
+    state.currentDriverKey = next.id;
+    state.expiresAt = Date.now() + URGENT_OFFER_DURATION_MS;
+    const recipientId = userByDriverId.get(next.id);
+    if (recipientId === undefined) return;
+    sendToUser(recipientId, {
+      type: 'urgent:offer',
+      offerId: state.orderKey,
+      expiresAt: state.expiresAt,
+      distanceKm: next.distanceKm,
+      place: state.place
+    });
+    state.timeout = setTimeout(() => {
+      if (urgentOffers.get(state.orderKey) !== state) return;
+      sendToUser(recipientId, { type: 'urgent:cancel', offerId: state.orderKey });
+      state.attemptedDriverIds.add(next.id);
+      state.attemptedDriverIds.add(String(recipientId));
+      sendNextUrgentOffer(state, radiusKm);
+    }, URGENT_OFFER_DURATION_MS);
+  }
+
+  async function dispatchUrgentOrders() {
+    if (dispatchInProgress) return;
+    if (
+      urgentOffers.size === 0 &&
+      !Array.from(authenticatedSockets.values()).some(caller => caller.role === 'motorista')
+    ) return;
+    dispatchInProgress = true;
+    try {
+    const settingsRow = await prisma.app_settings.findUnique({ where: { key: 'global_config' } });
+    const settings = settingsRow ? parseExtra(settingsRow.value) : {};
+    const configuredRadius = Number((settings.operation as any)?.urgentNotificationRadiusKm);
+    const radiusKm = Number.isFinite(configuredRadius) ? Math.min(50, Math.max(1, configuredRadius)) : 5;
+    const rows = await prisma.orders.findMany({
+      where: { stage: { in: ['novo', 'pendente'] } },
+      orderBy: { created_at: 'asc' },
+      take: 500
+    });
+    const pendingOrderIds = new Set(rows.map(row => String(row.id)));
+    for (const state of urgentOffers.values()) {
+      if (!pendingOrderIds.has(state.orderId)) cancelUrgentOffer(state.orderKey);
+    }
+    const locationIds = Array.from(new Set(rows.flatMap(row => [row.pickup_location_id, row.origin_location_id].filter((id): id is number => Boolean(id)))));
+    const locations = new Map<number, any>();
+    if (locationIds.length) {
+      const locationRows = await prisma.locations.findMany({ where: { id: { in: locationIds } } });
+      locationRows.forEach(location => locations.set(location.id, location));
+    }
+
+    for (const row of rows) {
+      const order = pedidoToBackend(row, locations);
+      const orderId = String(row.id);
+      const orderKey = `${orderId}-coleta`;
+      const hasPickup = Number.isFinite(Number(order.coleta_lat)) &&
+        Number.isFinite(Number(order.coleta_lng)) &&
+        (Number(order.coleta_lat) !== 0 || Number(order.coleta_lng) !== 0);
+      let legacyDrivers: unknown[] = [];
+      if (Array.isArray(order.coleta_motoristas)) legacyDrivers = order.coleta_motoristas;
+      else if (typeof order.coleta_motoristas === 'string' && order.coleta_motoristas.trim()) {
+        try {
+          const parsed = JSON.parse(order.coleta_motoristas);
+          legacyDrivers = Array.isArray(parsed) ? parsed : [parsed];
+        } catch {
+          legacyDrivers = [order.coleta_motoristas];
+        }
+      }
+      const hasAssignedId = (value: unknown) => {
+        const normalized = String(value ?? '').trim();
+        return normalized !== '' && normalized !== '0';
+      };
+      const assigned = hasAssignedId(order.pickupAssignedDriverId) ||
+        hasAssignedId(order.coleta_user_id) ||
+        legacyDrivers.some(hasAssignedId);
+      const visibility = order.pickupVisibility || order.orderVisibility;
+      const alreadyClaimed = Array.from(activeAssignments.keys()).some(key =>
+        numOfKey(key) === orderId && (!opOfKey(key) || opOfKey(key) === 'coleta')
+      );
+      if (!hasPickup ||
+        assigned ||
+        visibility === 'privado' ||
+        alreadyClaimed
+      ) {
+        cancelUrgentOffer(orderKey);
+        continue;
+      }
+
+      const activeOffer = urgentOffers.get(orderKey);
+      if (activeOffer) {
+        if (!activeOffer.currentDriverId) sendNextUrgentOffer(activeOffer, radiusKm);
+        continue;
+      }
+
+      const state: UrgentOfferState = {
+        orderKey,
+        orderId,
+        attemptedDriverIds: new Set(),
+        place: {
+          id: `pedido-${orderId}-coleta`,
+          name: String(order.coleta_nome || order.coleta_local || `Coleta do pedido #${orderId}`),
+          address: String(order.coleta_endereco || order.coleta_nome || order.coleta_local || ''),
+          coordinates: { lat: Number(order.coleta_lat), lng: Number(order.coleta_lng) },
+          category: 'Coleta urgente',
+          orderId,
+          orderCode: String(order.codigo || orderId),
+          operationType: 'coleta',
+          pickupName: String(order.coleta_nome || ''),
+          pickupAddress: String(order.coleta_endereco || order.coleta_nome || order.coleta_local || ''),
+          pickupNotes: String(order.coleta_obs || ''),
+          pickupContact: String(order.coleta_contato || order.coleta_responsavel || ''),
+          pickupPhone: String(order.coleta_phone || order.coleta_responsavel_phone || ''),
+          vehicleType: String(order.tipo_veiculo || ''),
+          description: String(order.detalhes || order.notes || ''),
+          observations: String(order.detalhes || order.notes || ''),
+          orderDateBadge: String(order.data || ''),
+          customerName: String(order.cliente_nome || order.client_name || '')
+        }
+      };
+      urgentOffers.set(orderKey, state);
+      sendNextUrgentOffer(state, radiusKm);
+    }
+    } finally {
+      dispatchInProgress = false;
+    }
+  }
+
   const validDrivers = () => {
     const now = Date.now();
     return Array.from(activeDrivers.values()).filter(d => now - d.lastSeenTimestamp <= MAX_OFFLINE_MS && d.isOnline !== false);
@@ -110,7 +321,7 @@ export async function registerRealtime(
     return driver;
   }
 
-  // Atribuições nunca vão por WebSocket (o canal é aberto a qualquer conexão); só pela API autenticada
+  // Atribuições completas nunca são transmitidas em broadcast; alterações passam pela API autenticada.
   function setAssignment(orderId: string, data: Partial<OrderAssignmentData>) {
     const assignment = { ...data, orderId, assignedAt: Date.now() } as OrderAssignmentData;
     activeAssignments.set(orderId, assignment);
@@ -134,18 +345,63 @@ export async function registerRealtime(
   }, 30 * 1000);
 
   wss.on('connection', (ws: WebSocket) => {
-    ws.send(JSON.stringify({ type: 'drivers:init', drivers: validDrivers() }));
+    const authTimeout = setTimeout(() => ws.close(4401, 'Autenticação necessária'), 5000);
 
     ws.on('message', raw => {
       try {
         const msg = JSON.parse(raw.toString());
-        if (msg.type === 'driver:update_location' && msg.driver) upsertDriver(msg.driver);
+        const caller = authenticatedSockets.get(ws);
+        if (!caller && msg.type === 'auth' && typeof msg.token === 'string') {
+          void prisma.user_sessions.findUnique({
+            where: { token: msg.token },
+            include: { user: true }
+          }).then(session => {
+            if (!session?.is_logged || !session.user) {
+              ws.close(4401, 'Sessão inválida');
+              return;
+            }
+            clearTimeout(authTimeout);
+            const user = {
+              id: session.user.id,
+              role: String(session.user.access_level || '').toLowerCase(),
+              phone: String(session.user.phone || '').replace(/\D/g, '')
+            };
+            authenticatedSockets.set(ws, user);
+            if (!socketsByUserId.has(user.id)) socketsByUserId.set(user.id, new Set());
+            socketsByUserId.get(user.id)!.add(ws);
+            ws.send(JSON.stringify({ type: 'drivers:init', drivers: validDrivers() }));
+            resendUrgentOffers(user.id);
+            void dispatchUrgentOrders().catch(err => console.warn('[Urgent Dispatch] Falha ao verificar coletas:', err?.message || err));
+          }).catch(() => ws.close(4401, 'Falha ao validar sessão'));
+          return;
+        }
+        if (!caller) return;
+        if (msg.type === 'driver:update_location' && msg.driver) {
+          const driverId = String(msg.driver.id || '');
+          const driverPhone = String(msg.driver.phone || '');
+          if (caller.role !== 'motorista' || !isAssignmentMine({ driverId, driverPhone }, caller)) return;
+          upsertDriver(msg.driver);
+          void dispatchUrgentOrders().catch(err => console.warn('[Urgent Dispatch] Falha ao verificar coletas:', err?.message || err));
+        }
       } catch {
         // payload inválido é ignorado
       }
     });
+    ws.on('close', () => {
+      clearTimeout(authTimeout);
+      const caller = authenticatedSockets.get(ws);
+      if (!caller) return;
+      authenticatedSockets.delete(ws);
+      const sockets = socketsByUserId.get(caller.id);
+      sockets?.delete(ws);
+      if (!sockets?.size) socketsByUserId.delete(caller.id);
+    });
     ws.on('error', () => {});
   });
+
+  setInterval(() => {
+    void dispatchUrgentOrders().catch(err => console.warn('[Urgent Dispatch] Falha ao verificar coletas:', err?.message || err));
+  }, 10 * 1000);
 
   const noCache = (res: Response) => {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -163,7 +419,9 @@ export async function registerRealtime(
       res.status(400).json({ success: false, message: 'Dados inválidos' });
       return;
     }
-    res.json({ success: true, data: upsertDriver(body) });
+    const driver = upsertDriver(body);
+    void dispatchUrgentOrders().catch(err => console.warn('[Urgent Dispatch] Falha ao verificar coletas:', err?.message || err));
+    res.json({ success: true, data: driver });
   });
 
   app.get('/api/realtime/assignments', async (req: Request, res: Response) => {
@@ -224,6 +482,7 @@ export async function registerRealtime(
       vehicleType: vehicleType || undefined,
       acceptedByDriver: isConfirmedDriverClaim(caller, claim)
     });
+    cancelUrgentOffer(String(orderId));
     const opLabel = opOfKey(String(orderId));
     const who = driverName || `Motorista ${driverId}`;
     if (!isPrivileged(caller)) void notifyOrderProgress(
@@ -243,6 +502,39 @@ export async function registerRealtime(
         title: 'Pedido direcionado a você',
         message: `O pedido #${numOfKey(String(orderId))}${opLabel ? ` (${opLabel})` : ''} foi direcionado a você.`,
         orderId: toInt(numOfKey(String(orderId)))
+      });
+
+      app.post('/api/realtime/urgent-offer/respond', async (req: Request, res: Response) => {
+        const body = parseRawJsonBody(req);
+        const caller = await resolveCaller(req, body);
+        if (!caller || caller.role !== 'motorista') {
+          res.status(caller ? 403 : 401).json({ success: false, message: 'Apenas motoristas autenticados podem responder ao convite.' });
+          return;
+        }
+
+        const state = urgentOffers.get(String(body.offerId || ''));
+        if (!state || state.currentDriverId !== String(caller.id)) {
+          res.status(404).json({ success: false, message: 'Este convite não está mais ativo para você.' });
+          return;
+        }
+        if (body.accepted === true) {
+          res.json({ success: true });
+          return;
+        }
+
+        if (state.timeout) clearTimeout(state.timeout);
+        sendToUser(caller.id, { type: 'urgent:cancel', offerId: state.orderKey });
+        state.attemptedDriverIds.add(String(caller.id));
+        if (state.currentDriverKey) state.attemptedDriverIds.add(state.currentDriverKey);
+        state.currentDriverId = undefined;
+        state.currentDriverKey = undefined;
+        state.expiresAt = undefined;
+        const settingsRow = await prisma.app_settings.findUnique({ where: { key: 'global_config' } });
+        const settings = settingsRow ? parseExtra(settingsRow.value) : {};
+        const configuredRadius = Number((settings.operation as any)?.urgentNotificationRadiusKm);
+        const radiusKm = Number.isFinite(configuredRadius) ? Math.min(50, Math.max(1, configuredRadius)) : 5;
+        sendNextUrgentOffer(state, radiusKm);
+        res.json({ success: true });
       });
     }
 

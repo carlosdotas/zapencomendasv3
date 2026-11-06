@@ -2006,6 +2006,11 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     backgroundGeolocationService.startBackgroundTracking(myDriverData);
   }, [currentRole, isDriverOnline, user.id, user.name, user.phone, user.avatarUrl]);
 
+  useEffect(() => {
+    if (isAuthenticated) driverTrackingClient.connect();
+    else driverTrackingClient.disconnect();
+  }, [isAuthenticated]);
+
   // 2. Recepção em Tempo Real para Administradores, Terminal e Atendentes
   useEffect(() => {
     if (currentRole === 'motorista') {

@@ -1,4 +1,12 @@
-import { Driver } from '../types/map';
+import { Driver, Place } from '../types/map';
+import { getAuthToken, request } from './httpClient';
+
+export interface UrgentDriverOffer {
+  offerId: string;
+  expiresAt: number;
+  distanceKm?: number;
+  place: Place;
+}
 
 export const MAX_OFFLINE_MINUTES = 30;
 export const MAX_OFFLINE_MS = MAX_OFFLINE_MINUTES * 60 * 1000;
@@ -45,6 +53,8 @@ export function formatDriverLastSeen(timestamp?: number, fallbackStr?: string): 
 type DriverUpdateCallback = (driver: Driver) => void;
 type DriversInitCallback = (drivers: Driver[]) => void;
 type DriverRemoveCallback = (driverId: string) => void;
+type UrgentOfferCallback = (offer: UrgentDriverOffer) => void;
+type UrgentCancelCallback = (offerId: string) => void;
 
 class DriverTrackingClient {
   private ws: WebSocket | null = null;
@@ -53,6 +63,9 @@ class DriverTrackingClient {
   private onUpdateCallbacks: Set<DriverUpdateCallback> = new Set();
   private onInitCallbacks: Set<DriversInitCallback> = new Set();
   private onRemoveCallbacks: Set<DriverRemoveCallback> = new Set();
+  private onUrgentOfferCallbacks: Set<UrgentOfferCallback> = new Set();
+  private onUrgentCancelCallbacks: Set<UrgentCancelCallback> = new Set();
+  private activeUrgentOffers = new Map<string, UrgentDriverOffer>();
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -61,7 +74,7 @@ class DriverTrackingClient {
   }
 
   public connect() {
-    if (typeof window === 'undefined' || this.isConnecting) return;
+    if (typeof window === 'undefined' || this.isConnecting || !getAuthToken()) return;
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -75,6 +88,8 @@ class DriverTrackingClient {
 
       this.ws.onopen = () => {
         this.isConnecting = false;
+        const token = getAuthToken();
+        if (token) this.ws?.send(JSON.stringify({ type: 'auth', token }));
         console.log('[Tracking WS] Conectado ao servidor de telemetria em tempo real.');
       };
 
@@ -94,6 +109,14 @@ class DriverTrackingClient {
             this.onRemoveCallbacks.forEach(cb => cb(msg.driverId));
           } else if (msg.type === 'orders:changed') {
             window.dispatchEvent(new Event('zap:refresh-orders'));
+          } else if (msg.type === 'urgent:offer' && msg.place) {
+            const offer = msg as UrgentDriverOffer;
+            this.activeUrgentOffers.set(offer.offerId, offer);
+            this.onUrgentOfferCallbacks.forEach(cb => cb(offer));
+          } else if (msg.type === 'urgent:cancel' && msg.offerId) {
+            const offerId = String(msg.offerId);
+            this.activeUrgentOffers.delete(offerId);
+            this.onUrgentCancelCallbacks.forEach(cb => cb(offerId));
           }
         } catch (e) {
           // Ignora mensagens mal formatadas
@@ -141,6 +164,31 @@ class DriverTrackingClient {
   public onDriverRemove(cb: DriverRemoveCallback) {
     this.onRemoveCallbacks.add(cb);
     return () => this.onRemoveCallbacks.delete(cb);
+  }
+
+  public onUrgentOffer(cb: UrgentOfferCallback) {
+    this.onUrgentOfferCallbacks.add(cb);
+    this.activeUrgentOffers.forEach(offer => cb(offer));
+    return () => this.onUrgentOfferCallbacks.delete(cb);
+  }
+
+  public onUrgentCancel(cb: UrgentCancelCallback) {
+    this.onUrgentCancelCallbacks.add(cb);
+    return () => this.onUrgentCancelCallbacks.delete(cb);
+  }
+
+  public disconnect() {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.activeUrgentOffers.clear();
+    this.ws?.close();
+    this.ws = null;
+    this.isConnecting = false;
+  }
+
+  public async respondToUrgentOffer(offerId: string, accepted: boolean): Promise<boolean> {
+    const result = await request('/api/realtime/urgent-offer/respond', 'POST', { offerId, accepted });
+    return result.success;
   }
 
   /**

@@ -39,14 +39,18 @@ class CompanyService {
   /**
    * Recarrega a lista de empresas do servidor
    */
-  public async refresh(): Promise<void> {
+  public async refresh(): Promise<boolean> {
     const res = await request<CompanyTransportadora[]>('/companies', 'GET');
-    if (!res.success || !Array.isArray(res.data)) return;
+    if (!res.success || !Array.isArray(res.data)) {
+      console.error('[Companies] Erro ao carregar transportadoras:', res.message);
+      return false;
+    }
     this.companies.clear();
     for (const company of res.data) {
       if (company?.id) this.companies.set(String(company.id), company);
     }
     this.notifyListeners();
+    return true;
   }
 
   private notifyListeners() {
@@ -65,7 +69,7 @@ class CompanyService {
     callback(Array.from(this.companies.values()));
 
     if (!this.stopPolling) {
-      this.stopPolling = startPolling(() => this.refresh(), POLL_INTERVAL_MS);
+      this.stopPolling = startPolling(async () => { await this.refresh(); }, POLL_INTERVAL_MS);
     }
 
     return () => {
@@ -100,12 +104,12 @@ class CompanyService {
       updatedAt: Date.now()
     };
 
-    const res = await request('/companies/save', 'POST', { company: toSave });
-    if (!res.success) {
+    const res = await request<CompanyTransportadora>('/companies/save', 'POST', { company: toSave });
+    if (!res.success || !res.data) {
       console.error('[Companies] Erro ao salvar empresa:', res.message);
       return false;
     }
-    this.companies.set(cleanId, toSave);
+    this.companies.set(cleanId, res.data);
     this.notifyListeners();
     return true;
   }

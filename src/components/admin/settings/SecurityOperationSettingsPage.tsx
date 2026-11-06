@@ -18,12 +18,14 @@ interface SecurityOperationSettingsPageProps {
   systemName: string;
   systemMode: 'producao' | 'homologacao';
   proximityRadiusKm: number;
+  urgentNotificationRadiusKm: number;
   requirePhotoOnFinish: boolean;
   autoAssignDrivers: boolean;
   onUpdate: (data: {
     systemName: string;
     systemMode: 'producao' | 'homologacao';
     proximityRadiusKm: number;
+    urgentNotificationRadiusKm: number;
     requirePhotoOnFinish: boolean;
     autoAssignDrivers: boolean;
   }) => void;
@@ -60,6 +62,7 @@ export const SecurityOperationSettingsPage: React.FC<SecurityOperationSettingsPa
   systemName: initialName,
   systemMode: initialMode,
   proximityRadiusKm: initialRadius,
+  urgentNotificationRadiusKm: initialUrgentRadius,
   requirePhotoOnFinish: initialPhoto,
   autoAssignDrivers: initialAutoAssign,
   onUpdate
@@ -67,36 +70,51 @@ export const SecurityOperationSettingsPage: React.FC<SecurityOperationSettingsPa
   const [systemName, setSystemName] = useState(initialName);
   const [systemMode, setSystemMode] = useState(initialMode);
   const [radiusKm, setRadiusKm] = useState(initialRadius);
+  const [urgentRadiusKm, setUrgentRadiusKm] = useState(initialUrgentRadius);
   const [requirePhoto, setRequirePhoto] = useState(initialPhoto);
   const [autoAssign, setAutoAssign] = useState(initialAutoAssign);
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   const handleSave = async () => {
     setIsSaving(true);
+    setSavedSuccess(false);
+    setSaveError('');
     onUpdate({
       systemName,
       systemMode,
       proximityRadiusKm: radiusKm,
+      urgentNotificationRadiusKm: urgentRadiusKm,
       requirePhotoOnFinish: requirePhoto,
       autoAssignDrivers: autoAssign
     });
 
-    await settingsService.saveSettings({
-      system: {
-        systemName,
-        systemMode
-      },
-      operation: {
-        proximityRadiusKm: radiusKm,
-        requirePhotoOnFinish: requirePhoto,
-        autoAssignDrivers: autoAssign
+    try {
+      const saved = await settingsService.saveSettings({
+        system: {
+          systemName,
+          systemMode
+        },
+        operation: {
+          proximityRadiusKm: radiusKm,
+          urgentNotificationRadiusKm: urgentRadiusKm,
+          requirePhotoOnFinish: requirePhoto,
+          autoAssignDrivers: autoAssign
+        }
+      });
+      if (!saved) {
+        setSaveError('Não foi possível salvar as configurações no servidor.');
+        return;
       }
-    });
-
-    setIsSaving(false);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2500);
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 2500);
+    } catch (error) {
+      console.error('[Admin Settings] Falha ao salvar configurações:', error);
+      setSaveError(error instanceof Error ? error.message : 'Erro inesperado ao salvar as configurações.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -140,6 +158,7 @@ export const SecurityOperationSettingsPage: React.FC<SecurityOperationSettingsPa
             </>
           )}
         </button>
+        {saveError && <p role="alert" className="text-xs font-semibold text-red-600">{saveError}</p>}
       </div>
 
       <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-6">
@@ -248,6 +267,26 @@ export const SecurityOperationSettingsPage: React.FC<SecurityOperationSettingsPa
                 <span>25 km (Regional)</span>
                 <span>50 km (Metropolitano)</span>
               </div>
+            </div>
+
+            <div className="pt-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-bold text-slate-700">
+                  Raio de captura para convite urgente: <span className="text-[#FF5E00] font-black">{urgentRadiusKm} km</span>
+                </label>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="50"
+                step="1"
+                value={urgentRadiusKm}
+                onChange={(e) => setUrgentRadiusKm(parseInt(e.target.value) || 5)}
+                className="w-full accent-[#FF5E00] cursor-pointer"
+              />
+              <p className="text-[11px] text-slate-500 font-medium mt-1">
+                O mapa mostra este raio. Motoristas online dentro dele recebem o pedido por proximidade, um de cada vez.
+              </p>
             </div>
           </div>
         </div>

@@ -290,7 +290,7 @@ const AdminSettingsContent: React.FC = () => {
         {
           id: 'companies' as SubpageKey,
           title: 'Empresas & Transportadoras',
-          subtitle: 'Acesso restrito Master Admin (62) 99615-7340 • Gestão de atendentes, administradores e motoboys',
+          subtitle: 'Cadastre transportadoras, vincule um local e gerencie suas equipes',
           icon: Building2,
           iconBg: 'bg-slate-900 text-amber-400',
           badge: 'Master 62996157340',
@@ -440,6 +440,7 @@ const AdminSettingsContent: React.FC = () => {
           systemName={globalSettings.system.systemName}
           systemMode={globalSettings.system.systemMode}
           proximityRadiusKm={globalSettings.operation.proximityRadiusKm}
+          urgentNotificationRadiusKm={globalSettings.operation.urgentNotificationRadiusKm}
           requirePhotoOnFinish={globalSettings.operation.requirePhotoOnFinish}
           autoAssignDrivers={globalSettings.operation.autoAssignDrivers}
           onUpdate={(data) => {
@@ -448,6 +449,7 @@ const AdminSettingsContent: React.FC = () => {
               system: { systemName: data.systemName, systemMode: data.systemMode },
               operation: {
                 proximityRadiusKm: data.proximityRadiusKm,
+                urgentNotificationRadiusKm: data.urgentNotificationRadiusKm,
                 requirePhotoOnFinish: data.requirePhotoOnFinish,
                 autoAssignDrivers: data.autoAssignDrivers
               }

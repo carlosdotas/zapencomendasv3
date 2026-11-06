@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { prisma } from './db';
 import { resolveCaller, canCallerSeeOrder, isPrivileged, assignmentStore } from './access';
+import { CompanyValidationError, companyWithLocation, parseCompanyLocationId, saveCompanyWithLocation } from './companyLocations';
 import { notifyNewOrder, notifyOrderProgress, etapaEvent } from './notifications';
 import { hasOrderPhoto, removeOrderPhoto } from './orderPhotos';
 import { canViewDriverCollections, collectionSummary, openDriverCollectionsWhere } from './driverCollections';
@@ -1226,8 +1227,19 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
     res.json({ success: true, data: row ? parseExtra(row.value) : null });
   });
 
-  route(app, '/settings/save', async (_req, res, body) => {
-    const value = JSON.stringify(body.settings ?? body);
+  route(app, '/settings/save', async (req, res, body) => {
+    const caller = await resolveCaller(req, body);
+    if (!caller || !isPrivileged(caller)) {
+      res.status(caller ? 403 : 401).json({ success: false, message: 'Apenas a equipe administrativa pode alterar as configurações.' });
+      return;
+    }
+    const settings = body.settings ?? body;
+    const radius = Number(settings.operation?.urgentNotificationRadiusKm);
+    if (settings.operation?.urgentNotificationRadiusKm !== undefined && (!Number.isFinite(radius) || radius < 1 || radius > 50)) {
+      res.status(400).json({ success: false, message: 'O raio urgente deve estar entre 1 e 50 km.' });
+      return;
+    }
+    const value = JSON.stringify(settings);
     await prisma.app_settings.upsert({
       where: { key: 'global_config' },
       create: { key: 'global_config', value },
@@ -1238,20 +1250,52 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
 
   route(app, '/companies', async (_req, res) => {
     const rows = await prisma.transportadoras.findMany({ orderBy: { updated_at: 'desc' } });
-    res.json({ success: true, data: rows.map(r => ({ ...parseExtra(r.data), id: r.id })) });
+    const companies: Array<Record<string, unknown> & { id: string }> = rows.map(r => ({ ...parseExtra(r.data), id: r.id }));
+    const locationIds = companies.flatMap(company => {
+      try {
+        const id = parseCompanyLocationId(company.locationId);
+        return id === null ? [] : [id];
+      } catch {
+        console.warn(`[Companies] Local inválido na transportadora ${company.id}.`);
+        return [];
+      }
+    });
+    const locations = locationIds.length
+      ? await prisma.locations.findMany({ where: { id: { in: [...new Set(locationIds)] } } })
+      : [];
+    const byId = new Map(locations.map(location => [location.id, location]));
+    res.json({
+      success: true,
+      data: companies.map(company => companyWithLocation(company, byId.get(Number(company.locationId)) || null))
+    });
   });
 
   route(app, '/companies/save', async (_req, res, body) => {
-    const company = body.company ?? body;
-    const id = String(company.id || `comp-${Date.now()}`);
-    const data = JSON.stringify({ ...company, id });
-    await prisma.transportadoras.upsert({ where: { id }, create: { id, data }, update: { data } });
-    res.json({ success: true, data: { ...company, id } });
+    try {
+      const savedCompany = await saveCompanyWithLocation(
+        body.company ?? body,
+        id => prisma.locations.findUnique({ where: { id } }),
+        (id, data) => prisma.transportadoras.upsert({ where: { id }, create: { id, data }, update: { data } })
+      );
+      res.json({ success: true, data: savedCompany });
+    } catch (error) {
+      if (!(error instanceof CompanyValidationError)) throw error;
+      res.status(400).json({ success: false, message: error.message });
+    }
   });
 
   route(app, '/companies/delete', async (_req, res, body) => {
     const id = String(body.id || '');
-    if (id) await prisma.transportadoras.delete({ where: { id } }).catch(() => null);
+    if (!id) {
+      res.status(400).json({ success: false, message: 'Informe a transportadora a excluir.' });
+      return;
+    }
+    const company = await prisma.transportadoras.findUnique({ where: { id } });
+    if (!company) {
+      res.status(404).json({ success: false, message: 'Transportadora não encontrada.' });
+      return;
+    }
+    await prisma.transportadoras.delete({ where: { id } });
     res.json({ success: true });
   });
 

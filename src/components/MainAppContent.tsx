@@ -17,6 +17,7 @@ import { RegisterModal } from './auth/RegisterModal';
 import { AdminSettingsPage } from './admin/AdminSettingsPage';
 import { AdminUsersPage } from './admin/AdminUsersPage';
 import { DriverScreenOverlay } from './driver/DriverScreenOverlay';
+import { UrgentOrderOfferOverlay } from './driver/UrgentOrderOfferOverlay';
 import { NewOrderModal } from './order/NewOrderModal';
 import { SetCustomerLocationModal } from './customer/SetCustomerLocationModal';
 import { CustomerSelectorDrawer } from './customer/CustomerSelectorDrawer';
@@ -235,6 +236,7 @@ export const MainAppContent: React.FC = () => {
 
         {/* Overlay e Tela de Bloqueio do Motorista (Chavinha estilo Uber para rodar) */}
         <DriverScreenOverlay />
+        <UrgentOrderOfferOverlay />
 
         {/* Menu Lateral Retrátil */}
         <SideMenuDrawer />
