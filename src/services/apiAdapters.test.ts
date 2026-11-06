@@ -55,6 +55,53 @@ test('tracking markers retain collection proof across pickup and delivery reload
   }
 });
 
+test('accepted pickup claims stay private and carry driver details into admin map markers', () => {
+  const order = {
+    id: 22,
+    etapa: 'pendente',
+    tipo_encomenda: 'entrega',
+    cliente: 'Cliente Aceito',
+    coleta_local: 'Ponto de Coleta',
+    coleta_endereco: 'Rua A, Goiânia',
+    coleta_lat: -16.7,
+    coleta_lng: -49.2,
+    itens_extras: JSON.stringify({
+      pickupVisibility: 'privado',
+      pickupAssignedDriverId: '44',
+      pickupAssignedDriverName: 'Motorista Aceitou',
+      pickupAssignedDriverPhone: '62911112222',
+      orderVisibility: 'privado',
+      acceptedByDriver: true
+    })
+  };
+  const [pickup] = backendPedidoToPlaces(order);
+  const marker = backendOrderMarkerToPlace(
+    { pedido_id: 22, etapa: 'pendente', cliente: 'Cliente Aceito', tipo: 'coleta', lat: -16.7, lng: -49.2 },
+    'hoje',
+    order
+  );
+  const markerOnly = backendOrderMarkerToPlace({
+    pedido_id: 22,
+    etapa: 'pendente',
+    cliente: 'Cliente Aceito',
+    tipo: 'coleta',
+    lat: -16.7,
+    lng: -49.2,
+    accepted_by_driver: true,
+    assigned_driver_id: '44',
+    assigned_driver_name: 'Motorista Aceitou'
+  });
+
+  for (const place of [pickup, marker, markerOnly]) {
+    assert.equal(place.operationType, 'coleta');
+    assert.equal(place.orderVisibility, 'privado');
+    assert.equal(place.pickupVisibility, 'privado');
+    assert.equal(place.assignedDriverId, '44');
+    assert.equal(place.assignedDriverName, 'Motorista Aceitou');
+    assert.equal(place.acceptedByDriver, true);
+  }
+});
+
 test('keeps the collector reservation in delivery adapters and marker-only responses', () => {
   const order = {
     id: 21, etapa: 'coletado', tipo_encomenda: 'coleta', coleta_user_id: 11, coleta_user_nome: 'Coletor',

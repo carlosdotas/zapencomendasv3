@@ -683,6 +683,7 @@ function getRoutePointMetadata(pedido: BackendPedido, point: RoutePointKey, incl
     driverId: isPublic || driverId == null ? undefined : String(driverId),
     driverName: isPublic || driverName == null ? undefined : String(driverName),
     driverPhone: isPublic || driverPhone == null ? undefined : String(driverPhone),
+    acceptedByDriver: accepted,
     sellerName: sellerName == null ? undefined : String(sellerName),
     sellerPhone: sellerPhone == null ? undefined : String(sellerPhone)
   };
@@ -1014,6 +1015,7 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
     openNow: true,
     isExchangeOrder: isExchange,
     orderDateBadge: dateBadge,
+    acceptedByDriver: pickupMetadata.acceptedByDriver,
     scheduledDate: cleanOrderDate,
     data: cleanOrderDate,
     orderDate: cleanOrderDate,
@@ -1375,12 +1377,34 @@ export function backendOrderMarkerToPlace(
     ? (fullPedido?.coleta_cidade ? `${pickupName} - ${fullPedido.coleta_cidade}` : pickupName)
     : fullAddress;
   const activePointKey: RoutePointKey = activeOp === 'coleta' ? 'pickup' : activeOp === 'troca' ? 'exchange' : 'delivery';
+  const markerAcceptedByDriver = marker.accepted_by_driver === true ||
+    marker.accepted_by_driver === 1 ||
+    marker.accepted_by_driver === '1' ||
+    marker.accepted_by_driver === 'true';
+  const markerVisibility = marker.order_visibility === 'privado' || marker.order_visibility === 'publico'
+    ? marker.order_visibility
+    : markerAcceptedByDriver ? 'privado' : undefined;
+  const markerPointMetadata = {
+    visibility: markerVisibility,
+    driverId: marker.assigned_driver_id == null ? undefined : String(marker.assigned_driver_id),
+    driverName: marker.assigned_driver_name,
+    driverPhone: marker.assigned_driver_phone,
+    acceptedByDriver: markerAcceptedByDriver,
+    sellerName: undefined,
+    sellerPhone: undefined
+  };
   const pointMetadata = fullPedido
     ? getRoutePointMetadata(fullPedido, activePointKey, true)
-    : { visibility: undefined, driverId: undefined, driverName: undefined, driverPhone: undefined, sellerName: undefined, sellerPhone: undefined };
-  const pickupMetadata = fullPedido ? getRoutePointMetadata(fullPedido, 'pickup') : undefined;
-  const exchangeMetadata = fullPedido ? getRoutePointMetadata(fullPedido, 'exchange') : undefined;
-  const deliveryMetadata = fullPedido ? getRoutePointMetadata(fullPedido, 'delivery') : undefined;
+    : markerPointMetadata;
+  const pickupMetadata = fullPedido
+    ? getRoutePointMetadata(fullPedido, 'pickup')
+    : activeOp === 'coleta' ? markerPointMetadata : undefined;
+  const exchangeMetadata = fullPedido
+    ? getRoutePointMetadata(fullPedido, 'exchange')
+    : activeOp === 'troca' ? markerPointMetadata : undefined;
+  const deliveryMetadata = fullPedido
+    ? getRoutePointMetadata(fullPedido, 'delivery')
+    : activeOp === 'entrega' ? markerPointMetadata : undefined;
   const legacyDriver = extractDriverAssignmentFromPedido(
     fullPedido || { id: marker.pedido_id },
     isColetaMarker ? 'coleta' : activeOp === 'troca' ? 'troca' : 'entrega'
@@ -1400,6 +1424,7 @@ export function backendOrderMarkerToPlace(
     : activeOp === 'troca'
       ? (fullPedido?.troca_responsavel_phone || fullPedido?.troca_phone)
       : (fullPedido?.entrega_responsavel_phone || fullPedido?.entrega_phone);
+  const acceptedByDriver = Boolean(pointMetadata.acceptedByDriver || markerAcceptedByDriver);
 
   return withCollectionOwner({
     id: `pedido-${marker.pedido_id}-${marker.tipo}`,
@@ -1439,7 +1464,8 @@ export function backendOrderMarkerToPlace(
     assignedDriverId: pointMetadata.driverId || ((marker as any).assigned_driver_id ? String((marker as any).assigned_driver_id) : (marker as any).motorista_id ? String((marker as any).motorista_id) : undefined),
     assignedDriverName: pointMetadata.driverName || (marker as any).assigned_driver_name || undefined,
     assignedDriverPhone: pointMetadata.driverPhone || (marker as any).assigned_driver_phone || undefined,
-    orderVisibility: (pointMetadata.driverId || (marker as any).assigned_driver_id || (marker as any).motorista_id) ? 'privado' : (pointMetadata.visibility || (marker as any).order_visibility || 'publico'),
+    acceptedByDriver,
+    orderVisibility: (acceptedByDriver || pointMetadata.driverId || (marker as any).assigned_driver_id || (marker as any).motorista_id) ? 'privado' : (pointMetadata.visibility || (marker as any).order_visibility || 'publico'),
     sellerName: pointMetadata.sellerName || activeResponsible || undefined,
     sellerPhone: pointMetadata.sellerPhone || (activeResponsiblePhone ? String(activeResponsiblePhone) : undefined),
     responsibleName: activeResponsible || undefined,

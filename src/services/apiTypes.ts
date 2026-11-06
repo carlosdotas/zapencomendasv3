@@ -302,6 +302,11 @@ export interface BackendOrderMarker {
   local_name?: string;
   collection_restricted?: boolean;
   collection_owner_id?: string | number | null;
+  accepted_by_driver?: boolean | number | string;
+  assigned_driver_id?: string | number;
+  assigned_driver_name?: string;
+  assigned_driver_phone?: string;
+  order_visibility?: 'publico' | 'privado';
   lat: number;
   lng: number;
 }

@@ -291,13 +291,6 @@ export const PlaceDetailCard: React.FC = () => {
         return;
       }
       setSaveSuccessToast('🎉 Pedido aceito com sucesso! Você é o responsável.');
-      setSelectedPlace({
-        ...selectedPlace,
-        assignedDriverId: user.id || 'usr-mot-04',
-        assignedDriverName: user.name || 'Motorista Parceiro',
-        assignedDriverPhone: user.phone,
-        orderVisibility: 'privado'
-      });
       if (typeof window !== 'undefined' && (window as any).AndroidApp) {
         (window as any).AndroidApp.showNotification?.("EncomendasZap", "Pedido assumido com sucesso!");
         (window as any).AndroidApp.vibrate?.(250);

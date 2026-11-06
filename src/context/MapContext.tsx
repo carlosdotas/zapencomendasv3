@@ -1751,23 +1751,41 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const won = await realtimeAssignmentService.claimOrder(placeId, { id: driverId, name: driverName, phone: driverPhone }, claimOp);
     if (!won) return false;
 
-    // Atribui o motorista via serviço de tempo real
-    assignPlaceToDriver(placeId, driverId, driverPhone, driverName, true);
+    const operation = claimOp || 'entrega';
+    const operationAssignment = operation === 'coleta'
+      ? {
+          pickupVisibility: 'privado' as const,
+          pickupAssignedDriverId: driverId,
+          pickupAssignedDriverName: driverName,
+          pickupAssignedDriverPhone: driverPhone
+        }
+      : operation === 'troca'
+        ? {
+            exchangeVisibility: 'privado' as const,
+            exchangeAssignedDriverId: driverId,
+            exchangeAssignedDriverName: driverName,
+            exchangeAssignedDriverPhone: driverPhone
+          }
+        : {
+            deliveryVisibility: 'privado' as const,
+            deliveryAssignedDriverId: driverId,
+            deliveryAssignedDriverName: driverName,
+            deliveryAssignedDriverPhone: driverPhone
+          };
+    const claimedPlace = (place: Place): Place => ({
+      ...place,
+      orderVisibility: 'privado',
+      assignedDriverId: driverId,
+      assignedDriverName: driverName,
+      assignedDriverPhone: driverPhone,
+      acceptedByDriver: true,
+      ...operationAssignment
+    });
 
     // Atualiza visibilidade como privado para consolidar que não é mais aberto/público
     setAllPlaces(prev => {
       const next = prev.map(p => {
-        if (p.id === placeId) {
-          return {
-            ...p,
-            orderVisibility: 'privado' as const,
-            assignedDriverId: driverId,
-            assignedDriverName: driverName,
-            assignedDriverPhone: driverPhone,
-            acceptedByDriver: true
-          };
-        }
-        return p;
+        return p.id === placeId ? claimedPlace(p) : p;
       });
       scheduleStorageSave('encomendaszap_all_places', next);
       return next;
@@ -1775,39 +1793,19 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setSavedPlaces(prev => {
       const next = prev.map(p => {
-        if (p.id === placeId) {
-          return {
-            ...p,
-            orderVisibility: 'privado' as const,
-            assignedDriverId: driverId,
-            assignedDriverName: driverName,
-            assignedDriverPhone: driverPhone,
-            acceptedByDriver: true
-          };
-        }
-        return p;
+        return p.id === placeId ? claimedPlace(p) : p;
       });
       scheduleStorageSave('encomendaszap_saved_places', next);
       return next;
     });
 
     setSelectedPlace(prev => {
-      if (prev && prev.id === placeId) {
-        return {
-          ...prev,
-          orderVisibility: 'privado' as const,
-          assignedDriverId: driverId,
-          assignedDriverName: driverName,
-          assignedDriverPhone: driverPhone,
-          acceptedByDriver: true
-        };
-      }
-      return prev;
+      return prev?.id === placeId ? claimedPlace(prev) : prev;
     });
 
     window.dispatchEvent(new Event('zap:refresh-orders'));
     return true;
-  }, [user, assignPlaceToDriver, allPlaces]);
+  }, [user, allPlaces]);
 
   // Sincroniza sessão ativa e foto de perfil diretamente com o servidor central
   useEffect(() => {

@@ -1403,6 +1403,7 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
         data: row.date,
         tipo_encomenda: view.tipo_encomenda,
         is_exchange: isExchange,
+        accepted_by_driver: Boolean(view.acceptedByDriver),
         collection_restricted: collectionOwnership(view).collectionRestricted,
         collection_owner_id: collectionOwnership(view).collectionOwnerId
       };
