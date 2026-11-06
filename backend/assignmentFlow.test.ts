@@ -5,19 +5,21 @@ import type { Express, Request, Response } from 'express';
 import type { WebSocketServer } from 'ws';
 
 type Handler = (req: Request, res: Response) => Promise<void>;
-type Order = { id: number; stage: string; order_type: string; extra: string; collector_id: number | null; orig_drivers: string; dest_drivers: string };
+type Order = { id: number; stage: string; order_type: string; extra: string; collector_id: number | null; orig_drivers: string; dest_drivers: string; pickup_location_id: number; delivery_location_id: number; date: string };
 type AssignmentRow = { order_key: string; data: string; assigned_at: number };
 
 test('assignment endpoints serialize claims, persist aliases, release visibility and surface failures', async () => {
   const rows = new Map<number, Order>([[701, {
     id: 701, stage: 'novo', order_type: 'coleta', extra: '{}',
-    collector_id: null, orig_drivers: '[]', dest_drivers: '[]'
+    collector_id: null, orig_drivers: '[]', dest_drivers: '[]',
+    pickup_location_id: 7, delivery_location_id: 8, date: '2026-10-01'
   }]]);
   const assignments = new Map<string, AssignmentRow>();
   const users = new Map([
     ['a', { id: 11, access_level: 'motorista', phone: '11111111111' }],
     ['b', { id: 22, access_level: 'motorista', phone: '22222222222' }],
-    ['admin', { id: 1, access_level: 'admin', phone: '' }]
+    ['admin', { id: 1, access_level: 'admin', phone: '' }],
+    ['atendente', { id: 2, access_level: 'atendente', phone: '' }]
   ]);
   let failWrite = false;
   const db = {
@@ -29,6 +31,8 @@ test('assignment endpoints serialize claims, persist aliases, release visibility
     notifications: { createMany: async () => ({ count: 0 }) },
     orders: {
       findUnique: async ({ where }: { where: { id: number } }) => rows.get(where.id) || null,
+      findMany: async () => Array.from(rows.values()),
+      count: async () => rows.size,
       update: async ({ where, data }: { where: { id: number }; data: Partial<Order> }) => {
         const row = rows.get(where.id);
         if (!row) throw new Error('missing order');
@@ -36,6 +40,10 @@ test('assignment endpoints serialize claims, persist aliases, release visibility
         return row;
       }
     },
+    locations: { findMany: async () => [
+      { id: 7, name: 'Loja', lat: -16.7, lng: -49.2 },
+      { id: 8, name: 'Cliente', lat: -16.8, lng: -49.3 }
+    ] },
     assignments: {
       findMany: async () => Array.from(assignments.values()),
       upsert: async ({ create }: { create: AssignmentRow }) => {
@@ -63,6 +71,8 @@ test('assignment endpoints serialize claims, persist aliases, release visibility
   const { registerRealtime } = await import('./realtime');
   const { assignmentStore, canCallerSeeOrder } = await import('./access');
   const { pedidoToBackend } = await import('./mappers');
+  const { registerApiRoutes } = await import('./routes');
+  const { backendOrderMarkerToPlace, backendPedidoToPlaces } = await import('../src/services/apiAdapters');
   assignmentStore.clear();
   const handlers = new Map<string, Handler>();
   const app = {
@@ -72,10 +82,16 @@ test('assignment endpoints serialize claims, persist aliases, release visibility
   };
   const ws = Object.assign(new EventEmitter(), { clients: new Set() });
   await registerRealtime(app as unknown as Express, ws as unknown as WebSocketServer);
+  registerApiRoutes({
+    all: (paths: string[], handler: Handler) => paths.forEach(path => handlers.set(path, handler)),
+    get: () => undefined
+  } as unknown as Express, {
+    saveBase64Image: () => null, uploadToPhpServer: async () => null, imageServerConfigured: () => false
+  });
   const call = async (path: string, token: string, body: Record<string, unknown>) => {
     let status = 200;
-    let payload: { success: boolean; message?: string } | undefined;
-    const req = { body, headers: { authorization: `Bearer ${token}` }, query: {} } as unknown as Request;
+    let payload: { success: boolean; message?: string; data?: any } | undefined;
+    const req = { body, method: 'POST', path, headers: { authorization: `Bearer ${token}` }, query: {} } as unknown as Request;
     const res = {
       status(code: number) { status = code; return this; },
       json(value: typeof payload) { payload = value; return this; }
@@ -100,6 +116,22 @@ test('assignment endpoints serialize claims, persist aliases, release visibility
   assert.equal(persisted.acceptedByDriver, true);
   assert.equal(canCallerSeeOrder(persisted, { id: winnerId, role: 'motorista', phone: '' }), true);
   assert.equal(canCallerSeeOrder(persisted, { id: loserId, role: 'motorista', phone: '' }), false);
+  for (const token of ['admin', 'atendente', winner]) {
+    const list = await call('/pedidos/list_pedidos', token, { active_only: true });
+    assert.equal(list.payload?.data.length, 1, `${token} deve receber o pedido aceito`);
+    const [fallback] = backendPedidoToPlaces(list.payload!.data[0]);
+    assert.equal(fallback.operationType, 'coleta');
+    assert.equal(fallback.assignedDriverId, String(winnerId));
+    const markers = await call('/tracking/order_markers', token, { date: '2026-10-01' });
+    assert.equal(markers.payload?.data.length, 1);
+    const place = backendOrderMarkerToPlace(markers.payload!.data[0], 'hoje', list.payload!.data[0]);
+    assert.equal(place.operationType, 'coleta');
+    assert.equal(place.assignedDriverId, String(winnerId));
+    assert.equal(place.acceptedByDriver, true);
+  }
+  const loser = winner === 'a' ? 'b' : 'a';
+  assert.equal((await call('/pedidos/list_pedidos', loser, { active_only: true })).payload?.data.length, 0);
+  assert.equal((await call('/tracking/order_markers', loser, { date: '2026-10-01' })).payload?.data.length, 0);
   assert.equal((await call(assign, winner, { orderId: 'pedido-701-coleta', driverId: String(winnerId), claim: true })).status, 200);
   assert.equal(assignments.size, 1);
   assert.equal((await call(assign, winner, { orderId: '701_entrega', driverId: String(winnerId), claim: true })).status, 409);
@@ -122,6 +154,11 @@ test('assignment endpoints serialize claims, persist aliases, release visibility
   assert.equal(released.pickupVisibility, 'publico');
   assert.equal(canCallerSeeOrder(released, { id: 11, role: 'motorista', phone: '' }), true);
   assert.equal(canCallerSeeOrder(released, { id: 22, role: 'motorista', phone: '' }), true);
+  for (const token of ['admin', 'atendente', 'a', 'b']) {
+    const markers = await call('/tracking/order_markers', token, { date: '2026-10-01' });
+    assert.equal(markers.payload?.data.length, 1, `${token} deve receber a coleta após desvincular`);
+    assert.equal(markers.payload?.data[0].tipo, 'coleta');
+  }
 
   failWrite = true;
   assert.equal((await call(assign, 'a', { orderId: '701_coleta', driverId: '11', claim: true })).status, 500);

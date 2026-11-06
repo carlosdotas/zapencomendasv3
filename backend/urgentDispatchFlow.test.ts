@@ -84,6 +84,16 @@ test('approved pickups notify the nearest driver and advance on refusal or after
   assert.equal(offer?.offerId, '700-coleta');
   assert.deepEqual(offer?.place?.coordinates, { lat: -16.7, lng: -49.2 });
   assert.equal(b.messages.some(message => message.type === 'urgent:offer'), false);
+  const secondSocket = new Socket();
+  wss.clients.add(secondSocket);
+  const previousOfferCount = a.messages.filter(message => message.type === 'urgent:offer').length;
+  wss.emit('connection', secondSocket);
+  secondSocket.emit('message', JSON.stringify({ type: 'auth', token: 'driver-a' }));
+  for (let i = 0; i < 10 && !secondSocket.messages.some(message => message.type === 'urgent:offer'); i++) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.ok(secondSocket.messages.some(message => message.type === 'urgent:offer' && message.offerId === '700-coleta'));
+  assert.equal(a.messages.filter(message => message.type === 'urgent:offer').length, previousOfferCount);
   assert.equal((await call('/api/realtime/urgent-offer/respond', { offerId: '700-coleta', accepted: false }, 'driver-a')).status, 200);
   assert.ok(a.messages.some(message => message.type === 'urgent:cancel'));
   assert.ok(b.messages.some(message => message.type === 'urgent:offer'));
@@ -104,5 +114,5 @@ test('approved pickups notify the nearest driver and advance on refusal or after
   assert.ok(a.messages.some(message => message.type === 'urgent:cancel' && message.offerId === '701-coleta'));
   assert.ok(b.messages.some(message => message.type === 'urgent:offer' && message.offerId === '701-coleta'));
   assert.equal((await call('/api/realtime/urgent-offer/respond', { offerId: '701-coleta', accepted: false }, 'driver-b')).status, 200);
-  a.close(); b.close();
+  a.close(); b.close(); secondSocket.close();
 });

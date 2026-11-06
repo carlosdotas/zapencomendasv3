@@ -92,7 +92,7 @@ class CompanyService {
   /**
    * Salva ou atualiza empresa
    */
-  public async saveCompany(company: CompanyTransportadora): Promise<boolean> {
+  public async saveCompany(company: CompanyTransportadora): Promise<void> {
     const cleanId = company.id || `emp-${Date.now()}`;
     const toSave: CompanyTransportadora = {
       ...company,
@@ -107,11 +107,10 @@ class CompanyService {
     const res = await request<CompanyTransportadora>('/companies/save', 'POST', { company: toSave });
     if (!res.success || !res.data) {
       console.error('[Companies] Erro ao salvar empresa:', res.message);
-      return false;
+      throw new Error(res.message || 'Não foi possível salvar a transportadora.');
     }
     this.companies.set(cleanId, res.data);
     this.notifyListeners();
-    return true;
   }
 
   /**

@@ -44,6 +44,8 @@ public class LocationService extends Service implements LocationListener {
     private static final String KEY_ENABLED = "enabled";
     private static final String KEY_ENDPOINT = "endpoint";
     private static final String KEY_DRIVER = "driver";
+    private static final String KEY_SOCKET_URL = "urgent_socket_url";
+    private static final String KEY_SOCKET_TOKEN = "urgent_socket_token";
     private static final String KEY_LAST_FIX_AT = "last_fix_at";
     private static final String KEY_LAST_SENT_AT = "last_sent_at";
     private static final long MIN_SEND_INTERVAL_MS = 5000L;
@@ -55,6 +57,7 @@ public class LocationService extends Service implements LocationListener {
     private LocationManager locationManager;
     private FusedLocationProviderClient fusedLocationClient;
     private PowerManager.WakeLock wakeLock;
+    private UrgentOfferConnection urgentConnection;
     private static final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
     private final Handler healthHandler = new Handler(Looper.getMainLooper());
     private long lastLocationFixAt = 0L;
@@ -84,7 +87,16 @@ public class LocationService extends Service implements LocationListener {
     }
 
     public static boolean configureTracking(Context context, String endpoint, String driverJson) {
+        return configureTracking(context, endpoint, driverJson, null, null);
+    }
+
+    public static boolean configureTracking(Context context, String endpoint, String driverJson, String socketUrl, String token) {
         if (endpoint == null || !endpoint.startsWith("http") || driverJson == null || driverJson.trim().isEmpty()) {
+            return false;
+        }
+        if ((socketUrl != null || token != null) &&
+            (!UrgentSocketAddress.isValid(socketUrl) || token == null || token.isEmpty())) {
+            Log.e(TAG, "Endereço seguro ou sessão dos alertas inválidos.");
             return false;
         }
         try {
@@ -94,6 +106,8 @@ public class LocationService extends Service implements LocationListener {
                 .putBoolean(KEY_ENABLED, true)
                 .putString(KEY_ENDPOINT, endpoint)
                 .putString(KEY_DRIVER, driverJson)
+                .putString(KEY_SOCKET_URL, socketUrl)
+                .putString(KEY_SOCKET_TOKEN, token)
                 .apply();
 
             Intent serviceIntent = new Intent(context, LocationService.class);
@@ -167,6 +181,7 @@ public class LocationService extends Service implements LocationListener {
         createNotificationChannel();
         startForegroundWithNotification();
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
+        urgentConnection = new UrgentOfferConnection(this);
         startFusedLocationUpdates();
         startLocationUpdates();
         scheduleRecovery();
@@ -297,6 +312,8 @@ public class LocationService extends Service implements LocationListener {
             return START_NOT_STICKY;
         }
 
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        urgentConnection.start(prefs.getString(KEY_SOCKET_URL, null), prefs.getString(KEY_SOCKET_TOKEN, null));
         scheduleRecovery();
         // START_STICKY garante que o Android reinicie o serviço caso seja finalizado pelo sistema.
         return START_STICKY;
@@ -432,6 +449,7 @@ public class LocationService extends Service implements LocationListener {
     @Override
     public void onDestroy() {
         isRunning = false;
+        if (urgentConnection != null) urgentConnection.stop();
         healthHandler.removeCallbacks(locationHealthCheck);
         if (locationManager != null) {
             try {

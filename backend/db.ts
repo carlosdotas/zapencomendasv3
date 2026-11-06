@@ -6,6 +6,7 @@ if (!process.env.DATABASE_URL) {
 }
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const injectedPrisma = globalForPrisma.prisma;
 
 const realPrisma = new PrismaClient({
   log: ['warn', 'error']
@@ -14,6 +15,8 @@ const realPrisma = new PrismaClient({
 let isMysqlAvailable = false;
 let hasChecked = false;
 let checkPromise: Promise<boolean> | null = null;
+let lastDatabaseCheckAt = 0;
+const DATABASE_RETRY_INTERVAL_MS = 5000;
 
 export async function isDatabaseOnline(): Promise<boolean> {
   if (hasChecked) return isMysqlAvailable;
@@ -32,6 +35,7 @@ export async function isDatabaseOnline(): Promise<boolean> {
       console.log('[Database] MySQL indisponível no host atual. Ativando armazenamento local persistente (LocalDbStore).');
     } finally {
       hasChecked = true;
+      lastDatabaseCheckAt = Date.now();
       checkPromise = null;
     }
     return isMysqlAvailable;
@@ -43,7 +47,7 @@ export async function isDatabaseOnline(): Promise<boolean> {
 // Inicia verificação rápida em background
 if (!globalForPrisma.prisma) void isDatabaseOnline();
 
-function isPrismaConnectionError(err: any): boolean {
+export function isPrismaConnectionError(err: any): boolean {
   if (!err) return false;
   if (err.name === 'PrismaClientInitializationError') return true;
   if (err.name === 'PrismaClientRustPanicError') return true;
@@ -110,6 +114,20 @@ function createPrismaProxy(): PrismaClient {
       return new Proxy({}, {
         get(_, method: string) {
           return async (...args: any[]) => {
+            if (prop === 'orders' || prop === 'transportadoras') {
+              const database = await persistentDatabase();
+              if (!database) throw new DatabaseUnavailableError();
+              try {
+                return await (database as any)[prop][method](...args);
+              } catch (err) {
+                if (isPrismaConnectionError(err)) {
+                  isMysqlAvailable = false;
+                  lastDatabaseCheckAt = Date.now();
+                  throw new DatabaseUnavailableError();
+                }
+                throw err;
+              }
+            }
             await isDatabaseOnline();
             if (isMysqlAvailable) {
               try {
@@ -139,3 +157,15 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 export const prisma = proxyPrisma;
+
+export class DatabaseUnavailableError extends Error {
+  constructor() {
+    super('Banco de dados indisponível. Tente novamente mais tarde.');
+  }
+}
+
+export async function persistentDatabase(): Promise<PrismaClient | null> {
+  if (injectedPrisma) return injectedPrisma;
+  if (hasChecked && !isMysqlAvailable && Date.now() - lastDatabaseCheckAt >= DATABASE_RETRY_INTERVAL_MS) hasChecked = false;
+  return await isDatabaseOnline() ? realPrisma : null;
+}

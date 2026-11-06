@@ -42,7 +42,20 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void cancelUrgentOffer(String offerId) {
-        activity.runOnUiThread(() -> UrgentNotification.cancel(activity, offerId));
+        activity.runOnUiThread(() -> {
+            UrgentOfferConnection.cancel(offerId);
+            UrgentNotification.cancel(activity, offerId);
+        });
+    }
+
+    @JavascriptInterface
+    public String getNativeUrgentOffers() {
+        return UrgentOfferConnection.activeOffers();
+    }
+
+    @JavascriptInterface
+    public String getNativeUrgentCancellations() {
+        return UrgentOfferConnection.cancelledOffers();
     }
 
     @JavascriptInterface
@@ -71,6 +84,13 @@ public class WebAppInterface {
         if (configured) {
             activity.runOnUiThread(activity::requestTrackingBatteryOptimizationExemption);
         }
+        return configured;
+    }
+
+    @JavascriptInterface
+    public boolean configureBackgroundTrackingWithAlerts(String endpoint, String driverJson, String socketUrl, String token) {
+        boolean configured = LocationService.configureTracking(activity, endpoint, driverJson, socketUrl, token);
+        if (configured) activity.runOnUiThread(activity::requestTrackingBatteryOptimizationExemption);
         return configured;
     }
 

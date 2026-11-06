@@ -102,6 +102,27 @@ test('accepted pickup claims stay private and carry driver details into admin ma
   }
 });
 
+test('preserves accepted pickup when both points come from registered locations', () => {
+  const order = {
+    id: 23, etapa: 'pendente', tipo_encomenda: 'entrega',
+    coleta_locais_name: 'Loja', coleta_locais_lat: -16.7, coleta_locais_lng: -49.2,
+    entrega_locais_name: 'Cliente', entrega_locais_lat: -16.8, entrega_locais_lng: -49.3,
+    pickupVisibility: 'privado' as const, pickupAssignedDriverId: '44',
+    pickupAssignedDriverName: 'Motorista', acceptedByDriver: true
+  };
+  const [pickup] = backendPedidoToPlaces(order);
+  assert.equal(pickup.id, 'pedido-23-coleta');
+  assert.equal(pickup.operationType, 'coleta');
+  assert.equal(pickup.name, 'Loja');
+  assert.deepEqual(pickup.coordinates, { lat: -16.7, lng: -49.2 });
+  assert.equal(pickup.assignedDriverId, '44');
+  assert.equal(pickup.acceptedByDriver, true);
+  const [delivery] = backendPedidoToPlaces({ ...order, etapa: 'coletado' });
+  assert.equal(delivery.operationType, 'entrega');
+  assert.equal(delivery.name, 'Cliente');
+  assert.deepEqual(delivery.coordinates, { lat: -16.8, lng: -49.3 });
+});
+
 test('keeps the collector reservation in delivery adapters and marker-only responses', () => {
   const order = {
     id: 21, etapa: 'coletado', tipo_encomenda: 'coleta', coleta_user_id: 11, coleta_user_nome: 'Coletor',

@@ -4,7 +4,10 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.app.KeyguardManager;
 import android.app.NotificationManager;
+import android.app.NotificationChannel;
 import android.content.Context;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
@@ -33,6 +36,7 @@ import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -64,8 +68,20 @@ public class MainActivity extends BridgeActivity {
     private boolean fullScreenSettingsOpen;
     private AlertDialog fullScreenPermissionDialog;
     private String lockScreenOfferId;
+    private long lockScreenOfferExpiresAt;
     private final Handler lockScreenHandler = new Handler(Looper.getMainLooper());
     private final Runnable lockScreenExpiry = this::clearUrgentLockScreen;
+    private final BroadcastReceiver urgentSyncReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String cancelledId = intent.getStringExtra(UrgentNotification.EXTRA_OFFER_ID);
+            long expiresAt = intent.getLongExtra(UrgentNotification.EXTRA_EXPIRES_AT, 0);
+            if (cancelledId != null && expiresAt >= lockScreenOfferExpiresAt) cancelUrgentLockScreen(cancelledId);
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                getBridge().getWebView().evaluateJavascript("window.dispatchEvent(new Event('zap:native-urgent-sync'))", null);
+            }
+        }
+    };
 
     public String getLastSharedMapJson() {
         return pendingSharedMapJson;
@@ -91,6 +107,7 @@ public class MainActivity extends BridgeActivity {
         showSystemBars();
         setupBackButtonHandler();
         setupWebView();
+        ContextCompat.registerReceiver(this, urgentSyncReceiver, new IntentFilter(UrgentOfferConnection.ACTION_SYNC), ContextCompat.RECEIVER_NOT_EXPORTED);
         requestInitialPermissions();
         ensureLocationServiceRunning();
         handleIncomingIntent(getIntent());
@@ -114,6 +131,7 @@ public class MainActivity extends BridgeActivity {
         // Garantir que os temporizadores JS continuem ativos
         if (getBridge() != null && getBridge().getWebView() != null) {
             getBridge().getWebView().resumeTimers();
+            getBridge().getWebView().evaluateJavascript("window.dispatchEvent(new Event('zap:native-urgent-sync'))", null);
         }
     }
 
@@ -137,6 +155,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onDestroy() {
+        unregisterReceiver(urgentSyncReceiver);
         lockScreenHandler.removeCallbacks(lockScreenExpiry);
         if (fullScreenPermissionDialog != null) fullScreenPermissionDialog.dismiss();
         if (apkUpdateChecker != null) apkUpdateChecker.destroy();
@@ -620,9 +639,33 @@ public class MainActivity extends BridgeActivity {
 
     private void showFullScreenPermissionIfNeeded() {
         if (!fullScreenPermissionRequired || !startupPermissionsFinished || fullScreenSettingsOpen
-            || Build.VERSION.SDK_INT < 34 || isFinishing() || isDestroyed()) return;
+            || isFinishing() || isDestroyed()) return;
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager != null && manager.canUseFullScreenIntent()) {
+        if (manager == null) {
+            Log.e(TAG, "Serviço de notificações indisponível para verificar permissões.");
+        } else {
+            UrgentNotification.ensureChannel(manager);
+        }
+        boolean channelReady = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = manager == null ? null : manager.getNotificationChannel(UrgentNotification.CHANNEL_ID);
+            channelReady = channel != null && channel.getImportance() >= NotificationManager.IMPORTANCE_HIGH
+                && channel.getSound() != null;
+            if (channelReady && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && channel.getGroup() != null) {
+                android.app.NotificationChannelGroup group = manager.getNotificationChannelGroup(channel.getGroup());
+                channelReady = group == null || !group.isBlocked();
+            }
+        }
+        DriverAlertRequirements.Missing missing = DriverAlertRequirements.firstMissing(
+            Build.VERSION.SDK_INT,
+            hasPermission(Manifest.permission.ACCESS_FINE_LOCATION),
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || hasPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
+            manager != null && NotificationManagerCompat.from(this).areNotificationsEnabled()
+                && (Build.VERSION.SDK_INT < 33 || hasPermission(Manifest.permission.POST_NOTIFICATIONS)),
+            channelReady,
+            Build.VERSION.SDK_INT < 34 || (manager != null && manager.canUseFullScreenIntent())
+        );
+        if (missing == DriverAlertRequirements.Missing.NONE) {
             if (fullScreenPermissionDialog != null) {
                 fullScreenPermissionDialog.dismiss();
                 fullScreenPermissionDialog = null;
@@ -630,9 +673,40 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         if (fullScreenPermissionDialog != null && fullScreenPermissionDialog.isShowing()) return;
+        String message;
+        Intent settings;
+        switch (missing) {
+            case LOCATION:
+                message = "Permita a localização precisa para identificar as coletas próximas.";
+                settings = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+                break;
+            case BACKGROUND_LOCATION:
+                message = "Permita a localização o tempo todo para receber coletas com o aplicativo em segundo plano.";
+                settings = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+                break;
+            case NOTIFICATIONS:
+                message = "Ative as notificações do aplicativo para receber coletas urgentes.";
+                settings = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName())
+                    : new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()));
+                break;
+            case CHANNEL:
+                message = "Ative o canal Coletas urgentes com som e alta prioridade para receber os chamados.";
+                settings = new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                    .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName())
+                    .putExtra(Settings.EXTRA_CHANNEL_ID, UrgentNotification.CHANNEL_ID);
+                break;
+            case FULL_SCREEN:
+                message = "Permita notificações em tela cheia para receber os convites urgentes sobre a tela bloqueada.";
+                settings = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                    Uri.parse("package:" + getPackageName()));
+                break;
+            default:
+                return;
+        }
         fullScreenPermissionDialog = new AlertDialog.Builder(this)
             .setTitle("Permissão obrigatória para alertas urgentes")
-            .setMessage("Permita notificações em tela cheia nas configurações do Android para receber os convites urgentes sobre a tela bloqueada.")
+            .setMessage(message)
             .setPositiveButton("Abrir configurações", null)
             .setCancelable(false)
             .create();
@@ -641,14 +715,13 @@ public class MainActivity extends BridgeActivity {
             fullScreenPermissionDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                 try {
                     fullScreenSettingsOpen = true;
-                    startActivity(new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
-                        Uri.parse("package:" + getPackageName())));
+                    startActivity(settings);
                     fullScreenPermissionDialog.dismiss();
                     fullScreenPermissionDialog = null;
                 } catch (Exception error) {
                     fullScreenSettingsOpen = false;
-                    Log.e(TAG, "Não foi possível abrir as configurações de tela cheia.", error);
-                    Toast.makeText(this, "Não foi possível abrir as configurações de tela cheia.", Toast.LENGTH_LONG).show();
+                    Log.e(TAG, "Não foi possível abrir as configurações de alertas.", error);
+                    Toast.makeText(this, "Não foi possível abrir as configurações. Ajuste as permissões do aplicativo no Android.", Toast.LENGTH_LONG).show();
                 }
             }));
         fullScreenPermissionDialog.show();
@@ -661,6 +734,7 @@ public class MainActivity extends BridgeActivity {
         long remaining = expiresAt - System.currentTimeMillis();
         if (!UrgentOfferWindow.isActive(offerId, expiresAt, System.currentTimeMillis())) return;
         lockScreenOfferId = offerId;
+        lockScreenOfferExpiresAt = expiresAt;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
             setTurnScreenOn(true);
@@ -678,6 +752,7 @@ public class MainActivity extends BridgeActivity {
     private void clearUrgentLockScreen() {
         if (lockScreenOfferId == null) return;
         lockScreenOfferId = null;
+        lockScreenOfferExpiresAt = 0;
         lockScreenHandler.removeCallbacks(lockScreenExpiry);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(false);

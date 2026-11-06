@@ -17,6 +17,9 @@ export interface AndroidAppBridge {
   getLatitude?: () => number;
   getLongitude?: () => number;
   configureBackgroundTracking?: (endpoint: string, driverJson: string) => boolean;
+  configureBackgroundTrackingWithAlerts?: (endpoint: string, driverJson: string, socketUrl: string, token: string) => boolean;
+  getNativeUrgentOffers?: () => string;
+  getNativeUrgentCancellations?: () => string;
   stopBackgroundTracking?: () => void;
   getLastSharedMap?: () => string | null;
   clearLastSharedMap?: () => void;
@@ -90,13 +93,17 @@ export const androidBridge = {
     return null;
   },
 
-  configureBackgroundTracking(endpoint: string, driver: unknown): boolean {
+  configureBackgroundTracking(endpoint: string, driver: unknown, socketUrl: string, token: string): boolean {
     if (!endpoint || typeof window === 'undefined' || !window.AndroidApp?.configureBackgroundTracking) {
       return false;
     }
     try {
+      if (window.AndroidApp.configureBackgroundTrackingWithAlerts) {
+        return window.AndroidApp.configureBackgroundTrackingWithAlerts(endpoint, JSON.stringify(driver), socketUrl, token);
+      }
       return window.AndroidApp.configureBackgroundTracking(endpoint, JSON.stringify(driver));
-    } catch {
+    } catch (error) {
+      console.error('[GPS] Falha ao configurar rastreamento nativo:', error);
       return false;
     }
   },

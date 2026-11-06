@@ -395,6 +395,10 @@ export const api = {
     access_level?: string;
     terms?: boolean;
     cidade?: string;
+    cpf?: string;
+    tipo_veiculo?: 'moto' | 'carro' | 'utilitario';
+    modelo_veiculo?: string;
+    placa?: string;
   }): Promise<ApiResponse<{ id: number | string }>> {
     return userService.registerUser(user);
   },

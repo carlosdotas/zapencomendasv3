@@ -958,8 +958,8 @@ export function backendPedidoToPlaces(pedido: BackendPedido): Place[] {
   const fallbackLat = -16.686891 + jitterLat;
   const fallbackLng = -49.264794 + jitterLng;
 
-  const hasColetaAddressOrName = Boolean((pedido.coleta_endereco && pedido.coleta_endereco.trim()) || (pedido.coleta_local && pedido.coleta_local.trim()) || (pedido.local && pedido.local.trim()));
-  const hasEntregaAddressOrName = Boolean((pedido.entrega_endereco && pedido.entrega_endereco.trim()) || (pedido.entrega_local && pedido.entrega_local.trim()) || (pedido.entrega_nome && pedido.entrega_nome.trim()));
+  const hasColetaAddressOrName = Boolean((pedido.coleta_endereco && pedido.coleta_endereco.trim()) || (pedido.coleta_local && pedido.coleta_local.trim()) || (pedido.coleta_locais_name && pedido.coleta_locais_name.trim()) || (pedido.local && pedido.local.trim()));
+  const hasEntregaAddressOrName = Boolean((pedido.entrega_endereco && pedido.entrega_endereco.trim()) || (pedido.entrega_local && pedido.entrega_local.trim()) || (pedido.entrega_locais_name && pedido.entrega_locais_name.trim()) || (pedido.entrega_nome && pedido.entrega_nome.trim()));
 
   const hasRealColeta = !isNaN(parsedColetaLat) && !isNaN(parsedColetaLng) && parsedColetaLat !== 0 && hasColetaAddressOrName;
   const hasRealEntrega = !isNaN(parsedEntregaLat) && !isNaN(parsedEntregaLng) && parsedEntregaLat !== 0 && hasEntregaAddressOrName;

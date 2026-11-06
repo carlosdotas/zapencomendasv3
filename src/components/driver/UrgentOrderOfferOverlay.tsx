@@ -100,7 +100,6 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
     return () => {
       unsubscribeOffer();
       unsubscribeCancel();
-      if (activeOfferId.current) window.AndroidApp?.cancelUrgentOffer?.(activeOfferId.current);
       activeOfferId.current = null;
       window.AndroidApp?.clearUrgentFullScreenRequirement?.();
     };

@@ -15,7 +15,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { AuthAccount } from '../../types/auth';
-import { api, setAuthToken } from '../../services/api';
+import { registerAndLogin } from '../../services/registrationService';
 
 interface RegisterModalProps {
   isOpen: boolean;
@@ -113,147 +113,71 @@ export const RegisterModal: React.FC<RegisterModalProps> = ({
     const finalModel = vehicleModel.trim() || (vehicleType === 'moto' ? 'Moto' : vehicleType === 'carro' ? 'Carro' : 'Furgão');
     const finalPlate = vehiclePlate.trim() ? vehiclePlate.toUpperCase() : '';
 
-    let registeredUserId: string | number = `usr-drv-${cleanPhone}`;
-    let sessionToken: string | undefined = undefined;
-
-    // 1. Cadastra o usuário no banco de dados via API oficial Express (/users/register)
     try {
-      const regRes = await api.registerUser({
+      const session = await registerAndLogin({
         name: cleanName,
         full_name: cleanName,
         name_completo: cleanName,
         phone: cleanPhone,
         password: cleanPassword,
-        access_level: isAtendente ? 'atendente' : 'motorista'
-      });
-
-      if (regRes && regRes.id) {
-        registeredUserId = regRes.id;
-      } else if (regRes && regRes.errors && Array.isArray(regRes.errors)) {
-        const isDuplicatePhone = regRes.errors.some((err: string) => 
-          typeof err === 'string' && (err.toLowerCase().includes('telefone') || err.toLowerCase().includes('cadastrado'))
-        );
-        if (isDuplicatePhone) {
-          // Se o telefone já estiver cadastrado, tenta fazer login diretamente
-          const loginAttempt = await api.login(cleanPhone, cleanPassword);
-          if (loginAttempt.success && loginAttempt.data) {
-            registeredUserId = loginAttempt.data.user_id;
-            sessionToken = loginAttempt.data.token;
-          } else {
-            setIsLoading(false);
-            setErrorMsg('Este número de telefone já está cadastrado. Por favor, entre com sua senha na tela de login.');
-            return;
-          }
-        } else {
-          setIsLoading(false);
-          setErrorMsg(regRes.errors.join('. '));
-          return;
-        }
-      }
-    } catch (e: any) {
-      console.warn('Registro no backend:', e?.message || e);
-    }
-
-    // 2. Realiza o login oficial (/login/login) para obter a sessão JWT/token do servidor
-    try {
-      const loginRes = await api.login(cleanPhone, cleanPassword);
-      if (loginRes.success && loginRes.data) {
-        sessionToken = loginRes.data.token;
-        registeredUserId = loginRes.data.user_id;
-        setAuthToken(loginRes.data.token);
-      }
-    } catch (e) {
-      console.warn('Aviso ao efetuar login pós-registro:', e);
-    }
-
-    // 3. Atualiza os dados complementares no banco de dados (/users/save e /motoristas/save)
-    try {
-      await Promise.allSettled([
-        api.saveUser({
-          id: registeredUserId,
-          name: cleanName,
-          name_completo: cleanName,
-          phone: cleanPhone,
+        access_level: isAtendente ? 'atendente' : 'motorista',
+        cidade: 'Goiânia',
+        ...(!isAtendente ? {
           cpf: cleanCpf,
-          cidade: 'Goiânia',
-          access_level: isAtendente ? 'atendente' : 'motorista'
-        }),
-        ...(isAtendente ? [] : [api.saveMotorista({
-          nome: cleanName,
-          telefone: cleanPhone,
-          cpf: formatCpf(cleanCpf),
           tipo_veiculo: vehicleType,
-          status: 'ativo'
-        })])
-      ]);
-    } catch {}
-
-    const newDriverAccount: AuthAccount = isAtendente ? {
-      id: String(registeredUserId),
-      phone: formatPhone(cleanPhone),
-      cleanPhone: cleanPhone,
-      code: cleanPassword,
-      role: 'atendente',
-      roleLabel: 'Atendente',
-      name: cleanName,
-      description: 'Atendimento • Pedidos',
-      badgeColor: '#0B5187',
-      avatarUrl: '',
-      department: 'Atendimento',
-      status: 'ativo',
-      lastAccess: 'Agora',
-      permissions: ['Pedidos', 'Clientes']
-    } : {
-      id: String(registeredUserId),
-      phone: formatPhone(cleanPhone),
-      cleanPhone: cleanPhone,
-      code: cleanPassword,
-      role: 'motorista',
-      roleLabel: `Motorista Parceiro (${vehicleLabels[vehicleType]})`,
-      name: cleanName,
-      document: formatCpf(cleanCpf),
-      description: finalPlate ? `${finalModel} • Placa ${finalPlate}` : `${finalModel} • Entregas`,
-      badgeColor: '#FF5E00',
-      avatarUrl: vehicleType === 'moto'
-        ? 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?auto=format&fit=crop&w=256&h=256&q=80'
-        : 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=256&h=256&q=80',
-      department: 'Frota de Entregas',
-      status: 'ativo',
-      lastAccess: 'Agora',
-      vehicle: finalModel,
-      plate: finalPlate || undefined,
-      permissions: ['Itinerário do Motorista', 'Navegação GPS', 'Baixa de Encomendas']
-    };
-
-    // 4. Salva no banco de dados local (localStorage) como backup resiliente
-    try {
-      const savedAccountsStr = localStorage.getItem('encomendaszap_custom_accounts');
-      const savedAccounts = savedAccountsStr ? JSON.parse(savedAccountsStr) : {};
-      savedAccounts[cleanPhone] = newDriverAccount;
-      localStorage.setItem('encomendaszap_custom_accounts', JSON.stringify(savedAccounts));
-
-      const listStr = localStorage.getItem('encomendaszap_registered_users_list');
-      const registeredList = listStr ? JSON.parse(listStr) : [];
-      registeredList.unshift({
-        ...newDriverAccount,
-        cpf: formatCpf(cleanCpf),
-        vehicleType,
-        vehicleModel: finalModel,
-        vehiclePlate: finalPlate,
-        registeredAt: new Date().toISOString()
+          modelo_veiculo: finalModel,
+          placa: finalPlate
+        } : {})
       });
-      localStorage.setItem('encomendaszap_registered_users_list', JSON.stringify(registeredList.slice(0, 100)));
-    } catch (e) {
-      console.warn('Erro ao salvar no localStorage:', e);
+
+      const newDriverAccount: AuthAccount = isAtendente ? {
+        id: String(session.user_id),
+        phone: formatPhone(cleanPhone),
+        cleanPhone: cleanPhone,
+        code: cleanPassword,
+        role: 'atendente',
+        roleLabel: 'Atendente',
+        name: cleanName,
+        description: 'Atendimento • Pedidos',
+        badgeColor: '#0B5187',
+        avatarUrl: '',
+        department: 'Atendimento',
+        status: 'ativo',
+        lastAccess: 'Agora',
+        permissions: ['Pedidos', 'Clientes']
+      } : {
+        id: String(session.user_id),
+        phone: formatPhone(cleanPhone),
+        cleanPhone: cleanPhone,
+        code: cleanPassword,
+        role: 'motorista',
+        roleLabel: `Motorista Parceiro (${vehicleLabels[vehicleType]})`,
+        name: cleanName,
+        document: formatCpf(cleanCpf),
+        description: finalPlate ? `${finalModel} • Placa ${finalPlate}` : `${finalModel} • Entregas`,
+        badgeColor: '#FF5E00',
+        avatarUrl: vehicleType === 'moto'
+          ? 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?auto=format&fit=crop&w=256&h=256&q=80'
+          : 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=256&h=256&q=80',
+        department: 'Frota de Entregas',
+        status: 'ativo',
+        lastAccess: 'Agora',
+        vehicle: finalModel,
+        vehicleType,
+        plate: finalPlate || undefined,
+        permissions: ['Itinerário do Motorista', 'Navegação GPS', 'Baixa de Encomendas']
+      };
+
+      setIsSuccess(true);
+      setTimeout(() => {
+        onSuccess(newDriverAccount);
+      }, 600);
+    } catch (error) {
+      console.error('[Cadastro] Falha ao cadastrar ou autenticar:', error);
+      setErrorMsg(error instanceof Error ? error.message : 'Não foi possível concluir o cadastro.');
+    } finally {
+      setIsLoading(false);
     }
-
-    setIsSuccess(true);
-    setIsLoading(false);
-
-    // Conclui e autentica imediatamente com o perfil de motorista do servidor
-    setTimeout(() => {
-      onSuccess(newDriverAccount);
-    }, 600);
   };
 
   return (

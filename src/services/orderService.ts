@@ -106,7 +106,10 @@ class OrderService {
     if (!res.success) return res;
 
     const id = res.data?.id ?? res.id;
-    return { ...res, id, data: { id: id as number | string } };
+    if (id === undefined || id === null || id === '') {
+      return { success: false, message: 'O servidor não confirmou o ID do pedido. Verifique a lista antes de tentar novamente.' };
+    }
+    return { ...res, id, data: { id } };
   }
 
   public async deletePedido(id: string | number): Promise<ApiResponse> {

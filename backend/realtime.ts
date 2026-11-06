@@ -108,15 +108,15 @@ export async function registerRealtime(
     });
   }
 
-  function resendUrgentOffers(userId: number) {
+  function resendUrgentOffers(userId: number, socket: WebSocket) {
     for (const state of urgentOffers.values()) {
       if (state.currentDriverId !== String(userId) || !state.expiresAt || state.expiresAt <= Date.now()) continue;
-      sendToUser(userId, {
+      socket.send(JSON.stringify({
         type: 'urgent:offer',
         offerId: state.orderKey,
         expiresAt: state.expiresAt,
         place: state.place
-      });
+      }));
     }
   }
 
@@ -345,6 +345,7 @@ export async function registerRealtime(
             where: { token: msg.token },
             include: { user: true }
           }).then(session => {
+            if (ws.readyState !== WebSocket.OPEN) return;
             if (!session?.is_logged || !session.user) {
               ws.close(4401, 'Sessão inválida');
               return;
@@ -359,7 +360,7 @@ export async function registerRealtime(
             if (!socketsByUserId.has(user.id)) socketsByUserId.set(user.id, new Set());
             socketsByUserId.get(user.id)!.add(ws);
             ws.send(JSON.stringify({ type: 'drivers:init', drivers: validDrivers() }));
-            resendUrgentOffers(user.id);
+            resendUrgentOffers(user.id, ws);
             void dispatchUrgentOrders().catch(err => console.warn('[Urgent Dispatch] Falha ao verificar coletas:', err?.message || err));
           }).catch(() => ws.close(4401, 'Falha ao validar sessão'));
           return;

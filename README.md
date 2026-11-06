@@ -27,4 +27,16 @@ The API lives in the `backend/` folder (Express + Prisma, MySQL). In dev it also
 3. Import the SQL dump from `backend/database`: `npm run db:import`
 4. Optional: `npm run db:studio` opens Prisma Studio.
 
+Driver registration requires the MySQL database; it does not report success using
+the server's local fallback store. The account, CPF and vehicle information are
+saved together in `users` (vehicle details in `extra`) and appear in the driver
+list. The separate `drivers` table requires a CNH and is not populated by the
+registration form, which does not collect one. If login fails after registration,
+the user should sign in instead of creating the account again.
+
+Orders and carriers also require MySQL for reads and writes. If it is unavailable,
+the API reports an error instead of silently using the server's fallback data.
+Existing records previously written to the fallback store are not automatically
+copied into MySQL; reconcile them separately before removing that store.
+
 Live data (orders, users, places, settings, driver assignments) is refreshed by polling the API every 15-30 seconds.

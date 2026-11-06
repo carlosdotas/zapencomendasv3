@@ -56,7 +56,7 @@ type DriverRemoveCallback = (driverId: string) => void;
 type UrgentOfferCallback = (offer: UrgentDriverOffer) => void;
 type UrgentCancelCallback = (offerId: string) => void;
 
-class DriverTrackingClient {
+export class DriverTrackingClient {
   private ws: WebSocket | null = null;
   private reconnectTimer: any = null;
   private isConnecting: boolean = false;
@@ -70,6 +70,10 @@ class DriverTrackingClient {
   constructor() {
     if (typeof window !== 'undefined') {
       this.connect();
+      window.addEventListener('zap:native-urgent-sync', () => this.syncNativeOffers());
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') this.syncNativeOffers();
+      });
     }
   }
 
@@ -111,8 +115,8 @@ class DriverTrackingClient {
             window.dispatchEvent(new Event('zap:refresh-orders'));
           } else if (msg.type === 'urgent:offer' && msg.place) {
             const offer = msg as UrgentDriverOffer;
-            this.activeUrgentOffers.set(offer.offerId, offer);
-            this.onUrgentOfferCallbacks.forEach(cb => cb(offer));
+            if (this.isNativeOfferCancelled(offer)) return;
+            this.receiveUrgentOffer(offer);
           } else if (msg.type === 'urgent:cancel' && msg.offerId) {
             const offerId = String(msg.offerId);
             this.activeUrgentOffers.delete(offerId);
@@ -167,9 +171,68 @@ class DriverTrackingClient {
   }
 
   public onUrgentOffer(cb: UrgentOfferCallback) {
+    this.syncNativeOffers();
     this.onUrgentOfferCallbacks.add(cb);
-    this.activeUrgentOffers.forEach(offer => cb(offer));
+    this.activeUrgentOffers.forEach((offer, id) => {
+      if (offer.expiresAt > Date.now()) cb(offer);
+      else this.activeUrgentOffers.delete(id);
+    });
     return () => this.onUrgentOfferCallbacks.delete(cb);
+  }
+
+  private receiveUrgentOffer(offer: UrgentDriverOffer) {
+    if (!offer.offerId || !Number.isFinite(offer.expiresAt) || offer.expiresAt <= Date.now()) return;
+    const existing = this.activeUrgentOffers.get(offer.offerId);
+    this.activeUrgentOffers.set(offer.offerId, offer);
+    if (!existing || existing.expiresAt !== offer.expiresAt) {
+      this.onUrgentOfferCallbacks.forEach(cb => cb(offer));
+    }
+  }
+
+  private isNativeOfferCancelled(offer: UrgentDriverOffer): boolean {
+    const readCancellations = window.AndroidApp?.getNativeUrgentCancellations;
+    if (!readCancellations) return false;
+    try {
+      const cancellations: unknown = JSON.parse(readCancellations());
+      if (!Array.isArray(cancellations)) throw new Error('Lista de cancelamentos inválida.');
+      return cancellations.some(cancelled =>
+        cancelled && cancelled.offerId === offer.offerId &&
+        typeof cancelled.expiresAt === 'number' && cancelled.expiresAt >= offer.expiresAt
+      );
+    } catch (error) {
+      console.error('[Tracking] Falha ao verificar cancelamentos nativos:', error);
+      return false;
+    }
+  }
+
+  private syncNativeOffers() {
+    const native = window.AndroidApp?.getNativeUrgentOffers;
+    if (!native) return;
+    try {
+      const readCancellations = window.AndroidApp?.getNativeUrgentCancellations;
+      if (readCancellations) {
+        const cancellations: unknown = JSON.parse(readCancellations());
+        if (!Array.isArray(cancellations)) throw new Error('Lista de cancelamentos inválida.');
+        for (const cancelled of cancellations) {
+          if (!cancelled || typeof cancelled.offerId !== 'string' || typeof cancelled.expiresAt !== 'number') continue;
+          const current = this.activeUrgentOffers.get(cancelled.offerId);
+          if (current && current.expiresAt <= cancelled.expiresAt) {
+            this.activeUrgentOffers.delete(cancelled.offerId);
+            this.onUrgentCancelCallbacks.forEach(cb => cb(cancelled.offerId));
+          }
+        }
+      }
+      const offers: unknown = JSON.parse(native());
+      if (!Array.isArray(offers)) throw new Error('Lista de convites inválida.');
+      for (const offer of offers) {
+        if (!offer || typeof offer.offerId !== 'string' || typeof offer.expiresAt !== 'number' ||
+            offer.expiresAt <= Date.now() || !offer.place || typeof offer.place.name !== 'string' ||
+            !Number.isFinite(offer.place.coordinates?.lat) || !Number.isFinite(offer.place.coordinates?.lng)) continue;
+        this.receiveUrgentOffer(offer);
+      }
+    } catch (error) {
+      console.error('[Tracking] Falha ao sincronizar convites nativos:', error);
+    }
   }
 
   public onUrgentCancel(cb: UrgentCancelCallback) {

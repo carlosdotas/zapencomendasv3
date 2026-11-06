@@ -292,15 +292,15 @@ export const CompanyManagementPage: React.FC<CompanyManagementPageProps> = ({ on
     }
 
     setIsSaving(true);
-    const success = await companyService.saveCompany(editingCompany);
-    setIsSaving(false);
-
-    if (success) {
+    try {
+      await companyService.saveCompany(editingCompany);
       setIsModalOpen(false);
       setSaveToast('Dados da transportadora salvos com sucesso!');
       setTimeout(() => setSaveToast(null), 3000);
-    } else {
-      alert('Ocorreu um erro ao salvar. Verifique sua conexão e tente novamente.');
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Não foi possível salvar a transportadora.');
+    } finally {
+      setIsSaving(false);
     }
   };
 

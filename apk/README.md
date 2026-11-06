@@ -56,20 +56,33 @@ oferece acesso às configurações; o usuário pode continuar, mas os recursos
 correspondentes podem ficar indisponíveis. A isenção de bateria continua sendo
 solicitada quando o rastreamento em segundo plano é ativado.
 
-Para motoristas, o Android 14 ou superior exige que a permissão de notificações
-em tela cheia esteja ativa: o aplicativo bloqueia a tela e oferece o acesso às
-configurações até que ela seja concedida. Em versões anteriores, a permissão
-é declarada no aplicativo. Convites urgentes recebidos pelo WebSocket geram
+Para motoristas, o aplicativo exige localização precisa, localização em segundo
+plano quando disponível, notificações habilitadas e o canal **Coletas urgentes**
+com som e alta prioridade. No Android 14 ou superior também exige a permissão
+de notificações em tela cheia. A área do motorista fica bloqueada com acesso
+às configurações até os requisitos serem atendidos; ao voltar das configurações,
+eles são verificados novamente. As permissões de câmera, microfone, contatos e
+fotos não fazem parte dessa exigência. Em versões anteriores do Android, a
+permissão de tela cheia é declarada no aplicativo. Convites urgentes recebidos pelo WebSocket geram
 notificação de alta prioridade com abertura em tela cheia, respeitando o prazo
 do convite e as configurações de notificações do aparelho. A exibição e o som
-dependem do Android e dos ajustes do usuário. Como o recebimento usa o WebSocket
-da página, não há garantia de entrega com o aplicativo encerrado ou suspenso;
-essa funcionalidade não substitui notificações push nativas.
+dependem do Android e dos ajustes do usuário. Enquanto o motorista estiver
+online, o serviço de localização mantém também uma conexão WebSocket nativa
+com o servidor, independente da página, e tenta reconectá-la em caso de queda.
+Ao ficar offline ou sair da conta, essa conexão é encerrada. A sessão fica
+nas preferências privadas do aplicativo, excluídas do backup, e é removida
+quando o rastreamento é parado.
 
 Para receber uma coleta, o motorista deve estar online, com localização atual
-dentro do raio configurado e com a página conectada ao servidor. O convite é
+dentro do raio configurado e com o serviço conectado ao servidor. O convite é
 enviado a um motorista por vez, por 30 segundos, seguindo para o próximo em
 caso de recusa ou expiração. Após esgotar os candidatos, o mesmo motorista
 não recebe novamente o mesmo convite enquanto esse despacho permanecer ativo.
 Confirme também que o canal **Coletas urgentes** está habilitado e com som;
 modo silencioso, Não Perturbe e restrições de bateria podem afetar o alerta.
+O aparelho precisa ter acesso à internet e as permissões de localização em
+segundo plano, notificação e tela cheia ativadas. O Android ou o fabricante
+podem interromper o serviço ou a rede, especialmente após parada forçada,
+reinício ou restrição de bateria; não há garantia absoluta de entrega.
+O site e o servidor precisam ser publicados junto com a instalação do novo APK,
+pois o aplicativo carrega a interface remota e não incorpora sua versão atual.

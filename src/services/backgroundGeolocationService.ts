@@ -1,5 +1,5 @@
 import { Driver, LocationCoordinates } from '../types/map';
-import { getApiBaseUrl } from './httpClient';
+import { getApiBaseUrl, getAuthToken } from './httpClient';
 import { androidBridge } from './androidBridge';
 
 export interface BackgroundTrackingStatus {
@@ -62,7 +62,14 @@ class BackgroundGeolocationService {
       return false;
     }
 
-    return androidBridge.configureBackgroundTracking(`${baseUrl}/api/tracking/update-driver`, driver);
+    const token = getAuthToken();
+    if (!token) {
+      this.lastError = 'Faça login para receber alertas urgentes.';
+      return false;
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socketUrl = `${protocol}//${window.location.host}/ws/tracking`;
+    return androidBridge.configureBackgroundTracking(`${baseUrl}/api/tracking/update-driver`, driver, socketUrl, token);
   }
 
   /**
@@ -70,8 +77,6 @@ class BackgroundGeolocationService {
    * @param driver Dados do motorista autenticado
    */
   public startBackgroundTracking(driver: Driver) {
-    if (this.isActive) return;
-
     this.lastError = null;
     const nativeTrackingActive = this.configureNativeTracking(driver);
 
@@ -82,7 +87,7 @@ class BackgroundGeolocationService {
       return;
     }
 
-    this.lastError = 'O rastreamento contínuo requer o serviço Java do APK.';
+    this.lastError = this.lastError || 'Não foi possível iniciar o rastreamento nativo do APK.';
     this.notifyListeners();
   }
 

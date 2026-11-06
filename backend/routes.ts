@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { prisma } from './db';
+import { DatabaseUnavailableError, isPrismaConnectionError, prisma, persistentDatabase } from './db';
 import { resolveCaller, canCallerSeeOrder, isPrivileged, assignmentStore } from './access';
 import { CompanyValidationError, companyWithLocation, parseCompanyLocationId, saveCompanyWithLocation } from './companyLocations';
 import { notifyNewOrder, notifyOrderProgress, etapaEvent } from './notifications';
@@ -54,7 +54,13 @@ function route(app: Express, paths: string | string[], handler: Handler) {
       await handler(req, res, parseRawJsonBody(req));
     } catch (err: any) {
       console.error(`[API] ${req.method} ${req.path}:`, err);
-      if (!res.headersSent) res.status(500).json({ success: false, message: err?.message || 'Erro interno do servidor' });
+      if (!res.headersSent) {
+        const unavailable = err instanceof DatabaseUnavailableError || isPrismaConnectionError(err);
+        res.status(unavailable ? 503 : 500).json({
+          success: false,
+          message: unavailable ? 'Banco de dados indisponível. Tente novamente mais tarde.' : err?.message || 'Erro interno do servidor'
+        });
+      }
     }
   });
 }
@@ -470,12 +476,24 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       res.status(400).json({ success: false, message: 'Telefone obrigatório.' });
       return;
     }
-    if (await findUserByPhone(phone)) {
+    const database = await persistentDatabase();
+    if (!database) {
+      res.status(503).json({ success: false, message: 'Banco de dados indisponível. Tente cadastrar novamente mais tarde.' });
+      return;
+    }
+    const existing = await database.users.findMany({ where: { phone: { in: phoneVariants(phone) } } });
+    if (existing.length) {
       res.status(409).json({ success: false, message: 'Já existe um usuário com este telefone.' });
       return;
     }
     const extra: any = { cliente_especial: 0, paga_semanal: 0, pendencias: 0 };
-    const created = await prisma.users.create({
+    if (String(body.access_level || '').toLowerCase() === 'motorista') {
+      for (const key of ['tipo_veiculo', 'modelo_veiculo', 'placa']) {
+        if (typeof body[key] === 'string') extra[key] = body[key].trim();
+      }
+      extra.status = 'ativo';
+    }
+    const created = await database.users.create({
       data: {
         name: String(body.name || '').trim() || 'Usuário',
         phone,
@@ -484,6 +502,7 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
           ? String(body.access_level).toLowerCase()
           : 'cliente',
         city: body.cidade || body.city || null,
+        cpf: body.cpf ? String(body.cpf).trim() : null,
         full_name: body.name_completo || body.full_name || String(body.name || '').trim() || 'Usuário',
         extra: JSON.stringify(extra)
       }
@@ -1249,7 +1268,9 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
   });
 
   route(app, '/companies', async (_req, res) => {
-    const rows = await prisma.transportadoras.findMany({ orderBy: { updated_at: 'desc' } });
+    const database = await persistentDatabase();
+    if (!database) throw new DatabaseUnavailableError();
+    const rows = await database.transportadoras.findMany({ orderBy: { updated_at: 'desc' } });
     const companies: Array<Record<string, unknown> & { id: string }> = rows.map(r => ({ ...parseExtra(r.data), id: r.id }));
     const locationIds = companies.flatMap(company => {
       try {
@@ -1261,7 +1282,7 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
       }
     });
     const locations = locationIds.length
-      ? await prisma.locations.findMany({ where: { id: { in: [...new Set(locationIds)] } } })
+      ? await database.locations.findMany({ where: { id: { in: [...new Set(locationIds)] } } })
       : [];
     const byId = new Map(locations.map(location => [location.id, location]));
     res.json({
@@ -1272,10 +1293,12 @@ export function registerApiRoutes(app: Express, deps: RouteDeps) {
 
   route(app, '/companies/save', async (_req, res, body) => {
     try {
+      const database = await persistentDatabase();
+      if (!database) throw new DatabaseUnavailableError();
       const savedCompany = await saveCompanyWithLocation(
         body.company ?? body,
-        id => prisma.locations.findUnique({ where: { id } }),
-        (id, data) => prisma.transportadoras.upsert({ where: { id }, create: { id, data }, update: { data } })
+        id => database.locations.findUnique({ where: { id } }),
+        (id, data) => database.transportadoras.upsert({ where: { id }, create: { id, data }, update: { data } })
       );
       res.json({ success: true, data: savedCompany });
     } catch (error) {
