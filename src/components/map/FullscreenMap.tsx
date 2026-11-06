@@ -1449,7 +1449,7 @@ export const FullscreenMap: React.FC = () => {
     if (!publicOrderToClaim) return;
     setIsClaiming(true);
     try {
-      const won = await claimPublicOrder(publicOrderToClaim.id);
+      const won = await claimPublicOrder(publicOrderToClaim.id, publicOrderToClaim.operationType);
       if (!won) {
         setClaimToast('Este pedido já foi aceito por outro motorista.');
         setTimeout(() => setClaimToast(null), 3500);
@@ -1468,7 +1468,7 @@ export const FullscreenMap: React.FC = () => {
       }
     } catch (err) {
       console.warn('Erro ao assumir pedido público:', err);
-      setClaimToast('Erro ao assumir pedido público.');
+      setClaimToast(err instanceof Error ? err.message : 'Erro ao assumir pedido público.');
       setTimeout(() => setClaimToast(null), 3000);
     } finally {
       setIsClaiming(false);
@@ -1898,8 +1898,8 @@ export const FullscreenMap: React.FC = () => {
     // Combine unique places (somente as encomendas reais buscadas do servidor)
     const rawPlacesMap = new Map<string, Place>();
     const sourcePlaces = allPlaces || [];
+    savedPlaces.filter(p => !p.id.startsWith('pedido-')).forEach(p => rawPlacesMap.set(p.id, p));
     sourcePlaces.forEach(p => rawPlacesMap.set(p.id, p));
-    savedPlaces.forEach(p => rawPlacesMap.set(p.id, p));
 
     // Regra Multi-Empresa e Transportadoras:
     // - Locais físicos de mapa (POIs) estão disponíveis para todos.
@@ -2545,7 +2545,8 @@ export const FullscreenMap: React.FC = () => {
     layer.clearLayers();
     if (!routeSelectMode) return;
     const byId = new Map<string, Place>();
-    [...(allPlaces || []), ...(savedPlaces || [])].forEach(p => byId.set(p.id, p));
+    (savedPlaces || []).filter(p => !p.id.startsWith('pedido-')).forEach(p => byId.set(p.id, p));
+    (allPlaces || []).forEach(p => byId.set(p.id, p));
     const seen = new Set<string>();
     routeSelectedIds.forEach(id => {
       const p = byId.get(id);

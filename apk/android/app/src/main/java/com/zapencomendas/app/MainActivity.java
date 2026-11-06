@@ -1,6 +1,7 @@
 package com.zapencomendas.app;
 
 import android.Manifest;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -20,6 +21,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.GeolocationPermissions;
+import android.webkit.PermissionRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Toast;
@@ -49,6 +51,10 @@ public class MainActivity extends BridgeActivity {
     private static final int PICK_CONTACT_REQUEST = 2001;
 
     private String pendingSharedMapJson = null;
+    private ApkUpdateChecker apkUpdateChecker;
+    private PermissionRequest pendingMediaRequest;
+    private boolean startupPermissionRequestPending;
+    private boolean returningFromBackgroundSettings;
 
     public String getLastSharedMapJson() {
         return pendingSharedMapJson;
@@ -69,11 +75,11 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        apkUpdateChecker = new ApkUpdateChecker(this);
         showSystemBars();
         setupBackButtonHandler();
         setupWebView();
         requestInitialPermissions();
-        checkGpsEnabled();
         ensureLocationServiceRunning();
         handleIncomingIntent(getIntent());
     }
@@ -81,7 +87,12 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onResume() {
         super.onResume();
+        if (apkUpdateChecker != null) apkUpdateChecker.start();
         showSystemBars();
+        if (returningFromBackgroundSettings) {
+            returningFromBackgroundSettings = false;
+            finishStartupPermissions();
+        }
         ensureLocationServiceRunning();
         // Garantir que os temporizadores JS continuem ativos
         if (getBridge() != null && getBridge().getWebView() != null) {
@@ -92,6 +103,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onPause() {
         super.onPause();
+        if (apkUpdateChecker != null) apkUpdateChecker.stop();
         // Não pausa os temporizadores JS em segundo plano para manter envio de localização do site
         if (getBridge() != null && getBridge().getWebView() != null) {
             getBridge().getWebView().resumeTimers();
@@ -104,6 +116,12 @@ public class MainActivity extends BridgeActivity {
         if (getBridge() != null && getBridge().getWebView() != null) {
             getBridge().getWebView().resumeTimers();
         }
+    }
+
+    @Override
+    public void onDestroy() {
+        if (apkUpdateChecker != null) apkUpdateChecker.destroy();
+        super.onDestroy();
     }
 
     @Override
@@ -257,22 +275,13 @@ public class MainActivity extends BridgeActivity {
                 // getUserMedia (câmera/microfone no site): concede após garantir as permissões do Android
                 @Override
                 public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                    runOnUiThread(() -> handleMediaPermissionRequest(request));
+                }
+
+                @Override
+                public void onPermissionRequestCanceled(PermissionRequest request) {
                     runOnUiThread(() -> {
-                        List<String> needed = new ArrayList<>();
-                        for (String res : request.getResources()) {
-                            if (android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)
-                                && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-                                needed.add(Manifest.permission.CAMERA);
-                            }
-                            if (android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)
-                                && ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                                needed.add(Manifest.permission.RECORD_AUDIO);
-                            }
-                        }
-                        if (!needed.isEmpty()) {
-                            ActivityCompat.requestPermissions(MainActivity.this, needed.toArray(new String[0]), MEDIA_PERMISSION_CODE);
-                        }
-                        request.grant(request.getResources());
+                        if (pendingMediaRequest == request) pendingMediaRequest = null;
                     });
                 }
             });
@@ -500,55 +509,94 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    private boolean hasPermission(String permission) {
+        return ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
     private void requestInitialPermissions() {
-        List<String> permissions = new ArrayList<>();
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.POST_NOTIFICATIONS);
-            }
-        }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.READ_CONTACTS);
-        }
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.CAMERA);
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.READ_MEDIA_IMAGES);
-            }
-        } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE);
-        }
-
+        List<String> permissions = StartupPermissions.missing(Build.VERSION.SDK_INT, this::hasPermission);
         if (!permissions.isEmpty()) {
+            startupPermissionRequestPending = true;
             ActivityCompat.requestPermissions(this, permissions.toArray(new String[0]), FOREGROUND_PERMISSION_CODE);
         } else {
             checkBackgroundLocationPermission();
-            ensureLocationServiceRunning();
         }
     }
 
     private void checkBackgroundLocationPermission() {
-        // No Android 10+ (API 29+), solicita permissão de localização o tempo todo (segundo plano permanente)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                    this,
-                    new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION},
-                    BACKGROUND_LOCATION_CODE
-                );
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+            || hasPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+            || (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION) && !hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION))) {
+            finishStartupPermissions();
+            return;
+        }
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+            startupPermissionRequestPending = true;
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION}, BACKGROUND_LOCATION_CODE);
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle("Localização em segundo plano")
+            .setMessage("Para manter o rastreamento quando o aplicativo estiver fechado, permita a localização o tempo todo nas configurações do Android.")
+            .setPositiveButton("Abrir configurações", (dialog, which) -> {
+                returningFromBackgroundSettings = true;
+                if (!openAppSettings()) {
+                    returningFromBackgroundSettings = false;
+                    finishStartupPermissions();
+                }
+            })
+            .setNegativeButton("Agora não", (dialog, which) -> finishStartupPermissions())
+            .setOnCancelListener(dialog -> finishStartupPermissions())
+            .show();
+    }
+
+    private boolean openAppSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+            return true;
+        } catch (Exception error) {
+            Log.e(TAG, "Não foi possível abrir as configurações de permissões.", error);
+            Toast.makeText(this, "Abra as configurações do aplicativo para alterar as permissões.", Toast.LENGTH_LONG).show();
+            return false;
+        }
+    }
+
+    private void finishStartupPermissions() {
+        ensureLocationServiceRunning();
+        List<String> missing = StartupPermissions.missing(Build.VERSION.SDK_INT, this::hasPermission);
+        if (!missing.isEmpty()) {
+            new AlertDialog.Builder(this)
+                .setTitle("Permissões não concedidas")
+                .setMessage("Algumas funções podem não funcionar sem localização, notificações, câmera, microfone, contatos ou fotos. Você pode permitir o acesso nas configurações do Android.")
+                .setPositiveButton("Configurações", (dialog, which) -> openAppSettings())
+                .setNegativeButton("Continuar", (dialog, which) -> checkGpsEnabled())
+                .setOnCancelListener(dialog -> checkGpsEnabled())
+                .show();
+        } else {
+            checkGpsEnabled();
+        }
+    }
+
+    private void handleMediaPermissionRequest(PermissionRequest request) {
+        List<String> needed = new ArrayList<>();
+        for (String resource : request.getResources()) {
+            String permission;
+            if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) permission = Manifest.permission.CAMERA;
+            else if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(resource)) permission = Manifest.permission.RECORD_AUDIO;
+            else {
+                request.deny();
+                return;
             }
+            if (!hasPermission(permission) && !needed.contains(permission)) needed.add(permission);
+        }
+        if (needed.isEmpty()) {
+            request.grant(request.getResources());
+        } else if (startupPermissionRequestPending || pendingMediaRequest != null) {
+            request.deny();
+            Toast.makeText(this, "Conclua a solicitação de permissões e tente novamente.", Toast.LENGTH_LONG).show();
+        } else {
+            pendingMediaRequest = request;
+            ActivityCompat.requestPermissions(this, needed.toArray(new String[0]), MEDIA_PERMISSION_CODE);
         }
     }
 
@@ -590,14 +638,21 @@ public class MainActivity extends BridgeActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
 
         if (requestCode == FOREGROUND_PERMISSION_CODE) {
-            boolean fineLocationGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-            if (fineLocationGranted) {
-                // Após o usuário conceder a localização comum, solicita a localização permanente de segundo plano
-                checkBackgroundLocationPermission();
-                ensureLocationServiceRunning();
-            }
+            startupPermissionRequestPending = false;
+            checkBackgroundLocationPermission();
         } else if (requestCode == BACKGROUND_LOCATION_CODE) {
-            ensureLocationServiceRunning();
+            startupPermissionRequestPending = false;
+            finishStartupPermissions();
+        } else if (requestCode == MEDIA_PERMISSION_CODE && pendingMediaRequest != null) {
+            PermissionRequest request = pendingMediaRequest;
+            pendingMediaRequest = null;
+            boolean granted = grantResults.length > 0;
+            for (int result : grantResults) granted = granted && result == PackageManager.PERMISSION_GRANTED;
+            if (granted) request.grant(request.getResources());
+            else {
+                request.deny();
+                Toast.makeText(this, "Permita a câmera e o microfone para usar este recurso.", Toast.LENGTH_LONG).show();
+            }
         }
     }
 }

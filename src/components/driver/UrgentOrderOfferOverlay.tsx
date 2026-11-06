@@ -106,7 +106,7 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
     setBusy(true);
     setError('');
     try {
-      const accepted = await claimPublicOrder(offer.place.id);
+      const accepted = await claimPublicOrder(offer.place.id, 'coleta');
       if (accepted) setOffer(null);
       else setError('Outro motorista já aceitou esta coleta ou ela não está mais disponível.');
     } catch (err) {

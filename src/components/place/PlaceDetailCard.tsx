@@ -297,6 +297,7 @@ export const PlaceDetailCard: React.FC = () => {
       }
     } catch (err) {
       console.warn('Erro ao assumir pedido:', err);
+      setSaveSuccessToast(err instanceof Error ? err.message : 'Não foi possível aceitar o pedido.');
     } finally {
       setIsClaimingOrder(false);
     }
@@ -572,7 +573,7 @@ export const PlaceDetailCard: React.FC = () => {
     return `${selectedPlace.id.replace(/-(coleta|troca|entrega|retorno)$/i, '')}-${operation}`;
   }, [selectedPlace]);
 
-  const updateRoutePointVisibility = useCallback((point: 'pickup' | 'exchange' | 'delivery', visibility: 'publico' | 'privado') => {
+  const updateRoutePointVisibility = useCallback(async (point: 'pickup' | 'exchange' | 'delivery', visibility: 'publico' | 'privado') => {
     if (!selectedPlace) return;
     const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
     const isActivePoint = selectedPlace.operationType === operation;
@@ -614,92 +615,34 @@ export const PlaceDetailCard: React.FC = () => {
       ...clearActiveDriver
     };
     if (visibility === 'publico') {
-      assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined);
+      if (!await assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined)) return;
+    } else {
+      await updatePlaceDetails(selectedPlace.id, updates);
     }
     clearActiveRoute();
-    updatePlaceDetails(selectedPlace.id, updates);
   }, [selectedPlace, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails, clearActiveRoute]);
 
-  const handleSelectDriverForRoutePoint = useCallback((driverOption: { id: string; phone?: string; name?: string }) => {
+  const handleSelectDriverForRoutePoint = useCallback(async (driverOption: { id: string; phone?: string; name?: string }) => {
     if (!selectedPlace || !routeDriverTarget) return;
     const point = routeDriverTarget;
     const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
-    assignPlaceToDriver(getRouteAssignmentPlaceId(point), driverOption.id, driverOption.phone, driverOption.name);
+    if (!await assignPlaceToDriver(getRouteAssignmentPlaceId(point), driverOption.id, driverOption.phone, driverOption.name)) return;
     clearActiveRoute();
-    const activeDriver = selectedPlace.operationType === operation
-      ? {
-          orderVisibility: 'privado' as const,
-          assignedDriverId: driverOption.id,
-          assignedDriverPhone: driverOption.phone,
-          assignedDriverName: driverOption.name
-        }
-      : {};
-    const pointDriver = point === 'pickup'
-      ? {
-          pickupVisibility: 'privado' as const,
-          pickupAssignedDriverId: driverOption.id,
-          pickupAssignedDriverPhone: driverOption.phone,
-          pickupAssignedDriverName: driverOption.name
-        }
-      : point === 'exchange'
-        ? {
-            exchangeVisibility: 'privado' as const,
-            exchangeAssignedDriverId: driverOption.id,
-            exchangeAssignedDriverPhone: driverOption.phone,
-            exchangeAssignedDriverName: driverOption.name
-          }
-        : {
-            deliveryVisibility: 'privado' as const,
-            deliveryAssignedDriverId: driverOption.id,
-            deliveryAssignedDriverPhone: driverOption.phone,
-            deliveryAssignedDriverName: driverOption.name
-          };
-    updatePlaceDetails(selectedPlace.id, { ...activeDriver, ...pointDriver });
     setIsDriverSelectorOpen(false);
     setRouteDriverTarget(null);
     setDriverToast(`${operation === 'coleta' ? 'Coleta' : operation === 'troca' ? 'Troca' : 'Entrega'} privada direcionada para ${driverOption.name}!`);
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails, clearActiveRoute]);
+  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, clearActiveRoute]);
 
-  const handleRemoveDriverFromRoutePoint = useCallback((point: 'pickup' | 'exchange' | 'delivery' = routeDriverTarget || 'pickup') => {
+  const handleRemoveDriverFromRoutePoint = useCallback(async (point: 'pickup' | 'exchange' | 'delivery' = routeDriverTarget || 'pickup') => {
     if (!selectedPlace) return;
-    assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined);
+    if (!await assignPlaceToDriver(getRouteAssignmentPlaceId(point), null, undefined, undefined)) return;
     clearActiveRoute();
-    const operation = point === 'pickup' ? 'coleta' : point === 'exchange' ? 'troca' : 'entrega';
-    const activeDriver = selectedPlace.operationType === operation
-      ? {
-          orderVisibility: 'privado' as const,
-          assignedDriverId: undefined,
-          assignedDriverName: undefined,
-          assignedDriverPhone: undefined
-        }
-      : {};
-    const pointDriver = point === 'pickup'
-      ? {
-          pickupVisibility: 'privado' as const,
-          pickupAssignedDriverId: undefined,
-          pickupAssignedDriverName: undefined,
-          pickupAssignedDriverPhone: undefined
-        }
-      : point === 'exchange'
-        ? {
-            exchangeVisibility: 'privado' as const,
-            exchangeAssignedDriverId: undefined,
-            exchangeAssignedDriverName: undefined,
-            exchangeAssignedDriverPhone: undefined
-          }
-        : {
-            deliveryVisibility: 'privado' as const,
-            deliveryAssignedDriverId: undefined,
-            deliveryAssignedDriverName: undefined,
-            deliveryAssignedDriverPhone: undefined
-          };
-    updatePlaceDetails(selectedPlace.id, { ...activeDriver, ...pointDriver });
     setIsDriverSelectorOpen(false);
     setRouteDriverTarget(null);
-    setDriverToast('Motorista desvinculado. O ponto continua privado.');
+    setDriverToast('Motorista desvinculado. O ponto voltou a ficar público.');
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, updatePlaceDetails, clearActiveRoute]);
+  }, [selectedPlace, routeDriverTarget, assignPlaceToDriver, getRouteAssignmentPlaceId, clearActiveRoute]);
 
   // Informações do motorista direcionado
   const assignedDriverObj = useMemo(() => {
@@ -710,46 +653,29 @@ export const PlaceDetailCard: React.FC = () => {
     ) || null;
   }, [selectedPlace, drivers]);
 
-  const handleSelectDriverForPlace = useCallback((driverOption: any) => {
+  const handleSelectDriverForPlace = useCallback(async (driverOption: { id: string; phone?: string; name?: string }) => {
     if (!selectedPlace) return;
-    assignPlaceToDriver(selectedPlace.id, driverOption.id, driverOption.phone, driverOption.name);
+    if (!await assignPlaceToDriver(selectedPlace.id, driverOption.id, driverOption.phone, driverOption.name)) return;
     clearActiveRoute();
-    updatePlaceDetails(selectedPlace.id, {
-      orderVisibility: 'privado',
-      assignedDriverId: driverOption.id,
-      assignedDriverPhone: driverOption.phone,
-      assignedDriverName: driverOption.name
-    });
     setDriverToast(`Encomenda privada direcionada para ${driverOption.name}!`);
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails, clearActiveRoute]);
+  }, [selectedPlace, assignPlaceToDriver, clearActiveRoute]);
 
-  const handleRemoveDriverFromPlace = useCallback(() => {
+  const handleRemoveDriverFromPlace = useCallback(async () => {
     if (!selectedPlace) return;
-    assignPlaceToDriver(selectedPlace.id, null, undefined, undefined);
+    if (!await assignPlaceToDriver(selectedPlace.id, null, undefined, undefined)) return;
     clearActiveRoute();
-    updatePlaceDetails(selectedPlace.id, {
-      assignedDriverId: undefined,
-      assignedDriverPhone: undefined,
-      assignedDriverName: undefined
-    });
-    setDriverToast('Motorista desvinculado. Encomenda mantida como Privada.');
+    setDriverToast('Motorista desvinculado. Encomenda disponível para todos.');
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails, clearActiveRoute]);
+  }, [selectedPlace, assignPlaceToDriver, clearActiveRoute]);
 
-  const handleSetVisibilityPublic = useCallback(() => {
+  const handleSetVisibilityPublic = useCallback(async () => {
     if (!selectedPlace) return;
-    assignPlaceToDriver(selectedPlace.id, null, undefined, undefined);
+    if (!await assignPlaceToDriver(selectedPlace.id, null, undefined, undefined)) return;
     clearActiveRoute();
-    updatePlaceDetails(selectedPlace.id, {
-      orderVisibility: 'publico',
-      assignedDriverId: undefined,
-      assignedDriverPhone: undefined,
-      assignedDriverName: undefined
-    });
     setDriverToast('Visibilidade definida como Público (aparece para todos os motoristas).');
     setTimeout(() => setDriverToast(null), 3500);
-  }, [selectedPlace, assignPlaceToDriver, updatePlaceDetails, clearActiveRoute]);
+  }, [selectedPlace, assignPlaceToDriver, clearActiveRoute]);
 
   const handleSetVisibilityPrivate = useCallback(() => {
     if (!selectedPlace) return;

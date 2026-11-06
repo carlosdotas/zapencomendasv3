@@ -1,6 +1,7 @@
 import type { Request } from 'express';
 import { prisma } from './db';
 import { collectionOwnership } from '../src/utils/collectionOwnership';
+import { assignmentOperation, assignmentOrderNumber } from './assignmentKeys';
 
 export interface AssignmentLike {
   orderId?: string;
@@ -73,14 +74,6 @@ export function assignmentsVisibleTo(caller: Caller | null): Record<string, Assi
   return Object.fromEntries(Object.entries(all).filter(([, a]) => isAssignmentMine(a, caller)));
 }
 
-function orderIdOfKey(key: string): string {
-  return key.match(/\d+/)?.[0] || '';
-}
-
-function operationOfKey(key: string): string {
-  return key.match(/(?:^|[-_])(coleta|troca|entrega|retorno)$/i)?.[1]?.toLowerCase() || '';
-}
-
 const driversFromField = (raw: unknown): string[] => {
   if (raw === null || raw === undefined || raw === '') return [];
   if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
@@ -96,28 +89,7 @@ const driversFromField = (raw: unknown): string[] => {
   return text ? [text] : [];
 };
 
-/** Filtra a encomenda pela atribuição da parada ativa, sem misturar motoristas de outras etapas. */
-export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
-  const ownership = collectionOwnership(pedido);
-  if (ownership.collectionRestricted) {
-    return isPrivileged(caller) || Boolean(caller && ownership.collectionOwnerId === String(caller.id));
-  }
-  // Restringe motoristas e requisições sem sessão (quem omite o token não pode escapar do filtro)
-  if (caller && caller.role !== 'motorista') return true;
-  const orderId = String(pedido?.id ?? '').match(/\d+/)?.[0] || '';
-  let extra: Record<string, unknown> = {};
-  const rawExtra = pedido?.itens_extras;
-  if (typeof rawExtra === 'string') {
-    try {
-      const parsed = JSON.parse(rawExtra);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        extra = parsed as Record<string, unknown>;
-      }
-    } catch {
-      extra = {};
-    }
-  }
-
+export function activeOrderPoint(pedido: any): 'pickup' | 'exchange' | 'delivery' {
   const stage = String(pedido?.etapa || '').toLowerCase().trim();
   const isExchange = String(pedido?.tipo_encomenda || '').toLowerCase() === 'troca' ||
     Boolean(pedido?.troca_lat || pedido?.troca_nome);
@@ -143,7 +115,7 @@ export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
       pedido?.dest_drivers
     );
   const isColetado = ['coletado', 'trocando', 'trocado', 'retornando', 'segunda_entrega', 'retorno', 'entregando', 'entregue'].includes(stage);
-  const activePoint = isExchange
+  return isExchange
     ? ['trocado', 'retornando', 'segunda_entrega', 'retorno', 'entregando'].includes(stage)
       ? 'delivery'
       : ['coletado', 'trocando'].includes(stage)
@@ -152,6 +124,30 @@ export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
     : (isColetado || isDeliveryOnly)
       ? 'delivery'
       : 'pickup';
+}
+
+/** Filtra a encomenda pela atribuição da parada ativa, sem misturar motoristas de outras etapas. */
+export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
+  const ownership = collectionOwnership(pedido);
+  if (ownership.collectionRestricted) {
+    return isPrivileged(caller) || Boolean(caller && ownership.collectionOwnerId === String(caller.id));
+  }
+  // Restringe motoristas e requisições sem sessão (quem omite o token não pode escapar do filtro)
+  if (caller && caller.role !== 'motorista') return true;
+  const orderId = String(pedido?.id ?? '').match(/\d+/)?.[0] || '';
+  let extra: Record<string, unknown> = {};
+  const rawExtra = pedido?.itens_extras;
+  if (typeof rawExtra === 'string') {
+    try {
+      const parsed = JSON.parse(rawExtra);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        extra = parsed as Record<string, unknown>;
+      }
+    } catch {
+      extra = {};
+    }
+  }
+  const activePoint = activeOrderPoint(pedido);
   const operation = activePoint === 'pickup' ? 'coleta' : activePoint === 'exchange' ? 'troca' : 'entrega';
   const rawPointVisibility = pedido?.[`${activePoint}Visibility`] ?? extra[`${activePoint}Visibility`];
   const legacyVisibility = pedido?.orderVisibility ?? extra.orderVisibility;
@@ -190,10 +186,10 @@ export function canCallerSeeOrder(pedido: any, caller: Caller | null): boolean {
 
   if (orderId) {
     for (const [key, a] of assignmentStore) {
-      const assignmentOperation = operationOfKey(key);
+      const operationForAssignment = assignmentOperation(key);
       if (
-        orderIdOfKey(key) !== orderId ||
-        (assignmentOperation && assignmentOperation !== operation) ||
+        assignmentOrderNumber(key) !== orderId ||
+        (operationForAssignment && operationForAssignment !== operation) ||
         !hasDriver(a)
       ) continue;
       anyAssigned = true;

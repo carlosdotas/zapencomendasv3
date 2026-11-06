@@ -379,7 +379,7 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
     e.stopPropagation();
     setMenuOrderId(null);
     try {
-      const won = await claimPublicOrder(ord.id);
+      const won = await claimPublicOrder(ord.id, ord.operationType);
       if (!won) {
         setToastMsg('Este pedido já foi aceito por outro motorista.');
         setTimeout(() => setToastMsg(null), 3000);
@@ -389,6 +389,8 @@ export const OrdersListModal: React.FC<OrdersListModalProps> = ({ isOpen, onClos
       setTimeout(() => setToastMsg(null), 3000);
     } catch (err) {
       console.warn('Erro ao aceitar pedido:', err);
+      setToastMsg(err instanceof Error ? err.message : 'Não foi possível aceitar o pedido.');
+      setTimeout(() => setToastMsg(null), 3000);
     }
   };
 

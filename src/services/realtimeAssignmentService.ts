@@ -124,36 +124,25 @@ class RealtimeAssignmentService {
       acceptedByDriver
     };
 
-    // Atualiza o estado em memória e grava as chaves do pedido no servidor.
-    this.assignments[rawPlaceId] = assignment;
-    const assignmentKeys = [rawPlaceId];
-    if (operationType) {
-      const byOperationKey = `${numId}_${operationType}`;
-      const legacyOperationKey = `pedido-${numId}-${operationType}`;
-      this.assignments[byOperationKey] = assignment;
-      this.assignments[legacyOperationKey] = assignment;
-      assignmentKeys.push(byOperationKey, legacyOperationKey);
-    }
-    this.notifyListeners();
-    const results = await Promise.all(assignmentKeys.map(key =>
-      request('/api/realtime/assign-driver', 'POST', {
+    const isOrder = /^(?:pedido-)?\d+(?:[-_](?:coleta|entrega|troca|retorno))?$/i.test(rawPlaceId);
+    const key = operationType && isOrder ? `${numId}_${operationType}` : rawPlaceId;
+    const result = await request<OrderAssignment>('/api/realtime/assign-driver', 'POST', {
         orderId: key,
         driverId: assignment.driverId,
         driverName: assignment.driverName,
         driverPhone: assignment.driverPhone,
         vehicleType: assignment.vehicleType,
         claim: acceptedByDriver
-      })
-    ));
-    const failed = results.find(r => !r.success);
-    if (failed) throw new Error(failed.message || 'Não foi possível direcionar o pedido ao motorista.');
-
-    return assignment;
+      });
+    if (!result.success || !result.data) throw new Error(result.message || 'Não foi possível direcionar o pedido ao motorista.');
+    this.assignments[key] = result.data;
+    this.notifyListeners();
+    return result.data;
   }
 
   /**
    * Aceite de pedido público: o servidor recusa se outro motorista já aceitou.
-   * Retorna false (e ressincroniza as atribuições) quando perdeu a disputa.
+   * Erros do servidor são apresentados ao motorista.
    */
   public async claimOrder(
     rawPlaceId: string,
@@ -162,32 +151,22 @@ class RealtimeAssignmentService {
   ): Promise<boolean> {
     const numId = rawPlaceId.match(/\d+/)?.[0] || rawPlaceId;
     const cleanDriverId = driver.id.replace(/\D/g, '') || driver.id;
-    const keys = [operationType ? `${numId}_${operationType}` : rawPlaceId];
+    const key = operationType ? `${numId}_${operationType}` : rawPlaceId;
 
-    const results = await Promise.all(keys.map(key =>
-      request('/api/realtime/assign-driver', 'POST', {
+    const result = await request<OrderAssignment>('/api/realtime/assign-driver', 'POST', {
         orderId: key,
         driverId: String(cleanDriverId),
         driverName: driver.name,
         driverPhone: driver.phone,
         vehicleType: driver.vehicleType,
         claim: true
-      })
-    ));
-    if (results.some(r => !r.success)) {
-      await this.fetchServerAssignments().catch(() => {});
-      return false;
+      });
+    if (!result.success) throw new Error(result.message || 'Não foi possível aceitar o pedido.');
+    const confirmed = result.data;
+    if (!confirmed) {
+      throw new Error('O servidor não confirmou a atribuição.');
     }
-    const key = keys[0];
-    this.assignments[key] = {
-      orderId: key,
-      driverId: String(cleanDriverId),
-      driverName: driver.name,
-      driverPhone: driver.phone,
-      vehicleType: driver.vehicleType,
-      assignedAt: Date.now(),
-      acceptedByDriver: true
-    };
+    this.assignments[key] = confirmed;
     this.notifyListeners();
     return true;
   }
@@ -218,19 +197,18 @@ class RealtimeAssignmentService {
   public async unassignOrder(rawPlaceId: string, operationType?: string): Promise<void> {
     const numId = rawPlaceId.match(/\d+/)?.[0];
 
-    const assignmentKeys = [rawPlaceId];
+    const isOrder = /^(?:pedido-)?\d+(?:[-_](?:coleta|entrega|troca|retorno))?$/i.test(rawPlaceId);
+    const key = operationType && numId && isOrder ? `${numId}_${operationType}` : rawPlaceId;
+    const result = await request('/api/realtime/unassign-driver', 'POST', { orderId: key });
+    if (!result.success) throw new Error(result.message || 'Não foi possível desvincular o motorista.');
     delete this.assignments[rawPlaceId];
     if (operationType && numId) {
       const byOperationKey = `${numId}_${operationType}`;
       const legacyOperationKey = `pedido-${numId}-${operationType}`;
       delete this.assignments[byOperationKey];
       delete this.assignments[legacyOperationKey];
-      assignmentKeys.push(byOperationKey, legacyOperationKey);
     }
     this.notifyListeners();
-    await Promise.all(assignmentKeys.map(key =>
-      request('/api/realtime/unassign-driver', 'POST', { orderId: key })
-    ));
   }
 
   public async declineClaimedOrder(

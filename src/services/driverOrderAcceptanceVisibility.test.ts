@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test, beforeEach, after } from 'node:test';
+import { test, beforeEach, after, mock } from 'node:test';
 import { realtimeAssignmentService } from './realtimeAssignmentService';
 import { Place, UserProfile } from '../types/map';
 
@@ -135,6 +135,36 @@ test('when an accepted order is unassigned, it returns to public and both driver
   assert.equal(realtimeAssignmentService.isPublicOrder(openPublicPlace), true);
   assert.equal(realtimeAssignmentService.isPlaceAssignedToUser(openPublicPlace, driverA), true);
   assert.equal(realtimeAssignmentService.isPlaceAssignedToUser(openPublicPlace, driverB), true);
+});
+
+test('assignment and release each make one request and failures do not change local state', async () => {
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  let success = true;
+  const fetchMock = mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    const body = success
+      ? { success: true, data: { orderId: '701_coleta', driverId: '11', assignedAt: 1 } }
+      : { success: false, message: 'Falha ao salvar' };
+    return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+  });
+  try {
+    success = false;
+    await assert.rejects(realtimeAssignmentService.assignOrder('pedido-701-coleta', { id: '11' }, 'coleta'), /Falha ao salvar/);
+    assert.equal(realtimeAssignmentService.getAssignmentForOrder('701', 'coleta'), null);
+    success = true;
+    await realtimeAssignmentService.assignOrder('pedido-701-coleta', { id: '11' }, 'coleta');
+    assert.equal(realtimeAssignmentService.getAssignmentForOrder('701', 'coleta')?.driverId, '11');
+    success = false;
+    await assert.rejects(realtimeAssignmentService.unassignOrder('pedido-701-coleta', 'coleta'), /Falha ao salvar/);
+    assert.equal(realtimeAssignmentService.getAssignmentForOrder('701', 'coleta')?.driverId, '11');
+    success = true;
+    await realtimeAssignmentService.unassignOrder('pedido-701-coleta', 'coleta');
+    assert.equal(realtimeAssignmentService.getAssignmentForOrder('701', 'coleta'), null);
+    assert.equal(requests.length, 4);
+    assert.ok(requests.every(request => request.body.orderId === '701_coleta'));
+  } finally {
+    fetchMock.mock.restore();
+  }
 });
 
 function openPublicPublicClone(p: Place): Place {

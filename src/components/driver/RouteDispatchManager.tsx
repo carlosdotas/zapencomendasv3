@@ -16,8 +16,7 @@ export const RouteDispatchManager: React.FC = () => {
     allPlaces,
     savedPlaces,
     drivers,
-    assignPlaceToDriver,
-    updatePlaceDetails
+    assignPlaceToDriver
   } = useMapStore();
   const [toast, setToast] = useState<string | null>(null);
 
@@ -34,20 +33,13 @@ export const RouteDispatchManager: React.FC = () => {
 
   if (currentRole !== 'admin_geral' && currentRole !== 'atendente') return null;
 
-  const handleSelectDriver = (driver: DriverOption) => {
+  const handleSelectDriver = async (driver: DriverOption) => {
     const known = new Set([...(allPlaces || []), ...(savedPlaces || [])].map(p => p.id));
     const ids = routeSelectedIds.filter(id => known.has(id));
-    ids.forEach(id => {
-      assignPlaceToDriver(id, driver.id, driver.phone, driver.name);
-      updatePlaceDetails(id, {
-        orderVisibility: 'privado',
-        assignedDriverId: driver.id,
-        assignedDriverPhone: driver.phone,
-        assignedDriverName: driver.name
-      });
-    });
+    const results = await Promise.all(ids.map(id => assignPlaceToDriver(id, driver.id, driver.phone, driver.name)));
+    const sent = results.filter(Boolean).length;
     cancelRouteSelection();
-    setToast(`${ids.length} ${ids.length === 1 ? 'local enviado' : 'locais enviados'} para ${driver.name}!`);
+    setToast(`${sent} de ${ids.length} locais enviados para ${driver.name}.`);
     setTimeout(() => setToast(null), 3500);
   };
 

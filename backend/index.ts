@@ -330,7 +330,7 @@ async function startServer() {
       setHeaders: (res, filePath) => {
         const basename = path.basename(filePath).toLowerCase();
         // Nunca faz cache de HTML, service worker e manifest para detectar atualizações na hora
-        if (filePath.endsWith('.html') || basename === 'sw.js' || basename.endsWith('.webmanifest') || basename.startsWith('workbox-') || basename.includes('sw')) {
+        if (filePath.endsWith('.html') || basename === 'sw.js' || basename === 'apk-version.json' || basename.endsWith('.webmanifest') || basename.startsWith('workbox-') || basename.includes('sw')) {
           res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
           res.setHeader('Pragma', 'no-cache');
           res.setHeader('Expires', '0');

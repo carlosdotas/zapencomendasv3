@@ -187,8 +187,8 @@ interface MapContextType {
   completePlaceWaypoint: (placeId: string, receiverName?: string, notes?: string, proximity?: BaixaProximity, pickupPhotos?: string[]) => Promise<boolean>;
   resetWorkflowToColetas: () => void;
   updatePlaceDetails: (placeId: string, partial: Partial<Place>) => Promise<boolean>;
-  assignPlaceToDriver: (placeId: string, driverId: string | null, driverPhone?: string, driverName?: string, acceptedByDriver?: boolean) => void;
-  claimPublicOrder: (placeId: string) => Promise<boolean>;
+  assignPlaceToDriver: (placeId: string, driverId: string | null, driverPhone?: string, driverName?: string, acceptedByDriver?: boolean) => Promise<boolean>;
+  claimPublicOrder: (placeId: string, operation?: OperationType) => Promise<boolean>;
   toggleSavePlace: (place: Place) => void;
   isPlaceSaved: (placeId: string) => boolean;
   deletePlace: (placeId: string) => Promise<boolean>;
@@ -860,7 +860,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const numId = p.id.match(/\d+/)?.[0] || (p.orderCode ? p.orderCode.match(/\d+/)?.[0] : null);
         const rt = realtimeAssignmentService.getAssignmentForOrder(p.id, p.operationType) || 
                    (numId ? realtimeAssignmentService.getAssignmentForOrder(numId, p.operationType) : null);
-        if (rt && rt.driverId && !p.collectionRestricted) {
+        if (rt && rt.driverId && p.assignedDriverId === rt.driverId && !p.collectionRestricted) {
           return {
             ...p,
             assignedDriverId: rt.driverId,
@@ -948,12 +948,10 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           !allCombinedActivePlaces.some(p => getOrderKey(p) === getOrderKey(curr))
         ) return null;
         const refreshed = allCombinedActivePlaces.find(p => p.id === curr.id);
-        if (refreshed && (
-          refreshed.imageUrl !== curr.imageUrl || refreshed.photos?.length !== curr.photos?.length ||
-          refreshed.collectionRestricted !== curr.collectionRestricted || refreshed.collectionOwnerId !== curr.collectionOwnerId
-        )) {
+        if (refreshed && getPlaceSignature(refreshed) !== getPlaceSignature(curr)) {
           return {
             ...curr,
+            ...refreshed,
             imageUrl: refreshed.imageUrl,
             photos: refreshed.photos,
             pickupPhotos: refreshed.pickupPhotos,
@@ -1025,6 +1023,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       running = true;
       try {
+        await realtimeAssignmentService.fetchServerAssignments();
         await refreshServerData({ silent: true });
       } finally {
         running = false;
@@ -1050,53 +1049,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Sincronização em tempo real de atribuições (REST + polling)
   useEffect(() => {
-    const canSeeReleasedClaim = (place: Place) => {
-      const role = String(currentRole || localStorage.getItem('encomendaszap_user_role') || '').toLowerCase();
-      if (['admin', 'admin_geral', 'atendente', 'terminal'].includes(role)) return true;
-      if (role !== 'motorista') return false;
-      try {
-        const account = JSON.parse(localStorage.getItem('encomendaszap_logged_account') || '{}');
-        const assignedId = String(place.assignedDriverId || '').replace(/\D/g, '');
-        const accountId = String(account.id || '').replace(/\D/g, '');
-        const assignedPhone = String(place.assignedDriverPhone || '').replace(/\D/g, '');
-        const accountPhone = String(account.phone || '').replace(/\D/g, '');
-        return Boolean(
-          (assignedId && accountId && assignedId === accountId) ||
-          (assignedPhone.length >= 8 && accountPhone.length >= 8 && assignedPhone.slice(-8) === accountPhone.slice(-8))
-        );
-      } catch {
-        return false;
-      }
-    };
-
-    const clearAcceptedAssignment = (place: Place): Place => {
-      const released: Place = {
-        ...place,
-        assignedDriverId: undefined,
-        assignedDriverName: undefined,
-        assignedDriverPhone: undefined,
-        acceptedByDriver: false,
-        orderVisibility: 'publico'
-      };
-      if (place.operationType === 'coleta') {
-        released.pickupAssignedDriverId = undefined;
-        released.pickupAssignedDriverName = undefined;
-        released.pickupAssignedDriverPhone = undefined;
-        released.pickupVisibility = 'publico';
-      } else if (place.operationType === 'troca') {
-        released.exchangeAssignedDriverId = undefined;
-        released.exchangeAssignedDriverName = undefined;
-        released.exchangeAssignedDriverPhone = undefined;
-        released.exchangeVisibility = 'publico';
-      } else {
-        released.deliveryAssignedDriverId = undefined;
-        released.deliveryAssignedDriverName = undefined;
-        released.deliveryAssignedDriverPhone = undefined;
-        released.deliveryVisibility = 'publico';
-      }
-      return released;
-    };
-
     const unsubscribe = realtimeAssignmentService.subscribe((assignments) => {
       setAllPlaces(prev => {
         let hasChanges = false;
@@ -1118,9 +1070,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 acceptedByDriver: Boolean(assignment.acceptedByDriver)
               };
             }
-          } else if (p.acceptedByDriver && canSeeReleasedClaim(p)) {
-            hasChanges = true;
-            return clearAcceptedAssignment(p);
           }
           return p;
         });
@@ -1130,21 +1079,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return next;
         }
         return prev;
-      });
-
-      setSavedPlaces(prev => {
-        const next = prev.map(place => {
-          if (place.collectionRestricted) return place;
-          if (!place.acceptedByDriver || !canSeeReleasedClaim(place)) return place;
-          const numId = place.id.match(/\d+/)?.[0] || (place.orderCode ? place.orderCode.match(/\d+/)?.[0] : null);
-          const assignment = assignments[place.id] ||
-            (place.operationType && numId ? assignments[`${numId}_${place.operationType}`] : null) ||
-            (place.operationType && numId ? assignments[`pedido-${numId}-${place.operationType}`] : null);
-          return assignment?.driverId ? place : clearAcceptedAssignment(place);
-        });
-        if (next.every((place, index) => place === prev[index])) return prev;
-        scheduleStorageSave('encomendaszap_saved_places', next);
-        return next;
       });
 
       setSelectedPlace(prev => {
@@ -1164,7 +1098,6 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             acceptedByDriver: Boolean(assignment.acceptedByDriver)
           };
         }
-        if (!assignment?.driverId && prev.acceptedByDriver && canSeeReleasedClaim(prev)) return clearAcceptedAssignment(prev);
         return prev;
       });
     });
@@ -1445,17 +1378,16 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return true;
   }, [allPlaces, selectedPlace, currentRole]);
 
-  const assignPlaceToDriver = useCallback((placeId: string, driverId: string | null, driverPhone?: string, driverName?: string, acceptedByDriver = false) => {
-    const numericPedidoId = resolvePlaceId(placeId).match(/pedido-(\d+)/)?.[1] || placeId.match(/\d+/)?.[0];
+  const assignPlaceToDriver = useCallback(async (placeId: string, driverId: string | null, driverPhone?: string, driverName?: string, acceptedByDriver = false): Promise<boolean> => {
     const cleanMotoristaId = driverId ? parseInt(driverId.replace(/\D/g, ''), 10) || null : null;
     const finalDriverId = cleanMotoristaId ? String(cleanMotoristaId) : (driverId || undefined);
 
     const targetPlace = allPlaces.find(p => p.id === placeId) || (selectedPlace?.id === placeId ? selectedPlace : null);
     const op: OperationType = targetPlace?.operationType || (placeId.includes('entrega') ? 'entrega' : placeId.includes('troca') ? 'troca' : 'coleta');
 
-    // 1. Sincroniza via Realtime Assignment Service (REST)
-    if (finalDriverId) {
-      realtimeAssignmentService.assignOrder(placeId, {
+    try {
+      if (finalDriverId) {
+      await realtimeAssignmentService.assignOrder(placeId, {
         id: finalDriverId,
         name: driverName,
         phone: driverPhone
@@ -1466,88 +1398,47 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         window.AndroidApp.vibrate?.(200);
       }
     } else {
-      realtimeAssignmentService.unassignOrder(placeId, op);
+      await realtimeAssignmentService.unassignOrder(placeId, op);
+    }
+    } catch (error) {
+      console.error('[Driver Assignment] Falha ao alterar motorista:', error);
+      window.alert(error instanceof Error ? error.message : 'Não foi possível alterar o motorista.');
+      return false;
     }
 
+    const updateAssignment = (p: Place): Place => {
+      if (p.id !== placeId) return p;
+      const visibility: 'privado' | 'publico' = finalDriverId ? 'privado' : 'publico';
+      const point = op === 'coleta'
+        ? { pickupVisibility: visibility, pickupAssignedDriverId: finalDriverId, pickupAssignedDriverPhone: driverPhone || undefined, pickupAssignedDriverName: driverName || undefined }
+        : op === 'troca'
+          ? { exchangeVisibility: visibility, exchangeAssignedDriverId: finalDriverId, exchangeAssignedDriverPhone: driverPhone || undefined, exchangeAssignedDriverName: driverName || undefined }
+          : { deliveryVisibility: visibility, deliveryAssignedDriverId: finalDriverId, deliveryAssignedDriverPhone: driverPhone || undefined, deliveryAssignedDriverName: driverName || undefined };
+      return {
+        ...p, ...point, orderVisibility: visibility, assignedDriverId: finalDriverId,
+        assignedDriverPhone: driverPhone || undefined, assignedDriverName: driverName || undefined,
+        acceptedByDriver: Boolean(finalDriverId && acceptedByDriver)
+      };
+    };
+
     setAllPlaces(prev => {
-      const next = prev.map(p => {
-        const matchesPlace = p.id === placeId;
-        if (matchesPlace) {
-          return {
-            ...p,
-            assignedDriverId: finalDriverId,
-            assignedDriverPhone: driverPhone || undefined,
-            assignedDriverName: driverName || undefined,
-            acceptedByDriver: Boolean(finalDriverId && acceptedByDriver)
-          };
-        }
-        return p;
-      });
+      const next = prev.map(updateAssignment);
       scheduleStorageSave('encomendaszap_all_places', next);
       return next;
     });
 
     setSavedPlaces(prev => {
-      const next = prev.map(p => {
-        const matchesPlace = p.id === placeId;
-        if (matchesPlace) {
-          return {
-            ...p,
-            assignedDriverId: finalDriverId,
-            assignedDriverPhone: driverPhone || undefined,
-            assignedDriverName: driverName || undefined,
-            acceptedByDriver: Boolean(finalDriverId && acceptedByDriver)
-          };
-        }
-        return p;
-      });
+      const next = prev.map(updateAssignment);
       scheduleStorageSave('encomendaszap_saved_places', next);
       return next;
     });
 
     setSelectedPlace(prev => {
-      if (prev && prev.id === placeId) {
-        return {
-          ...prev,
-          assignedDriverId: finalDriverId,
-          assignedDriverPhone: driverPhone || undefined,
-          assignedDriverName: driverName || undefined,
-          acceptedByDriver: Boolean(finalDriverId && acceptedByDriver)
-        };
-      }
-      return prev;
+      return prev ? updateAssignment(prev) : prev;
     });
 
-    // Sincroniza persistência do motorista no backend Express (/pedidos/save)
-    // Atualiza estritamente os campos da operação correspondente (coleta ou entrega)
-    if (numericPedidoId && !isTempPedidoNumber(numericPedidoId)) {
-      const payload: Partial<BackendPedido> = {
-        id: numericPedidoId,
-      };
-
-      if (op === 'coleta') {
-        payload.coleta_motoristas = cleanMotoristaId ? `[${cleanMotoristaId}]` : '[]';
-        payload.coleta_user_id = cleanMotoristaId ?? null;
-        payload.coleta_user_nome = driverName || null;
-      } else if (op === 'entrega') {
-        payload.entrega_motoristas = cleanMotoristaId ? `[${cleanMotoristaId}]` : '[]';
-        payload.entrega_user_id = cleanMotoristaId ?? null;
-        payload.entrega_user_nome = driverName || null;
-      } else {
-        payload.coleta_motoristas = cleanMotoristaId ? `[${cleanMotoristaId}]` : '[]';
-        payload.entrega_motoristas = cleanMotoristaId ? `[${cleanMotoristaId}]` : '[]';
-        payload.coleta_user_id = cleanMotoristaId ?? null;
-        payload.coleta_user_nome = driverName || null;
-        payload.entrega_user_id = cleanMotoristaId ?? null;
-        payload.entrega_user_nome = driverName || null;
-      }
-
-      api.savePedido(payload).then(res => {
-        console.log(`[Driver Assignment] Pedido #${numericPedidoId} (${op}) salvo no banco:`, res);
-      }).catch(err => {
-        console.warn('[Driver Assignment] Falha ao persistir motorista no servidor:', err);
-      });
-    }
+    window.dispatchEvent(new Event('zap:refresh-orders'));
+    return true;
   }, [allPlaces, selectedPlace]);
 
   const [savedPlaces, setSavedPlaces] = useState<Place[]>(() => {
@@ -1741,41 +1632,46 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
    * A marker pública some imediatamente para todos os outros motoristas
    * e vira a marker normal da rota para este motorista que confirmou.
    */
-  const claimPublicOrder = useCallback(async (placeId: string): Promise<boolean> => {
-    const driverId = user.id || (user.phone === '62996157343' ? 'usr-mot-04' : user.phone === '62996157344' ? 'usr-mot-05' : 'usr-mot-me');
+  const claimPublicOrder = useCallback(async (placeId: string, operation?: OperationType): Promise<boolean> => {
+    const driverId = user.id;
+    if (!driverId) throw new Error('Não foi possível identificar o motorista. Faça login novamente.');
     const driverName = user.name || 'Motorista Parceiro';
     const driverPhone = user.phone || '';
-    const claimOp: OperationType | undefined = allPlaces.find(p => p.id === placeId)?.operationType;
+    const claimOp: OperationType | undefined = operation || allPlaces.find(p => p.id === placeId)?.operationType ||
+      (placeId.endsWith('-coleta') ? 'coleta' : placeId.endsWith('-troca') ? 'troca' : placeId.endsWith('-entrega') ? 'entrega' : undefined);
+    if (!claimOp) {
+      throw new Error('Não foi possível identificar a etapa do pedido. Atualize o mapa e tente novamente.');
+    }
 
     // Reserva o pedido no servidor primeiro: se outro motorista aceitou antes, este perde
     const won = await realtimeAssignmentService.claimOrder(placeId, { id: driverId, name: driverName, phone: driverPhone }, claimOp);
     if (!won) return false;
+    const confirmedDriverId = realtimeAssignmentService.getAssignmentForOrder(placeId, claimOp)?.driverId || driverId;
 
-    const operation = claimOp || 'entrega';
-    const operationAssignment = operation === 'coleta'
+    const operationAssignment = claimOp === 'coleta'
       ? {
           pickupVisibility: 'privado' as const,
-          pickupAssignedDriverId: driverId,
+          pickupAssignedDriverId: confirmedDriverId,
           pickupAssignedDriverName: driverName,
           pickupAssignedDriverPhone: driverPhone
         }
-      : operation === 'troca'
+      : claimOp === 'troca'
         ? {
             exchangeVisibility: 'privado' as const,
-            exchangeAssignedDriverId: driverId,
+            exchangeAssignedDriverId: confirmedDriverId,
             exchangeAssignedDriverName: driverName,
             exchangeAssignedDriverPhone: driverPhone
           }
         : {
             deliveryVisibility: 'privado' as const,
-            deliveryAssignedDriverId: driverId,
+            deliveryAssignedDriverId: confirmedDriverId,
             deliveryAssignedDriverName: driverName,
             deliveryAssignedDriverPhone: driverPhone
           };
     const claimedPlace = (place: Place): Place => ({
       ...place,
       orderVisibility: 'privado',
-      assignedDriverId: driverId,
+      assignedDriverId: confirmedDriverId,
       assignedDriverName: driverName,
       assignedDriverPhone: driverPhone,
       acceptedByDriver: true,
@@ -3195,8 +3091,8 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Agrupa todas as makers ativas (allPlaces + savedPlaces)
     const placesMap = new Map<string, Place>();
+    (savedPlaces || []).filter(p => !p.id.startsWith('pedido-')).forEach(p => placesMap.set(p.id, p));
     (allPlaces || []).forEach(p => placesMap.set(p.id, p));
-    (savedPlaces || []).forEach(p => placesMap.set(p.id, p));
 
     // Filtra marcadores válidos e não concluídos
     const rawValidPlaces = Array.from(placesMap.values()).filter(p => 

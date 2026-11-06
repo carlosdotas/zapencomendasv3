@@ -33,7 +33,7 @@ export function areArraysEqualFast<T>(
  */
 export function getPlaceSignature(p: any): string {
   if (!p) return '';
-  return `${p.id}_${p.orderStage || ''}_${p.orderVisibility || ''}_${p.assignedDriverId || ''}_${p.collectionRestricted ? 1 : 0}_${p.collectionOwnerId || ''}_${p.price || 0}_${p.paymentStatus || ''}_${p.updatedAt || ''}_${p.imageUrl || ''}_${p.photos?.length || 0}`;
+  return JSON.stringify([p.id, p.orderStage, p.orderVisibility, p.assignedDriverId, p.assignedDriverName, p.assignedDriverPhone, p.acceptedByDriver, p.pickupVisibility, p.pickupAssignedDriverId, p.pickupAssignedDriverName, p.pickupAssignedDriverPhone, p.exchangeVisibility, p.exchangeAssignedDriverId, p.exchangeAssignedDriverName, p.exchangeAssignedDriverPhone, p.deliveryVisibility, p.deliveryAssignedDriverId, p.deliveryAssignedDriverName, p.deliveryAssignedDriverPhone, p.collectionRestricted, p.collectionOwnerId, p.price, p.paymentStatus, p.updatedAt, p.imageUrl, p.photos?.length]);
 }
 
 /**

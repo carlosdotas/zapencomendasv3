@@ -41,7 +41,7 @@ export async function isDatabaseOnline(): Promise<boolean> {
 }
 
 // Inicia verificação rápida em background
-void isDatabaseOnline();
+if (!globalForPrisma.prisma) void isDatabaseOnline();
 
 function isPrismaConnectionError(err: any): boolean {
   if (!err) return false;
