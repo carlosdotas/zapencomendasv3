@@ -59,7 +59,6 @@ export const NotificationMenu: React.FC = () => {
 
   // Busca a cada 15 s em segundo plano: novas notificações disparam o alerta nativo e entram na lista
   useEffect(() => {
-    notificationService.requestWebPermission();
     return startPolling(async () => {
       const fresh = await notificationService.pull();
       fresh.forEach(n => notificationService.alert(n));

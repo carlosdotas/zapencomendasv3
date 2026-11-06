@@ -47,15 +47,5 @@ export const notificationService = {
     } catch {
       // alerta web é opcional
     }
-  },
-
-  requestWebPermission() {
-    try {
-      if (!androidBridge.isAvailable() && typeof Notification !== 'undefined' && Notification.permission === 'default') {
-        void Notification.requestPermission();
-      }
-    } catch {
-      // ignora navegadores sem suporte
-    }
   }
 };
