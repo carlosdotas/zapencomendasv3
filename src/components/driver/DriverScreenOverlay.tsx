@@ -20,11 +20,13 @@ import {
 import { useMapStore } from '../../context/MapContext';
 import { useAppVersion } from '../../hooks/useAppVersion';
 import { getDriverPermanentColor } from '../../utils/driverColorUtils';
+import { androidBridge } from '../../services/androidBridge';
 
 export const DriverScreenOverlay: React.FC = () => {
   const appVersion = useAppVersion();
   const { 
     currentRole, 
+    isAuthenticated,
     isDriverOnline, 
     setIsDriverOnline, 
     driverActiveSeconds,
@@ -54,6 +56,11 @@ export const DriverScreenOverlay: React.FC = () => {
   dragProgressRef.current = dragProgress;
   isDraggingRef.current = isDragging;
 
+  useEffect(() => {
+    if (!isAuthenticated || currentRole !== 'motorista' || !isDriverOnline) return;
+    window.AndroidApp?.requireUrgentFullScreenPermission?.();
+    return () => window.AndroidApp?.clearUrgentFullScreenRequirement?.();
+  }, [isAuthenticated, currentRole, isDriverOnline]);
 
   // Cor permanente do motorista para a identidade visual
   const driverColor = getDriverPermanentColor(user.id || user.phone || user.name);
@@ -82,6 +89,10 @@ export const DriverScreenOverlay: React.FC = () => {
   // Ativação da sessão com animação suave e feedback tátil
   const triggerActivation = useCallback(() => {
     if (isActivating) return;
+    if (!androidBridge.prepareDriverAlerts()) {
+      setDragProgress(0);
+      return;
+    }
     setIsActivating(true);
     setDragProgress(1);
 

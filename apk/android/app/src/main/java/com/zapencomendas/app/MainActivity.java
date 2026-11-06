@@ -56,6 +56,7 @@ public class MainActivity extends BridgeActivity {
     private static final int FOREGROUND_PERMISSION_CODE = 1001;
     private static final int BACKGROUND_LOCATION_CODE = 1002;
     private static final int MEDIA_PERMISSION_CODE = 1003;
+    private static final int ALERT_NOTIFICATION_PERMISSION_CODE = 1004;
     private static final int PICK_CONTACT_REQUEST = 2001;
 
     private String pendingSharedMapJson = null;
@@ -66,6 +67,7 @@ public class MainActivity extends BridgeActivity {
     private boolean startupPermissionsFinished;
     private boolean fullScreenPermissionRequired;
     private boolean fullScreenSettingsOpen;
+    private boolean alertNotificationPermissionRequested;
     private AlertDialog fullScreenPermissionDialog;
     private String lockScreenOfferId;
     private long lockScreenOfferExpiresAt;
@@ -604,8 +606,8 @@ public class MainActivity extends BridgeActivity {
         List<String> missing = StartupPermissions.missing(Build.VERSION.SDK_INT, this::hasPermission);
         if (!missing.isEmpty()) {
             new AlertDialog.Builder(this)
-                .setTitle("Permissões não concedidas")
-                .setMessage("Algumas funções podem não funcionar sem localização, notificações, câmera, microfone, contatos ou fotos. Você pode permitir o acesso nas configurações do Android.")
+                .setTitle("Localização não concedida")
+                .setMessage("A localização precisa é necessária para o mapa e o rastreamento. Você pode permiti-la nas configurações do Android.")
                 .setPositiveButton("Configurações", (dialog, which) -> {
                     startupPermissionsFinished = true;
                     openAppSettings();
@@ -640,6 +642,23 @@ public class MainActivity extends BridgeActivity {
     private void showFullScreenPermissionIfNeeded() {
         if (!fullScreenPermissionRequired || !startupPermissionsFinished || fullScreenSettingsOpen
             || isFinishing() || isDestroyed()) return;
+        DriverAlertRequirements.Missing missing = missingDriverAlertRequirement();
+        if (missing == DriverAlertRequirements.Missing.NONE) {
+            if (fullScreenPermissionDialog != null) {
+                fullScreenPermissionDialog.dismiss();
+                fullScreenPermissionDialog = null;
+            }
+            return;
+        }
+        if (fullScreenPermissionDialog != null && fullScreenPermissionDialog.isShowing()) return;
+        showMissingDriverAlertRequirement(missing);
+    }
+
+    public boolean driverAlertRequirementsSatisfied() {
+        return missingDriverAlertRequirement() == DriverAlertRequirements.Missing.NONE;
+    }
+
+    private DriverAlertRequirements.Missing missingDriverAlertRequirement() {
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (manager == null) {
             Log.e(TAG, "Serviço de notificações indisponível para verificar permissões.");
@@ -656,7 +675,7 @@ public class MainActivity extends BridgeActivity {
                 channelReady = group == null || !group.isBlocked();
             }
         }
-        DriverAlertRequirements.Missing missing = DriverAlertRequirements.firstMissing(
+        return DriverAlertRequirements.firstMissing(
             Build.VERSION.SDK_INT,
             hasPermission(Manifest.permission.ACCESS_FINE_LOCATION),
             Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || hasPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION),
@@ -665,14 +684,9 @@ public class MainActivity extends BridgeActivity {
             channelReady,
             Build.VERSION.SDK_INT < 34 || (manager != null && manager.canUseFullScreenIntent())
         );
-        if (missing == DriverAlertRequirements.Missing.NONE) {
-            if (fullScreenPermissionDialog != null) {
-                fullScreenPermissionDialog.dismiss();
-                fullScreenPermissionDialog = null;
-            }
-            return;
-        }
-        if (fullScreenPermissionDialog != null && fullScreenPermissionDialog.isShowing()) return;
+    }
+
+    private void showMissingDriverAlertRequirement(DriverAlertRequirements.Missing missing) {
         String message;
         Intent settings;
         switch (missing) {
@@ -715,7 +729,15 @@ public class MainActivity extends BridgeActivity {
             fullScreenPermissionDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                 try {
                     fullScreenSettingsOpen = true;
-                    startActivity(settings);
+                    if (missing == DriverAlertRequirements.Missing.NOTIFICATIONS
+                        && Build.VERSION.SDK_INT >= 33
+                        && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        && !alertNotificationPermissionRequested) {
+                        alertNotificationPermissionRequested = true;
+                        ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, ALERT_NOTIFICATION_PERMISSION_CODE);
+                    } else {
+                        startActivity(settings);
+                    }
                     fullScreenPermissionDialog.dismiss();
                     fullScreenPermissionDialog = null;
                 } catch (Exception error) {
@@ -830,6 +852,9 @@ public class MainActivity extends BridgeActivity {
         } else if (requestCode == BACKGROUND_LOCATION_CODE) {
             startupPermissionRequestPending = false;
             finishStartupPermissions();
+        } else if (requestCode == ALERT_NOTIFICATION_PERMISSION_CODE) {
+            fullScreenSettingsOpen = false;
+            showFullScreenPermissionIfNeeded();
         } else if (requestCode == MEDIA_PERMISSION_CODE && pendingMediaRequest != null) {
             PermissionRequest request = pendingMediaRequest;
             pendingMediaRequest = null;

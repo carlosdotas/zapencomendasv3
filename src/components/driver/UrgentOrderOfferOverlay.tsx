@@ -76,7 +76,6 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
       setOffer(null);
       return;
     }
-    window.AndroidApp?.requireUrgentFullScreenPermission?.();
     const unsubscribeOffer = driverTrackingClient.onUrgentOffer(nextOffer => {
       if (nextOffer.expiresAt <= Date.now()) return;
       if (activeOfferId.current && activeOfferId.current !== nextOffer.offerId) {
@@ -101,7 +100,6 @@ export const UrgentOrderOfferOverlay: React.FC = () => {
       unsubscribeOffer();
       unsubscribeCancel();
       activeOfferId.current = null;
-      window.AndroidApp?.clearUrgentFullScreenRequirement?.();
     };
   }, [isAuthenticated, currentRole]);
 

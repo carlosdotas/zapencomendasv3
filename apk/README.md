@@ -47,20 +47,22 @@ informação conhecida. A detecção começa a funcionar após a instalação de
 versão do APK que contenha esse recurso. O novo APK deve ser assinado com a
 mesma chave da versão instalada para permitir a atualização.
 
-Na abertura, o Android solicita as permissões ainda não concedidas para
-localização, notificações, câmera, microfone, contatos e fotos, conforme a
-versão do sistema. No Android 11 ou superior, a localização em segundo plano
+Na abertura, o Android solicita apenas a localização ainda não concedida.
+No Android 11 ou superior, a localização em segundo plano
 é configurada separadamente em **Permissões > Localização > Permitir o tempo
 todo**. Se uma permissão for negada ou bloqueada pelo Android, o aplicativo
 oferece acesso às configurações; o usuário pode continuar, mas os recursos
-correspondentes podem ficar indisponíveis. A isenção de bateria continua sendo
-solicitada quando o rastreamento em segundo plano é ativado.
+correspondentes podem ficar indisponíveis. Câmera e microfone são solicitados
+quando usados; a seleção de fotos e contatos utiliza os seletores do Android,
+sem solicitar acesso geral à galeria ou agenda. A isenção de bateria continua
+sendo solicitada quando o rastreamento em segundo plano é ativado.
 
 Para motoristas, o aplicativo exige localização precisa, localização em segundo
 plano quando disponível, notificações habilitadas e o canal **Coletas urgentes**
 com som e alta prioridade. No Android 14 ou superior também exige a permissão
-de notificações em tela cheia. A área do motorista fica bloqueada com acesso
-às configurações até os requisitos serem atendidos; ao voltar das configurações,
+de notificações em tela cheia. Esses requisitos são verificados quando o
+motorista tenta ficar online ou retorna online, não apenas ao abrir o aplicativo.
+O acesso fica bloqueado com acesso às configurações até serem atendidos; ao voltar das configurações,
 eles são verificados novamente. As permissões de câmera, microfone, contatos e
 fotos não fazem parte dessa exigência. Em versões anteriores do Android, a
 permissão de tela cheia é declarada no aplicativo. Convites urgentes recebidos pelo WebSocket geram

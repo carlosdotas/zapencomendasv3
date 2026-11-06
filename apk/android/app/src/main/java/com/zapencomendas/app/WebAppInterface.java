@@ -31,6 +31,13 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
+    public boolean prepareUrgentAlerts() {
+        boolean ready = activity.driverAlertRequirementsSatisfied();
+        activity.runOnUiThread(activity::requireUrgentFullScreenPermission);
+        return ready;
+    }
+
+    @JavascriptInterface
     public void clearUrgentFullScreenRequirement() {
         activity.runOnUiThread(activity::clearUrgentFullScreenRequirement);
     }

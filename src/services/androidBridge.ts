@@ -10,6 +10,7 @@ export interface AndroidAppBridge {
   saveContact?: (name: string, phone: string) => void;
   showNotification?: (title: string, message: string) => void;
   requireUrgentFullScreenPermission?: () => void;
+  prepareUrgentAlerts?: () => boolean;
   clearUrgentFullScreenRequirement?: () => void;
   showUrgentOffer?: (offerId: string, name: string, expiresAt: number) => void;
   cancelUrgentOffer?: (offerId: string) => void;
@@ -38,6 +39,20 @@ export const androidBridge = {
    */
   isAvailable(): boolean {
     return typeof window !== 'undefined' && Boolean(window.AndroidApp);
+  },
+
+  prepareDriverAlerts(): boolean {
+    if (typeof window === 'undefined' || !window.AndroidApp) return true;
+    try {
+      if (window.AndroidApp.prepareUrgentAlerts) {
+        return window.AndroidApp.prepareUrgentAlerts();
+      }
+      window.AndroidApp.requireUrgentFullScreenPermission?.();
+      return true;
+    } catch (error) {
+      console.error('[Alertas] Não foi possível verificar as permissões:', error);
+      return false;
+    }
   },
 
   /**
